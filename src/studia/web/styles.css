@@ -510,7 +510,7 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 @media (max-width: 1100px) { .rec { grid-template-columns: 28px 56px 92px 56px 1fr auto; } .rec .state .bar { width: 80px; } }
 @media (max-width: 1040px) { :root { --sidebar: 228px; } .view { padding: 18px 18px 26px; } .q-main .bar { width: 140px; } }
 
-/* ------------------------------------------------------------------ Studia: brand, tabs, course pages, home */
+/* ------------------------------------------------------------------ IEUStudia: brand, tabs, course pages, home */
 .brand .logo-img { width: 30px; height: 30px; border-radius: 8px; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .22)); transition: transform .2s ease; }
 button.brand { border: 0; background: none; width: 100%; text-align: left; color: var(--text); cursor: pointer; }
 button.brand:hover .logo-img { transform: rotate(-6deg) scale(1.06); }

@@ -1718,7 +1718,7 @@
           P(305, "Arkadaşlar, bu konu sınavda çıkacak, dikkat edin. Formülü ezberlemeyin, mantığını anlayın.", { tr: true, star: true }),
           P(340, "So the posterior probability is 396 over 3384, which is about 11.7 percent. Surprising, isn't it?"),
         ] },
-      ], files: { folder: "C:\\Users\\student\\Documents\\Studia\\MATH 240", md: "x.md", pack: "pack.md", pdf: "", zip: "", notes: "" }, notes_md: "",
+      ], files: { folder: "C:\\Users\\student\\Documents\\IEUStudia\\MATH 240", md: "x.md", pack: "pack.md", pdf: "", zip: "", notes: "" }, notes_md: "",
     };
     const emit = (e) => setTimeout(() => window.__lsEvent(e), 0);
     function simulate(ids) {
@@ -1747,7 +1747,7 @@
         const me = profs.find((x) => x.active) || profs[0];
         return { ok: true, version: "1.1.0", signed_in: signed, first_run: false, profile: { name: me.name, student_number: me.student_number, username: me.username },
           profiles: profs, profile_id: me.id,
-          settings: { output_dir: "C:\\Users\\student\\Documents\\Studia", model: "large-v3-turbo", device: "auto", theme: location.hash.includes("dark") ? "dark" : "light", capture_slides: true, write_srt: true, keep_audio: false, min_duration_s: 60, ai_model: "sonnet", first_run_done: true },
+          settings: { output_dir: "C:\\Users\\student\\Documents\\IEUStudia", model: "large-v3-turbo", device: "auto", theme: location.hash.includes("dark") ? "dark" : "light", capture_slides: true, write_srt: true, keep_audio: false, min_duration_s: 60, ai_model: "sonnet", first_run_done: true },
           last_sync: new Date(Date.now() - 120000).toISOString(), courses: signed ? courses : [], queue: [] };
       },
       sync: () => { emit({ type: "sync", phase: "start", message: "Checking IEULearn and Panopto…" }); setTimeout(() => emit({ type: "sync", phase: "done", new_count: 0, message: "Up to date", last_sync: new Date().toISOString() }), 1400); return { ok: true }; },

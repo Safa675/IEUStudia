@@ -487,7 +487,7 @@
   // ------------------------------------------------------------------ browser preview (mock)
   St.mocks.setup_state = () => ({ ok: true, model: "large-v3-turbo", output_dir: "C:\\Users\\student\\Documents\\IEUStudia", frozen: true, startup: false,
     app: { onboarded: false, terms_accepted: "", ai_provider: "", codex_model: "", local_model: "qwen3-1.7b", tray: false, start_with_windows: false, notify_recordings: true, notify_announcements: true, notify_materials: false },
-    facts: { disk: { data_dir: "C:\\Users\\student\\AppData\\Local\\Studia", data_free_gb: 182.4 } },
+    facts: { disk: { data_dir: "C:\\Users\\student\\AppData\\Local\\IEUStudia", data_free_gb: 182.4 } },
     verdict: { ok: true, blockers: location.hash.includes("weak") ? ["This processor does not support AVX instructions, which the speech recognition needs."] : [], warnings: [], gpu: true, recommended_model: "large-v3-turbo", recommended_llm: "qwen3-4b",
       models: { "large-v3-turbo": { ok: true }, "large-v3": { ok: true }, medium: { ok: true }, small: { ok: true } },
       summary: [{ label: "Windows", value: "Windows 11 24H2 (build 26100)", ok: "yes" }, { label: "Processor", value: "Intel Core i7-13700H · 20 threads", ok: "yes" },
@@ -549,7 +549,7 @@
   St.mocks.setup_cancel = () => ({ ok: true });
   St.mocks.app_config = (patch) => { S.boot.app = { ...(S.boot.app || {}), ...(patch || {}) }; return { ok: true, app: S.boot.app, startup: !!S.boot.app.start_with_windows, helper: !!S.boot.app.tray }; };
   St.mocks.finish_setup = () => ({ ok: true, app: { ...(S.boot.app || {}), onboarded: true } });
-  St.mocks.storage = () => ({ ok: true, usage: { speech_models: 1.7e9, gpu_libraries: 7.8e8, library: 1.2e8, cache: 6e7, your_files: 2.4e9 }, free_gb: 182.4, data_dir: "C:\\Users\\student\\AppData\\Local\\Studia",
+  St.mocks.storage = () => ({ ok: true, usage: { speech_models: 1.7e9, gpu_libraries: 7.8e8, library: 1.2e8, cache: 6e7, your_files: 2.4e9 }, free_gb: 182.4, data_dir: "C:\\Users\\student\\AppData\\Local\\IEUStudia",
     catalog: { speech: [{ id: "large-v3-turbo", label: "Fast & accurate", size_mb: 1620, ready: true }, { id: "small", label: "Small", size_mb: 484, ready: true }], cuda: {}, llm: [] } });
   St.mocks.delete_component = () => St.mocks.storage();
 })();

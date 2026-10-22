@@ -1,4 +1,4 @@
-/* Studia — video study plans: YouTube videos that really teach the course (checked through their captions),
+/* IEUStudia — video study plans: YouTube videos that really teach the course (checked through their captions),
  * ordered for the student's time, with a concept checklist, a coverage table, supplements and practice.
  * Plugs into app.js through window.Studia (views, events, actions). */
 (function () {

@@ -112,7 +112,7 @@ def fetch_syllabus(code: str, departments: Sequence[str] = DEPARTMENTS,
     for dept in departments:
         url = syllabus_url(dept, code)
         try:
-            r = s.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (Studia)"})
+            r = s.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (IEUStudia)"})
         except requests.RequestException:
             continue                       # this department has no site
         if r.status_code != 200:

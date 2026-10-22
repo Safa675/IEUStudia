@@ -1,4 +1,4 @@
-"""Shared data types used across Studia modules.
+"""Shared data types used across IEUStudia's modules.
 
 Everything here is plain data (dataclasses) so it can be stored in SQLite / JSON and
 sent to the UI without surprises. Datetimes for recordings are *naive local wall-clock*

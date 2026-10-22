@@ -1,4 +1,4 @@
-/* Studia — inline SVG icon set.
+/* IEUStudia — inline SVG icon set.
  *
  * Hand-written 24x24 stroke icons in the Lucide style (round caps/joins, 1.75 stroke set in CSS).
  * Usage: LSIcons.svg("name", "extra-class")  ->  '<svg class="i extra-class" ...>…</svg>'

@@ -1,4 +1,4 @@
-/* Studia — Home dashboard and course pages (Weeks · Heads-up · Overview · Lectures · Materials · Announcements).
+/* IEUStudia — Home dashboard and course pages (Weeks · Heads-up · Overview · Lectures · Materials · Announcements).
  * Plugs into app.js through window.Studia (views, events, actions). */
 (function () {
   "use strict";
@@ -724,7 +724,7 @@
         { id: "a2", title: "Quiz Takvimi ve Uygulama Kuralları", author: c.instructor, posted_at: "2026-10-05T10:05", body: "Sevgili Öğrenciler,\n\nQuiz ve ara sınav takvimi aşağıdaki gibidir. Quizlerin kapsadığı öğrenme çıktıları (LO) tabloda belirtilmiştir.\n\nQuiz 1 — 3. hafta — LO1, LO2\nQuiz 2 — 5. hafta — LO3\nAra sınav — 8. hafta — LO1–LO4", is_new: false }],
       materials: { total: 9, downloaded: 3, new: 1 }, content_at: "2026-10-21T08:00:00", alerts: mockAlerts(c) } };
   };
-  St.mocks.export_calendar = () => ({ ok: true, count: 7, path: "C:\\Users\\student\\Documents\\Studia\\IEUStudia - quizzes and exams.ics" });
+  St.mocks.export_calendar = () => ({ ok: true, count: 7, path: "C:\\Users\\student\\Documents\\IEUStudia\\IEUStudia - quizzes and exams.ics" });
   St.mocks.materials_download = (ids) => {
     ids.forEach((id, k) => {
       let done = 0;

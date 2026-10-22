@@ -1,4 +1,4 @@
-/* Studia — the weekly digest: what happened this week in each course, what is coming, and what to do next.
+/* IEUStudia — the weekly digest: what happened this week in each course, what is coming, and what to do next.
  * Built without AI; the AI you chose can add a short written summary on request. Plugs into app.js through window.Studia. */
 (function () {
   "use strict";

@@ -96,7 +96,7 @@ def write_local(output_root: Path, name: str, transcript: Any) -> Path:
     from .common import format_ts, lang_tag, md_escape
 
     path = Path(output_root) / "Local files" / (safe_name(Path(name).stem) + ".md")
-    lines = [f"# {md_escape(Path(name).stem)}", "", f"Transcribed {dt.date.today().isoformat()} with Studia.", ""]
+    lines = [f"# {md_escape(Path(name).stem)}", "", f"Transcribed {dt.date.today().isoformat()} with IEUStudia.", ""]
     for para in build_paragraphs(transcript.segments):
         tag = lang_tag(para.lang)
         lines.append(f"**[{format_ts(para.start)}]** {('**[' + tag + ']** ') if tag else ''}{md_escape(para.text)}")

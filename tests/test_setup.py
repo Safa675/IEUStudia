@@ -17,7 +17,7 @@ def _facts(**over):
          "cpu": {"name": "CPU", "cores": 16, "avx": True, "avx2": True, "arch": "AMD64"},
          "ram_gb": 16.0, "ram_free_gb": 8.0, "webview2": "130.0",
          "gpu": {"present": True, "name": "RTX 4060", "vram_mb": 8188, "driver": "566.14"},
-         "disk": {"data_dir": "C:\\Users\\x\\AppData\\Local\\Studia", "data_free_gb": 120.0}}
+         "disk": {"data_dir": "C:\\Users\\x\\AppData\\Local\\IEUStudia", "data_free_gb": 120.0}}
     for k, v in over.items():
         f[k] = {**f[k], **v} if isinstance(v, dict) else v
     return f

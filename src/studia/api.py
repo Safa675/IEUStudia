@@ -791,7 +791,7 @@ class Api:
 
     @safe
     def open_output_file(self, path: str) -> dict[str, Any]:
-        """Open a file Studia wrote in the output folder (nothing outside it)."""
+        """Open a file IEUStudia wrote in the output folder (nothing outside it)."""
         p = Path(path or "")
         root = self._s.output_root.resolve()
         if not p.is_file() or not p.resolve().is_relative_to(root):
