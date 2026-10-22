@@ -1,10 +1,11 @@
-"""Filesystem locations used by Studia.
+"""Filesystem locations used by IEUStudia.
 
-Everything lives under ``%LOCALAPPDATA%\\Studia`` unless the ``STUDIA_HOME``
+Everything lives under ``%LOCALAPPDATA%\\IEUStudia`` unless the ``STUDIA_HOME``
 environment variable points somewhere else (tests and portable setups use that).
 Every helper creates its directory on first use, so callers never need to ``mkdir``.
 
-The app used to be called LectureScribe: :func:`migrate_legacy_data` moves its data folder once.
+The app used to be called Studia, and LectureScribe before that: :func:`migrate_legacy_data` moves the data folder
+of an earlier name once, and :func:`renamed_output_path` gives their default output folders the new name.
 """
 
 from __future__ import annotations
@@ -12,13 +13,13 @@ from __future__ import annotations
 import ctypes
 import functools
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
 
-APP_NAME = "Studia"            # the data folder's name (kept from before the app was called IEUStudia)
-OUTPUT_NAME = "IEUStudia"      # new users' output folder in Documents (existing users keep theirs)
-LEGACY_NAME = "LectureScribe"
+APP_NAME = "IEUStudia"                        # the data folder in %LOCALAPPDATA% and the output folder in Documents
+LEGACY_NAMES = ("Studia", "LectureScribe")    # the app's earlier names, newest first
 HOME_ENV = "STUDIA_HOME"
 
 # Known-folder id of the user's Documents folder (follows OneDrive / folder redirection).
@@ -40,15 +41,22 @@ def _local_root() -> Path:
     return Path(local) if local else Path.home() / "AppData" / "Local"
 
 
+def _legacy_data() -> Path | None:
+    """The data folder of an earlier name that still holds a library (the newest such name)."""
+    root = _local_root()
+    return next((root / name for name in LEGACY_NAMES if (root / name / "library.db").exists()), None)
+
+
 def migrate_legacy_data() -> str:
-    """Move ``%LOCALAPPDATA%\\LectureScribe`` to ``%LOCALAPPDATA%\\Studia`` (once, before anything uses it).
+    """Move the data folder of the app's earlier name (``%LOCALAPPDATA%\\Studia`` or ``LectureScribe``) to
+    ``%LOCALAPPDATA%\\IEUStudia`` (once, before anything uses it).
 
     Same drive, so it is a rename. If a new folder already exists without a library (e.g. only logs),
     the old folder's entries are moved into it. Returns "moved", "none", "skipped" or "failed: …"."""
     if _home_override() is not None:
         return "skipped"
-    new, old = _local_root() / APP_NAME, _local_root() / LEGACY_NAME
-    if not (old / "library.db").exists() or (new / "library.db").exists():
+    new, old = _local_root() / APP_NAME, _legacy_data()
+    if old is None or (new / "library.db").exists():
         return "none"
     try:
         if not new.exists():
@@ -66,17 +74,17 @@ def migrate_legacy_data() -> str:
 
 
 @functools.lru_cache(maxsize=1)
-def _legacy_in_use() -> bool:
-    root = _local_root()
-    return not (root / APP_NAME / "library.db").exists() and (root / LEGACY_NAME / "library.db").exists()
+def _legacy_in_use() -> Path | None:
+    """The data folder of an earlier name while it could not be moved yet (e.g. the old app was still running)."""
+    return None if (_local_root() / APP_NAME / "library.db").exists() else _legacy_data()
 
 
 def app_dir() -> Path:
-    """``%LOCALAPPDATA%\\Studia`` (or ``$STUDIA_HOME``; the old LectureScribe folder until it is moved)."""
+    """``%LOCALAPPDATA%\\IEUStudia`` (or ``$STUDIA_HOME``; the folder of an earlier name until it is moved)."""
     override = _home_override()
     if override is not None:
         return _ensure_dir(override)
-    return _ensure_dir(_local_root() / (LEGACY_NAME if _legacy_in_use() else APP_NAME))
+    return _ensure_dir(_legacy_in_use() or _local_root() / APP_NAME)
 
 
 # Each IEULearn account ("profile") has its own library, transcripts, settings and stored password. The first one
@@ -140,18 +148,23 @@ def documents_dir() -> Path:
     return Path.home() / "Documents"
 
 
+def profile_output_name(label: str) -> str:
+    """The name of an added profile's own output folder in Documents: ``IEUStudia - <label>``."""
+    return f"{APP_NAME} - {label}"
+
+
 def default_output_path() -> Path:
     """:func:`default_output_dir` without creating it."""
     if _home_override() is not None:
         return profile_dir() / "output"
     if _profile_rel:
-        return documents_dir() / f"{OUTPUT_NAME} ({Path(_profile_rel).name})"
-    return documents_dir() / OUTPUT_NAME
+        return documents_dir() / profile_output_name(Path(_profile_rel).name)
+    return documents_dir() / APP_NAME
 
 
 def default_output_dir() -> Path:
-    """Where Markdown transcripts go by default: ``Documents\\IEUStudia`` (an added profile gets its own folder when it
-    is created; this is only the fallback).
+    """Where Markdown transcripts go by default: ``Documents\\IEUStudia`` (an added profile gets its own folder,
+    ``IEUStudia - <name>``, when it is created; this is only the fallback).
 
     When ``STUDIA_HOME`` is set (tests, portable mode) the output goes to
     ``<home>\\output`` (``<profile folder>\\output``) instead, so test runs never touch the real Documents folder.
@@ -159,6 +172,17 @@ def default_output_dir() -> Path:
     return _ensure_dir(default_output_path())
 
 
-def legacy_output_dir() -> Path:
-    """The default output folder before the app became Studia (``Documents\\LectureScribe``)."""
-    return documents_dir() / LEGACY_NAME
+# Studia, LectureScribe, a profile's "Studia - <name>" and the fallback "Studia (<profile id>)"
+_LEGACY_OUTPUT = re.compile(r"(?:%s)(?: - (.+)| \((p-[0-9a-f]{8})\))?" % "|".join(LEGACY_NAMES))
+
+
+def renamed_output_path(path: Path) -> Path | None:
+    """The IEUStudia name for a default output folder of the app's earlier names: ``Documents\\Studia`` (or
+    ``LectureScribe``) becomes ``Documents\\IEUStudia``, a profile's ``Studia - <name>`` becomes ``IEUStudia - <name>``.
+    None for any other folder (one the user chose elsewhere, or one that already has the new name)."""
+    path = Path(path)
+    m = _LEGACY_OUTPUT.fullmatch(path.name)
+    if m is None or path.parent not in (documents_dir(), Path.home() / "Documents"):
+        return None
+    label = m.group(1) or m.group(2)
+    return path.with_name(profile_output_name(label) if label else APP_NAME)

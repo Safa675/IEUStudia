@@ -169,7 +169,7 @@ quotes behind every video they recommend.
   Claude Code from claude.ai; signing in with ChatGPT happens on auth.openai.com.
 - The ChatGPT sign-in is kept on your PC encrypted with DPAPI, like your EkoID password. It only allows requests on
   your plan, not access to your ChatGPT conversations.
-- App data (settings, the encrypted login, your library, models, logs) is kept in `%LOCALAPPDATA%\Studia`.
+- App data (settings, the encrypted login, your library, models, logs) is kept in `%LOCALAPPDATA%\IEUStudia`.
   Transcripts, notes and downloaded files go to `Documents\IEUStudia`.
 
 ## Uninstalling

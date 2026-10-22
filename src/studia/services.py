@@ -28,9 +28,9 @@ class Services:
         self._lock = threading.RLock()
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self.settings: Settings = load_settings()
-        self._migrate_output_root()
         self.lib = Library(db_path())
         self.lib.reset_interrupted()
+        self._migrate_output_root()
         self.sync = SyncService(self.lib, lambda: self.settings, self.log)
         from .chat import ChatService
         from .jobs import JobManager
@@ -49,49 +49,54 @@ class Services:
         self.chat.shutdown()
 
     def _migrate_output_root(self) -> None:
-        """The default output folder was Documents\\LectureScribe before the app became Studia: rename it
-        once (same drive, so instant) and point the slide indexes at the new place."""
-        from .paths import _home_override, app_dir, default_output_path, legacy_output_dir, profile_dir
+        """An output folder that still has the app's earlier name (Documents\\Studia or Documents\\LectureScribe, a
+        profile's Documents\\Studia - <name>) gets the IEUStudia name once: it is renamed (same drive, so instant)
+        unless the new name is taken, and the paths stored for its files follow. Folders the user chose keep theirs."""
+        from .paths import _home_override, renamed_output_path
 
-        if _home_override() is not None or profile_dir() != app_dir():     # tests, or an added profile
-            return
-        old, new = legacy_output_dir(), default_output_path()
-        current = Path(self.settings.output_dir)
-        if current not in (old, new) or not old.is_dir() or old.resolve() == new.resolve():
+        old = Path(self.settings.output_dir)
+        new = renamed_output_path(old)
+        if _home_override() is not None or new is None or not old.parent.is_dir():
             return
         try:
-            if new.exists():
-                if any(new.iterdir()):
-                    return                                     # both have files: leave them alone
-                new.rmdir()
-            os.replace(old, new)
-        except OSError:
+            if old.is_dir():
+                if new.is_dir() and not any(new.iterdir()):
+                    new.rmdir()                                # empty, e.g. made by an earlier start
+                if new.exists():
+                    self.log.info("Keeping the output folder %s: %s exists too", old, new)
+                    return
+                os.replace(old, new)
+        except OSError:                                        # e.g. a file in it is open: try again next start
             self.log.warning("Could not rename %s to %s", old, new, exc_info=True)
-            if current == new and old.is_dir():                # keep using the old folder for now
-                self.update_settings({"output_dir": str(old)})
             return
-        self._rewrite_slide_paths(str(old), str(new))
+        self.rebase_output_paths(old, new)                     # also after a start that stopped right after renaming
         self.update_settings({"output_dir": str(new)})
-        self.log.info("Moved the output folder %s -> %s", old, new)
+        self.log.info("Output folder %s -> %s", old, new)
 
-    @staticmethod
-    def _rewrite_slide_paths(old_root: str, new_root: str) -> None:
-        import json
-
+    def rebase_output_paths(self, old_root: Path, new_root: Path) -> None:
+        """Point the paths stored for files in ``old_root`` (slide images, downloaded materials, plan and digest
+        files) at the same files in ``new_root``, where they exist."""
         from .paths import transcripts_dir
+        from .slides import load_index, save_index
 
-        for f in transcripts_dir().glob("*.slides.json"):
+        old_root, new_root = Path(old_root), Path(new_root)
+
+        def moved(value: str) -> Optional[str]:
             try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            changed = False
-            for sl in data:
-                if str(sl.get("path", "")).startswith(old_root):
-                    sl["path"] = new_root + sl["path"][len(old_root):]
-                    changed = True
+                path = new_root / Path(value).relative_to(old_root)
+            except ValueError:                                 # not in the old folder (or not a path)
+                return None
+            return str(path) if path.exists() else None
+
+        self.lib.rebase_paths(moved)
+        for f in transcripts_dir().glob("*.slides.json"):
+            slides, changed = load_index(f), False
+            for s in slides:
+                new = moved(s.path)
+                if new:
+                    s.path, changed = new, True
             if changed:
-                f.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+                save_index(f, slides)
                 store.forget(f.name.split(".")[0])
 
     # ------------------------------------------------------------------ events / settings
@@ -176,8 +181,9 @@ class Services:
                          course_recs, trans_all, self.settings.write_srt, slides, warnings)
 
     def relocate_outputs(self, old_root: Path, new_root: Path) -> int:
-        """Copy the app's course folders (transcripts, slides, packs, notes) to a new output folder and
-        point the slide indexes there. The old folder is left untouched. Returns the number of folders copied."""
+        """Copy the app's folders (course folders with transcripts, slides, materials, packs and notes; weekly
+        digests) to a new output folder and point the stored paths there. The old folder is left untouched. Returns
+        the number of folders copied."""
         import shutil
 
         from .outputs.writer import course_folder_name
@@ -186,14 +192,14 @@ class Services:
         if not old_root.exists() or old_root.resolve() == new_root.resolve():
             return 0
         courses = self.lib.courses(True)
-        names = {course_folder_name(c, courses) for c in courses} | {"Local files"}
+        names = {course_folder_name(c, courses) for c in courses} | {"Local files", "Weekly digests"}
         copied = 0
         for name in sorted(names):
             src = old_root / name
             if src.is_dir() and not new_root.resolve().is_relative_to(src.resolve()):
                 shutil.copytree(src, new_root / name, dirs_exist_ok=True)
                 copied += 1
-        self._rewrite_slide_paths(str(old_root), str(new_root))
+        self.rebase_output_paths(old_root, new_root)
         return copied
 
     def rewrite_course(self, course_id: str) -> None:

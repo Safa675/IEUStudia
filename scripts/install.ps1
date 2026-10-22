@@ -7,7 +7,7 @@
   %LOCALAPPDATA%\Programs\IEUStudia with its own Python environment, then creates
   "IEUStudia" shortcuts on the Desktop and in the Start menu.
   Re-run it after changing the code to update the installed copy. Your data (settings,
-  library, transcripts, models) lives in %LOCALAPPDATA%\Studia and is never touched.
+  library, transcripts, models) lives in %LOCALAPPDATA%\IEUStudia and is never touched.
 #>
 param(
     [string]$Dest = (Join-Path $env:LOCALAPPDATA "Programs\IEUStudia"),
@@ -89,7 +89,7 @@ public static class LnkAppId {
 }
 
 # The app used to be called LectureScribe, then Studia: remove those program folders and shortcuts. The data is
-# not deleted - it stays in %LOCALAPPDATA%\Studia (an old LectureScribe folder is moved there on first start).
+# not deleted: the app moves a data folder of those names to %LOCALAPPDATA%\IEUStudia on its first start.
 foreach ($old in $legacy, $previous) {
     if ((Test-Path $old) -and ($old -ne $Dest)) {
         Step "Removing the old program in $old"
@@ -106,4 +106,4 @@ foreach ($name in "LectureScribe.lnk", "Studia.lnk") {
 Write-Host ""
 Write-Host "IEUStudia is installed. Start it from the Desktop or Start menu." -ForegroundColor Green
 Write-Host "Program: $Dest"
-Write-Host "Data:    $(Join-Path $env:LOCALAPPDATA 'Studia')"
+Write-Host "Data:    $(Join-Path $env:LOCALAPPDATA 'IEUStudia')"

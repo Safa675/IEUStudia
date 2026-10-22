@@ -58,7 +58,7 @@ def _models_root() -> Path:
 
         base = app_dir()
     except ImportError:  # paths module unavailable (e.g. isolated engine use)
-        base = Path(os.environ.get("STUDIA_HOME") or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Studia")
+        base = Path(os.environ.get("STUDIA_HOME") or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "IEUStudia")
     p = Path(base) / "models"
     p.mkdir(parents=True, exist_ok=True)
     return p
@@ -113,12 +113,12 @@ def model_is_downloaded(model: str) -> bool:
 
 def download_model(model: str, progress: Callable[[int, int], None],
                    cancel: Optional[threading.Event] = None) -> Path:
-    """Download the model files into %LOCALAPPDATA%\\Studia\\models\\<model> (resumable)."""
+    """Download the model files into %LOCALAPPDATA%\\IEUStudia\\models\\<model> (resumable)."""
     repo = _repo(model)
     target = _models_root() / model
     target.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
-    session.headers["User-Agent"] = "Studia/1.0"
+    session.headers["User-Agent"] = "IEUStudia (+https://github.com/mirzaisi/IEUStudia)"
     info = session.get(f"https://huggingface.co/api/models/{repo}", params={"blobs": "true"}, timeout=30)
     info.raise_for_status()
     siblings = info.json().get("siblings", [])

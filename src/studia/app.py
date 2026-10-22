@@ -101,7 +101,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         log.exception("IEUStudia crashed")
         ctypes.windll.user32.MessageBoxW(None, f"IEUStudia could not start:\n\n{exc}\n\n"
                                          f"{traceback.format_exc(limit=3)}\nDetails are in the log folder "
-                                         f"(%LOCALAPPDATA%\\Studia\\logs).", APP_NAME, 0x10)
+                                         f"(%LOCALAPPDATA%\\IEUStudia\\logs).", APP_NAME, 0x10)
 
 
 def _selftest(out: str) -> int:
@@ -293,7 +293,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
     if "--recovered" in argv:
         log.warning("Restarted by the start-up window after a stuck start (details: startup-stall.txt here)")
     if moved != "none":
-        log.info("Data folder from LectureScribe: %s", moved)
+        log.info("Data folder of the app's earlier name: %s", moved)
 
     def thread_error(args: threading.ExceptHookArgs) -> None:   # pythonw has no console: keep a trace
         log.error("Unhandled error in thread %s", getattr(args.thread, "name", "?"),

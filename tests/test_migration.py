@@ -1,14 +1,25 @@
-"""LectureScribe -> Studia: the data folder and the default output folder are moved once, nothing is lost."""
+"""The app's earlier names (Studia, LectureScribe): the data folder and the default output folders get the IEUStudia
+name once, the stored paths follow them, and nothing is lost."""
 
 import json
+import os
 
-from studia import paths
+import pytest
+
+from studia import accounts, paths
+from studia.config import Settings, load_settings, save_settings
+from studia.coursesite import Resource, Unit
+from studia.domain import Course
+from studia.library import Library
+from studia.services import Services
+from studia.slides import Slide, load_index, save_index
 
 
 def _real_mode(tmp_path, monkeypatch):
     monkeypatch.delenv("STUDIA_HOME", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setattr(paths, "documents_dir", lambda: tmp_path / "docs")
+    monkeypatch.setattr(accounts, "documents_dir", lambda: tmp_path / "docs")
     paths._legacy_in_use.cache_clear()
 
 
@@ -20,15 +31,29 @@ def test_data_folder_is_moved_once(tmp_path, monkeypatch):
     (old / "transcripts" / "x.json").write_text("{}")
     assert paths.app_dir() == old                       # not moved yet (old app running?): keep using it
     assert paths.migrate_legacy_data() == "moved"
-    new = tmp_path / "local" / "Studia"
+    new = tmp_path / "local" / "IEUStudia"
     assert (new / "library.db").read_text() == "db" and (new / "transcripts" / "x.json").exists()
     assert not old.exists() and paths.app_dir() == new
     assert paths.migrate_legacy_data() == "none"
 
 
+def test_studia_data_folder_wins_over_an_older_one(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    studia, lecturescribe = tmp_path / "local" / "Studia", tmp_path / "local" / "LectureScribe"
+    for folder, text in ((studia, "studia"), (lecturescribe, "old")):
+        folder.mkdir(parents=True)
+        (folder / "library.db").write_text(text)
+    (studia / "chatgpt.bin").write_bytes(b"\x01")
+    assert paths.app_dir() == studia
+    assert paths.migrate_legacy_data() == "moved"
+    new = tmp_path / "local" / "IEUStudia"
+    assert (new / "library.db").read_text() == "studia" and (new / "chatgpt.bin").exists()
+    assert not studia.exists() and lecturescribe.exists() and paths.app_dir() == new
+
+
 def test_data_folder_merges_into_a_new_folder_without_library(tmp_path, monkeypatch):
     _real_mode(tmp_path, monkeypatch)
-    old, new = tmp_path / "local" / "LectureScribe", tmp_path / "local" / "Studia"
+    old, new = tmp_path / "local" / "Studia", tmp_path / "local" / "IEUStudia"
     old.mkdir(parents=True)
     (old / "library.db").write_text("db")
     (new / "logs").mkdir(parents=True)                  # e.g. created by an earlier start
@@ -36,23 +61,153 @@ def test_data_folder_merges_into_a_new_folder_without_library(tmp_path, monkeypa
     assert (new / "library.db").exists() and (new / "logs").is_dir() and not old.exists()
 
 
-def test_default_output_folder_is_renamed_and_slides_follow(tmp_path, monkeypatch):
-    _real_mode(tmp_path, monkeypatch)
-    paths.migrate_legacy_data()
-    old_out = tmp_path / "docs" / "LectureScribe"
-    (old_out / "MATH 240" / "slides").mkdir(parents=True)
-    (old_out / "MATH 240" / "slides" / "s1.jpg").write_bytes(b"jpg")
-    home = paths.app_dir()
-    (home / "settings.json").write_text(json.dumps({"output_dir": str(old_out)}), encoding="utf-8")
-    (home / "transcripts").mkdir(exist_ok=True)
-    (home / "transcripts" / "r1.slides.json").write_text(json.dumps(
-        [{"index": 1, "t": 0, "end": 5, "image": "slides/s1.jpg", "path": str(old_out / "MATH 240" / "slides" / "s1.jpg")}]))
-    from studia.services import Services
+def test_data_folder_is_not_touched_with_studia_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    (tmp_path / "local" / "Studia").mkdir(parents=True)
+    (tmp_path / "local" / "Studia" / "library.db").write_text("db")
+    assert paths.migrate_legacy_data() == "skipped"
+    assert (tmp_path / "local" / "Studia" / "library.db").exists()
 
-    s = Services()
-    new_out = tmp_path / "docs" / "IEUStudia"
-    assert s.settings.output_dir == str(new_out) and (new_out / "MATH 240" / "slides" / "s1.jpg").exists()
-    assert not old_out.exists()
-    moved = json.loads((home / "transcripts" / "r1.slides.json").read_text())[0]["path"]
-    assert moved == str(new_out / "MATH 240" / "slides" / "s1.jpg")
+
+def test_renamed_output_path(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    docs = tmp_path / "docs"
+    assert paths.renamed_output_path(docs / "Studia") == docs / "IEUStudia"
+    assert paths.renamed_output_path(docs / "LectureScribe") == docs / "IEUStudia"
+    assert paths.renamed_output_path(docs / "Studia - Ayşe Yılmaz") == docs / "IEUStudia - Ayşe Yılmaz"
+    assert paths.renamed_output_path(docs / "Studia (p-1a2b3c4d)") == docs / "IEUStudia - p-1a2b3c4d"
+    for kept in (docs / "IEUStudia", docs / "IEUStudia - Bob", docs / "Studia backup", docs / "Studia (old)",
+                 tmp_path / "elsewhere" / "Studia", docs / "Studia" / "MATH 240"):
+        assert paths.renamed_output_path(kept) is None, kept
+
+
+def test_profile_output_folders_have_one_name(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    acc = accounts.create("bob", "Bob B", "2024")
+    assert accounts.output_dir_for(acc, "Bob B") == tmp_path / "docs" / "IEUStudia - Bob B"
+    assert accounts.output_dir_for(acc, "") == tmp_path / "docs" / "IEUStudia - bob"
+    assert accounts.output_dir_for(acc, ' ?:* ') == tmp_path / "docs" / f"IEUStudia - {acc.id}"
+    assert accounts.output_dir_for(acc, "x" * 59 + " y") == tmp_path / "docs" / ("IEUStudia - " + "x" * 59)
+    accounts.activate(acc.id)
+    assert paths.default_output_path() == tmp_path / "docs" / f"IEUStudia - {acc.id}"
+    accounts.activate("main")
+    assert paths.default_output_path() == tmp_path / "docs" / "IEUStudia"
+
+
+def _seed(out, elsewhere):
+    """Files in the output folder ``out`` and the paths the app keeps for them: a downloaded material, a study plan,
+    a saved weekly digest and a slide. Plus a material downloaded somewhere else, whose path must not change."""
+    files = {"pdf": out / "MATH 240" / "Materials" / "Week 1" / "notes.pdf",
+             "plan": out / "MATH 240" / "Study plans" / "plan.md",
+             "digest": out / "Weekly digests" / "2026-10-19 weekly digest.md",
+             "slide": out / "MATH 240" / "slides" / "day" / "s1.jpg", "other": elsewhere / "other.pdf"}
+    for f in files.values():
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+    lib = Library(paths.db_path())
+    lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="P")])
+    lib.merge_units("c", [Unit("u1", 0, "Week 1", resources=[Resource("m1", "Notes"), Resource("m2", "Other")])],
+                    first_sync=True)
+    lib.set_material_file("m1", str(files["pdf"]), 1, "u")
+    lib.set_material_file("m2", str(files["other"]), 1, "u")
+    lib.create_plan("p1", "c", {})
+    lib.update_plan("p1", result={"file": str(files["plan"]), "items": [1]})
+    lib.set_meta("digest:2026-10-19", json.dumps({"text": "The week", "file": str(files["digest"])}))
+    lib.close()
+    save_index(paths.transcripts_dir() / "r1.slides.json", [Slide(1, 0, 5, "slides/day/s1.jpg", str(files["slide"]))])
+    save_settings(Settings(output_dir=str(out)))
+    return files
+
+
+def _stored(s):
+    return {"pdf": s.lib.get_material("m1")["local_path"], "other": s.lib.get_material("m2")["local_path"],
+            "plan": s.lib.plan("p1")["result"]["file"], "digest": json.loads(s.lib.get_meta("digest:2026-10-19"))["file"],
+            "slide": load_index(paths.transcripts_dir() / "r1.slides.json")[0].path}
+
+
+def _close(s):
     s.shutdown()
+    s.lib.close()
+
+
+@pytest.mark.parametrize("old_name", ["Studia", "LectureScribe"])
+def test_output_folder_is_renamed_and_the_stored_paths_follow(tmp_path, monkeypatch, old_name):
+    _real_mode(tmp_path, monkeypatch)
+    old, new = tmp_path / "docs" / old_name, tmp_path / "docs" / "IEUStudia"
+    files = _seed(old, tmp_path / "elsewhere")
+    new.mkdir()                                           # empty (made by an earlier start): no reason to keep the old name
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(new) and load_settings().output_dir == str(new)
+        assert not old.exists() and (new / "MATH 240" / "Materials" / "Week 1" / "notes.pdf").is_file()
+        stored = _stored(s)
+        for key in ("pdf", "plan", "digest", "slide"):
+            assert stored[key] == str(new / files[key].relative_to(old)), key
+        assert stored["other"] == str(files["other"]) and s.lib.plan("p1")["result"]["items"] == [1]
+    finally:
+        _close(s)
+
+
+def test_added_profile_output_folder_is_renamed(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    accounts.activate(accounts.create("bob", "Bob B", "2024").id)
+    old, new = tmp_path / "docs" / "Studia - Bob B", tmp_path / "docs" / "IEUStudia - Bob B"
+    files = _seed(old, tmp_path / "elsewhere")
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(new) and not old.exists()
+        assert _stored(s)["pdf"] == str(new / files["pdf"].relative_to(old))
+    finally:
+        _close(s)
+
+
+def test_output_folder_keeps_its_name_when_the_new_one_is_taken(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    old, new = tmp_path / "docs" / "Studia", tmp_path / "docs" / "IEUStudia"
+    files = _seed(old, tmp_path / "elsewhere")
+    new.mkdir()
+    (new / "mine.md").write_text("x")
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(old) and (new / "mine.md").is_file()
+        assert _stored(s)["pdf"] == str(files["pdf"]) and files["pdf"].is_file()
+    finally:
+        _close(s)
+
+
+def test_a_rename_that_stopped_halfway_is_finished(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    old, new = tmp_path / "docs" / "Studia", tmp_path / "docs" / "IEUStudia"
+    files = _seed(old, tmp_path / "elsewhere")
+    os.replace(old, new)                                  # renamed, then the app stopped before it saved the new paths
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(new) and not old.exists()
+        assert _stored(s)["digest"] == str(new / files["digest"].relative_to(old))
+    finally:
+        _close(s)
+
+
+def test_output_folder_in_use_is_renamed_on_a_later_start(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    old, new = tmp_path / "docs" / "Studia", tmp_path / "docs" / "IEUStudia"
+    files = _seed(old, tmp_path / "elsewhere")
+    real = os.replace
+
+    def busy(src, dst):
+        if src == old:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", busy)
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(old) and files["pdf"].is_file() and _stored(s)["pdf"] == str(files["pdf"])
+    finally:
+        _close(s)
+    monkeypatch.setattr(os, "replace", real)
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(new) and _stored(s)["pdf"] == str(new / files["pdf"].relative_to(old))
+    finally:
+        _close(s)

@@ -88,7 +88,7 @@ begin
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'IEUStudia');
   if CurUninstallStep = usPostUninstall then
   begin
-    data := ExpandConstant('{localappdata}\Studia');
+    data := ExpandConstant('{localappdata}\IEUStudia');
     if DirExists(data) and not UninstallSilent() then
       if MsgBox('Also delete IEUStudia''s data on this PC?' + #13#10#13#10 +
                 'This removes your settings, the stored (encrypted) IEULearn login, the library and the downloaded ' +

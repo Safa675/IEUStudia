@@ -9,7 +9,7 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from .domain import Course, Recording, Transcript
 
@@ -118,6 +118,32 @@ class Library:
         with self._lock:
             self.db.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                             (key, value))
+            self.db.commit()
+
+    def rebase_paths(self, moved: Callable[[str], Optional[str]]) -> None:
+        """Change the file paths kept here (downloaded materials, plan files, saved weekly digests) after the output
+        folder moved: ``moved`` returns a path's new value, or None to keep it."""
+        def moved_file(blob: str) -> Optional[str]:         # a JSON object with the path in "file"
+            try:
+                d = json.loads(blob or "{}")
+            except ValueError:
+                return None
+            new = moved(str(d.get("file") or "")) if isinstance(d, dict) else None
+            return json.dumps({**d, "file": new}, ensure_ascii=False) if new else None
+
+        with self._lock:
+            for rid, path in self.db.execute("SELECT resource_id, local_path FROM materials WHERE local_path<>''").fetchall():
+                new = moved(path)
+                if new:
+                    self.db.execute("UPDATE materials SET local_path=? WHERE resource_id=?", (new, rid))
+            for pid, result in self.db.execute("SELECT id, result FROM plans").fetchall():
+                new = moved_file(result)
+                if new:
+                    self.db.execute("UPDATE plans SET result=? WHERE id=?", (new, pid))
+            for key, value in self.db.execute("SELECT key, value FROM meta WHERE key LIKE 'digest:%'").fetchall():
+                new = moved_file(value)
+                if new:
+                    self.db.execute("UPDATE meta SET value=? WHERE key=?", (new, key))
             self.db.commit()
 
     # ------------------------------------------------------------------ courses

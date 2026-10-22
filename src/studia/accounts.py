@@ -20,7 +20,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
-from .paths import _home_override, app_dir, documents_dir, set_profile_dir
+from .paths import _home_override, app_dir, documents_dir, profile_output_name, set_profile_dir
 
 log = logging.getLogger("studia")
 MAIN = "main"
@@ -178,8 +178,8 @@ def output_dir_for(acc: Account, display: str) -> Path:
         return default_output_dir()
     if _home_override() is not None:
         return acc.path / "output"
-    label = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", display or acc.username or acc.id).strip(" .") or acc.id
-    return documents_dir() / f"IEUStudia - {label[:60]}"
+    label = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", display or acc.username or acc.id).strip(" .")[:60].rstrip(" .")
+    return documents_dir() / profile_output_name(label or acc.id)
 
 
 def seed(acc: Account, profile: Any, courses: list[Any], base_settings: Any) -> None:
