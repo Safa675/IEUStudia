@@ -41,7 +41,10 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DRepoUrl=${{ github.server_url }}/${{ github.repository }}" packaging\IEUStudia.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
           Compress-Archive -Path build\dist\IEUStudia -DestinationPath "build\installer\IEUStudia-$version-portable.zip"
-          Get-ChildItem build\installer | ForEach-Object { "{0}  {1:N0} MB  SHA256 {2}" -f $_.Name, ($_.Length / 1MB), (Get-FileHash $_.FullName).Hash } | Tee-Object build\installer\SHA256SUMS.txt
+          $files = @(Get-ChildItem build\installer -File | Where-Object { $_.Name -like "IEUStudia-*$version*" })
+          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content build\installer\SHA256SUMS.txt -Encoding ascii
+          Get-Content build\installer\SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         if: github.ref_type == 'tag'
         with:

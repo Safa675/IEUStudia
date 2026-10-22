@@ -6,6 +6,7 @@
   Output in build\installer\:
     IEUStudia-Setup-<version>.exe     per-user installer (no admin rights), the file to share in GitHub Releases
     IEUStudia-<version>-portable.zip  the same app as a folder (run IEUStudia.exe)
+    SHA256SUMS.txt                    the SHA-256 of both, as sha256sum writes it
   Needs uv (https://docs.astral.sh/uv/) and, for the installer, Inno Setup 6 (https://jrsoftware.org/isinfo.php).
 #>
 param([switch]$NoInstaller)
@@ -44,6 +45,11 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
         Write-Host "Installer: build\installer\IEUStudia-Setup-$version.exe" -ForegroundColor Green
     }
+
+    $files = @(Get-ChildItem "build\installer" -File | Where-Object { $_.Name -like "IEUStudia-*$version*" })
+    $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+        Set-Content "build\installer\SHA256SUMS.txt" -Encoding ascii
+    Get-Content "build\installer\SHA256SUMS.txt"
 } finally {
     Pop-Location
 }
