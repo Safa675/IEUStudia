@@ -20,17 +20,21 @@ from .paths import db_path
 from .sync import SyncService
 
 log = logging.getLogger("studia")
+RENAME_KEY = "output_renamed"          # library meta: an output folder rename that is not finished yet
 
 
 class Services:
-    def __init__(self, debug: bool = False) -> None:
+    def __init__(self, debug: bool = False, migrate_output: bool = True) -> None:
+        """``migrate_output``: rename an output folder of the app's earlier name (only the app does that, never a
+        command-line run next to it)."""
         self.log = setup_logging(debug)
         self._lock = threading.RLock()
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self.settings: Settings = load_settings()
         self.lib = Library(db_path())
         self.lib.reset_interrupted()
-        self._migrate_output_root()
+        if migrate_output:
+            self._migrate_output_root()
         self.sync = SyncService(self.lib, lambda: self.settings, self.log)
         from .chat import ChatService
         from .jobs import JobManager
@@ -51,27 +55,57 @@ class Services:
     def _migrate_output_root(self) -> None:
         """An output folder that still has the app's earlier name (Documents\\Studia or Documents\\LectureScribe, a
         profile's Documents\\Studia - <name>) gets the IEUStudia name once: it is renamed (same drive, so instant)
-        unless the new name is taken, and the paths stored for its files follow. Folders the user chose keep theirs."""
+        unless the new name is taken, and the paths stored for its files follow. Folders the user chose keep theirs.
+
+        The rename is noted in the library right away, so a start that stops before the paths and the setting follow
+        (they can take seconds) is finished by the next one, even if something put a folder of the old name back."""
+        import json
+
         from .paths import _home_override, renamed_output_path
 
+        if _home_override() is not None:
+            return
+        try:
+            begun = json.loads(self.lib.get_meta(RENAME_KEY) or "{}")
+        except ValueError:
+            begun = {}
+        if begun.get("to") and Path(begun["to"]).is_dir():
+            self._finish_rename(Path(begun["from"]), Path(begun["to"]))
+            return
         old = Path(self.settings.output_dir)
         new = renamed_output_path(old)
-        if _home_override() is not None or new is None or not old.parent.is_dir():
+        if new is None or not old.parent.is_dir():
             return
         try:
             if old.is_dir():
                 if new.is_dir() and not any(new.iterdir()):
                     new.rmdir()                                # empty, e.g. made by an earlier start
-                if new.exists():
+                if not new.exists():
+                    os.replace(old, new)
+                    self.lib.set_meta(RENAME_KEY, json.dumps({"from": str(old), "to": str(new)}, ensure_ascii=False))
+                elif any((old / name).is_dir() for name in self._app_folders()):
                     self.log.info("Keeping the output folder %s: %s exists too", old, new)
                     return
-                os.replace(old, new)
+                # else another profile sharing the folder renamed it, and something put the old name back
+            elif not new.is_dir():
+                return                                         # neither is there (a drive not connected?): wait
         except OSError:                                        # e.g. a file in it is open: try again next start
             self.log.warning("Could not rename %s to %s", old, new, exc_info=True)
             return
-        self.rebase_output_paths(old, new)                     # also after a start that stopped right after renaming
+        self._finish_rename(old, new)
+
+    def _finish_rename(self, old: Path, new: Path) -> None:
+        self.rebase_output_paths(old, new)
         self.update_settings({"output_dir": str(new)})
+        self.lib.set_meta(RENAME_KEY, "")
         self.log.info("Output folder %s -> %s", old, new)
+
+    def _app_folders(self) -> set[str]:
+        """The folders the app writes in the output folder: one per course, local files, weekly digests."""
+        from .outputs.writer import course_folder_name
+
+        courses = self.lib.courses(True)
+        return {course_folder_name(c, courses) for c in courses} | {"Local files", "Weekly digests"}
 
     def rebase_output_paths(self, old_root: Path, new_root: Path) -> None:
         """Point the paths stored for files in ``old_root`` (slide images, downloaded materials, plan and digest
@@ -186,15 +220,11 @@ class Services:
         the number of folders copied."""
         import shutil
 
-        from .outputs.writer import course_folder_name
-
         old_root, new_root = Path(old_root), Path(new_root)
         if not old_root.exists() or old_root.resolve() == new_root.resolve():
             return 0
-        courses = self.lib.courses(True)
-        names = {course_folder_name(c, courses) for c in courses} | {"Local files", "Weekly digests"}
         copied = 0
-        for name in sorted(names):
+        for name in sorted(self._app_folders()):
             src = old_root / name
             if src.is_dir() and not new_root.resolve().is_relative_to(src.resolve()):
                 shutil.copytree(src, new_root / name, dirs_exist_ok=True)

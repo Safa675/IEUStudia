@@ -82,18 +82,31 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  data: String;
+  data: array[0..2] of String;
+  names: String;
+  i: Integer;
 begin
   if CurUninstallStep = usUninstall then
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'IEUStudia');
   if CurUninstallStep = usPostUninstall then
   begin
-    data := ExpandConstant('{localappdata}\IEUStudia');
-    if DirExists(data) and not UninstallSilent() then
+    { the data folder, and one under the app's earlier names that was never moved (it has a library) }
+    data[0] := ExpandConstant('{localappdata}\IEUStudia');
+    data[1] := ExpandConstant('{localappdata}\Studia');
+    data[2] := ExpandConstant('{localappdata}\LectureScribe');
+    names := '';
+    for i := 0 to 2 do
+      if DirExists(data[i]) and ((i = 0) or FileExists(data[i] + '\library.db')) then
+        names := names + #13#10 + data[i]
+      else
+        data[i] := '';
+    if (names <> '') and not UninstallSilent() then
       if MsgBox('Also delete IEUStudia''s data on this PC?' + #13#10#13#10 +
                 'This removes your settings, the stored (encrypted) IEULearn login, the library and the downloaded ' +
-                'models in ' + data + '. Your transcripts and notes in your Documents folder are kept.',
+                'models in:' + names + #13#10#13#10 + 'Your transcripts and notes in your Documents folder are kept.',
                 mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
-        DelTree(data, True, True, True);
+        for i := 0 to 2 do
+          if data[i] <> '' then
+            DelTree(data[i], True, True, True);
   end;
 end;

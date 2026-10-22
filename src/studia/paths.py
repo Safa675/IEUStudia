@@ -47,24 +47,40 @@ def _legacy_data() -> Path | None:
     return next((root / name for name in LEGACY_NAMES if (root / name / "library.db").exists()), None)
 
 
+def _prune_empty(path: Path) -> None:
+    """Remove the empty folders in ``path``, and ``path`` itself if nothing else is in it (never a file)."""
+    for d in sorted((p for p in path.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True) + [path]:
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+
 def migrate_legacy_data() -> str:
     """Move the data folder of the app's earlier name (``%LOCALAPPDATA%\\Studia`` or ``LectureScribe``) to
     ``%LOCALAPPDATA%\\IEUStudia`` (once, before anything uses it).
 
-    Same drive, so it is a rename. If a new folder already exists without a library (e.g. only logs),
-    the old folder's entries are moved into it. Returns "moved", "none", "skipped" or "failed: …"."""
+    Same drive, so it is a rename. A new folder that already exists without a library is dropped if it holds only
+    empty folders; otherwise (e.g. logs) the old folder's entries are moved into it, the library last, so that the
+    old folder stays in use, and the move is tried again next time, until everything else has moved.
+    Returns "moved", "none", "skipped" or "failed: …"."""
     if _home_override() is not None:
         return "skipped"
     new, old = _local_root() / APP_NAME, _legacy_data()
     if old is None or (new / "library.db").exists():
         return "none"
     try:
+        if new.is_dir():
+            _prune_empty(new)
         if not new.exists():
             os.replace(old, new)
         else:
-            for child in old.iterdir():
-                if not (new / child.name).exists():
-                    shutil.move(str(child), str(new / child.name))
+            for child in sorted(old.iterdir(), key=lambda c: c.name.startswith("library.db")):
+                target = new / child.name
+                if target.is_dir():
+                    _prune_empty(target)
+                if not target.exists():
+                    shutil.move(str(child), str(target))
             if not any(old.iterdir()):
                 old.rmdir()
         _legacy_in_use.cache_clear()

@@ -13,7 +13,7 @@ from pathlib import Path
 def _services():
     from .services import Services
 
-    return Services()
+    return Services(migrate_output=False)          # the app may be open: renaming its output folder is its job
 
 
 def cmd_login(args: argparse.Namespace) -> int:

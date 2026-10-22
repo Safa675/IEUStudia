@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from studia import accounts, paths
+from studia import accounts, paths, services
 from studia.config import Settings, load_settings, save_settings
 from studia.coursesite import Resource, Unit
 from studia.domain import Course
@@ -54,11 +54,51 @@ def test_studia_data_folder_wins_over_an_older_one(tmp_path, monkeypatch):
 def test_data_folder_merges_into_a_new_folder_without_library(tmp_path, monkeypatch):
     _real_mode(tmp_path, monkeypatch)
     old, new = tmp_path / "local" / "Studia", tmp_path / "local" / "IEUStudia"
-    old.mkdir(parents=True)
+    (old / "logs").mkdir(parents=True)
     (old / "library.db").write_text("db")
+    (old / "logs" / "studia.log").write_text("old")
     (new / "logs").mkdir(parents=True)                  # e.g. created by an earlier start
+    (new / "logs" / "studia.log").write_text("new")
+    (new / "models").mkdir()                            # empty: the old models take its place
+    (old / "models" / "small").mkdir(parents=True)
+    (old / "models" / "small" / "model.bin").write_bytes(b"m")
     assert paths.migrate_legacy_data() == "moved"
-    assert (new / "library.db").exists() and (new / "logs").is_dir() and not old.exists()
+    assert (new / "library.db").exists() and (new / "models" / "small" / "model.bin").exists()
+    assert (new / "logs" / "studia.log").read_text() == "new" and (old / "logs" / "studia.log").exists()
+
+
+def test_a_new_data_folder_with_only_empty_folders_is_replaced(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    old, new = tmp_path / "local" / "Studia", tmp_path / "local" / "IEUStudia"
+    (old / "models").mkdir(parents=True)
+    (old / "library.db").write_text("db")
+    (new / "models").mkdir(parents=True)
+    assert paths.migrate_legacy_data() == "moved"
+    assert (new / "library.db").exists() and not old.exists()
+
+
+def test_a_merge_that_fails_keeps_the_old_folder_and_is_tried_again(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    old, new = tmp_path / "local" / "Studia", tmp_path / "local" / "IEUStudia"
+    (old / "transcripts").mkdir(parents=True)
+    for name in ("library.db", "settings.json", "secrets.bin"):
+        (old / name).write_text(name)
+    (new / "logs").mkdir(parents=True)
+    (new / "logs" / "studia.log").write_text("x")
+    real = paths.shutil.move
+
+    def busy(src, dst):
+        if src.endswith("settings.json"):
+            raise PermissionError(32, "in use")
+        return real(src, dst)
+
+    monkeypatch.setattr(paths.shutil, "move", busy)
+    assert paths.migrate_legacy_data().startswith("failed")
+    assert (old / "library.db").exists() and paths.app_dir() == old      # the library moves last: still the old one
+    monkeypatch.setattr(paths.shutil, "move", real)
+    assert paths.migrate_legacy_data() == "moved"
+    assert all((new / n).exists() for n in ("library.db", "settings.json", "secrets.bin", "transcripts", "logs"))
+    assert not old.exists() and paths.app_dir() == new
 
 
 def test_data_folder_is_not_touched_with_studia_home(tmp_path, monkeypatch):
@@ -184,6 +224,59 @@ def test_a_rename_that_stopped_halfway_is_finished(tmp_path, monkeypatch):
     try:
         assert s.settings.output_dir == str(new) and not old.exists()
         assert _stored(s)["digest"] == str(new / files["digest"].relative_to(old))
+    finally:
+        _close(s)
+
+
+def test_a_noted_rename_is_finished_even_if_the_old_folder_came_back(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    old, new = tmp_path / "docs" / "Studia", tmp_path / "docs" / "IEUStudia"
+    files = _seed(old, tmp_path / "elsewhere")
+    os.replace(old, new)
+    lib = Library(paths.db_path())
+    lib.set_meta(services.RENAME_KEY, json.dumps({"from": str(old), "to": str(new)}))
+    lib.close()
+    (old / "MATH 240").mkdir(parents=True)                # e.g. an editor saved an open transcript again
+    (old / "MATH 240" / "day.md").write_text("x")
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(new) and _stored(s)["pdf"] == str(new / files["pdf"].relative_to(old))
+        assert s.lib.get_meta(services.RENAME_KEY) == "" and (old / "MATH 240" / "day.md").exists()
+    finally:
+        _close(s)
+
+
+def test_a_folder_put_back_without_the_apps_files_does_not_hold_the_rename(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    old, new = tmp_path / "docs" / "Studia", tmp_path / "docs" / "IEUStudia"
+    files = _seed(old, tmp_path / "elsewhere")
+    os.replace(old, new)                                  # another profile sharing the folder renamed it
+    (old / ".obsidian").mkdir(parents=True)
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(new) and _stored(s)["slide"] == str(new / files["slide"].relative_to(old))
+    finally:
+        _close(s)
+
+
+def test_an_output_folder_that_is_not_there_is_left_alone(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    (tmp_path / "docs").mkdir()
+    save_settings(Settings(output_dir=str(tmp_path / "docs" / "Studia")))     # e.g. on a drive that is not connected
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(tmp_path / "docs" / "Studia")
+    finally:
+        _close(s)
+
+
+def test_the_command_line_never_renames_the_output_folder(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    old = tmp_path / "docs" / "Studia"
+    _seed(old, tmp_path / "elsewhere")
+    s = Services(migrate_output=False)
+    try:
+        assert s.settings.output_dir == str(old) and old.is_dir()
     finally:
         _close(s)
 

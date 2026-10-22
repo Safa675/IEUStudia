@@ -273,7 +273,9 @@ def jpeg_size(path: str) -> tuple[int, int]:
 
 def save_index(path: Path, slides: list[Slide]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps([dc.asdict(s) for s in slides], ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")                 # never a half-written index, even if the app stops
+    tmp.write_text(json.dumps([dc.asdict(s) for s in slides], ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def load_index(path: Path) -> list[Slide]:

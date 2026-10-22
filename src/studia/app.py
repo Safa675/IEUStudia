@@ -99,9 +99,15 @@ def main(argv: Optional[list[str]] = None) -> None:
         import traceback
 
         log.exception("IEUStudia crashed")
+        try:                                     # the folder in use (an earlier name's until it is moved)
+            from .paths import logs_dir
+
+            where = str(logs_dir())
+        except Exception:  # noqa: BLE001
+            where = "%LOCALAPPDATA%\\IEUStudia\\logs"
         ctypes.windll.user32.MessageBoxW(None, f"IEUStudia could not start:\n\n{exc}\n\n"
                                          f"{traceback.format_exc(limit=3)}\nDetails are in the log folder "
-                                         f"(%LOCALAPPDATA%\\IEUStudia\\logs).", APP_NAME, 0x10)
+                                         f"({where}).", APP_NAME, 0x10)
 
 
 def _selftest(out: str) -> int:
