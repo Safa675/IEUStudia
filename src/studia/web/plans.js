@@ -277,7 +277,7 @@
   }
   function costHTML() {
     const e = D.est, ai = (D.opts && D.opts.ai) || {};
-    if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? "Plans and prep packs need Claude or ChatGPT (the offline model is too small)." : "Set up Claude or ChatGPT in Settings → AI first."}</span>`;
+    if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? "Plans and prep packs need ChatGPT or Claude (the offline model is too small)." : "Set up ChatGPT or Claude in Settings → AI first."}</span>`;
     if (!e) return `<span class="dim">${SPIN()} Estimating…</span>`;
     return `<div><b>≈${fmtK(e.main_input + (e.verify_input || 0))} tokens</b> from your ${esc(St.aiName())} plan · ${e.materials_used.length} files and ${e.days_used.length} lectures read${e.minutes ? ` · ${esc(e.minutes)}` : ""}</div>
       <div class="dim sm">${I("info", "xs")} Runs in the background. AI can make mistakes — the plan shows the caption quotes it relied on.</div>`;

@@ -102,7 +102,7 @@
   };
   function stepWelcome() {
     return `<div class="su-hero"><img class="su-logo" src="../assets/logo.svg" alt=""><div><h1>Welcome to IEUStudia</h1>
-        <p class="lead">Your IEULearn courses, Panopto lectures, materials and announcements in one place — lectures transcribed on this PC (English with Turkish passages), the lecturer's heads-ups about quizzes and exams, and optional AI help with your own Claude or ChatGPT plan.</p></div></div>
+        <p class="lead">Your IEULearn courses, Panopto lectures, materials and announcements in one place — lectures transcribed on this PC (English with Turkish passages), the lecturer's heads-ups about quizzes and exams, and optional AI help with your own ChatGPT or Claude plan.</p></div></div>
       <div class="card su-notice"><h3>${I("shield", "sm")} Before you start</h3>${NOTICE}
         <label class="su-accept"><input type="checkbox" class="check" data-act="su-accept" ${U.accepted ? "checked" : ""}> I have read this and want to continue</label></div>`;
   }
@@ -234,7 +234,7 @@
     const rec = U.st.verdict.recommended_llm;
     const llmBody = rec ? `<div class="presets">${loc.map((m) => `<button class="preset ${U.ch.llm === m.id ? "on" : ""}" data-act="su-llm" data-id="${m.id}" ${m.id === "qwen3-4b" && rec !== "qwen3-4b" ? "disabled" : ""}>
         <div class="n">${esc(m.label)} ${m.id === rec ? `<span class="pill now">Fits this PC</span>` : ""}<span class="sz">${gb(m.size_mb)}${m.ready ? " · on this PC" : ""}</span></div><div class="d">${esc(m.description)}</div></button>`).join("")}</div>
-        <div class="dim su-note">Runs entirely on this PC. Fine for short notes and simple questions; study plans and prep packs need Claude or ChatGPT.${U.st.verdict.gpu ? "" : " Without an NVIDIA GPU it writes slowly (notes for a lecture take several minutes)."}</div>`
+        <div class="dim su-note">Runs entirely on this PC. Fine for short notes and simple questions; study plans and prep packs need ChatGPT or Claude.${U.st.verdict.gpu ? "" : " Without an NVIDIA GPU it writes slowly (notes for a lecture take several minutes)."}</div>`
       : `<div class="callout warning">${I("alert")}<div>This PC has too little memory for an offline model (8 GB needed).</div></div>`;
     return `<h2>AI help (optional)</h2><p class="lead">Study notes, chat about your lectures, video study plans and exam prep packs. Pick what you have — everything else in IEUStudia works without AI.</p>
       ${aiCard("chatgpt", "ChatGPT", "Needs a ChatGPT Plus or Pro subscription.", connectHTML("chatgpt"))}

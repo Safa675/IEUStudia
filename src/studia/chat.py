@@ -356,7 +356,7 @@ class ChatService:
             raise ValueError("Type a question first.")
         with self._lock:
             if chat_id in self._running:
-                raise RuntimeError("Claude is still answering the previous question.")
+                raise RuntimeError(f"{ai.ai_name()} is still answering the previous question.")
             stop = self._running[chat_id] = threading.Event()
         try:
             history = self.lib.chat_messages(chat_id)
@@ -379,7 +379,7 @@ class ChatService:
             raise RuntimeError("Only a failed last answer can be tried again.")
         with self._lock:
             if chat_id in self._running:
-                raise RuntimeError("Claude is still answering the previous question.")
+                raise RuntimeError(f"{ai.ai_name()} is still answering the previous question.")
         self.lib.delete_chat_messages(chat_id, question["seq"])
         return {**self.send(chat_id, question["text"]), "removed_from": question["seq"], "question": question["text"]}
 
@@ -467,7 +467,7 @@ class ChatService:
             self._emit(cid, seq, state, text, usage=usage, limits=ai.usage_limits())
         except Exception as exc:  # noqa: BLE001 - reported in the chat
             log.warning("Chat %s failed: %s", cid, exc)
-            msg = str(exc) or "Claude failed."
+            msg = str(exc) or f"{ai.ai_name()} could not answer."
             self.lib.update_chat_message(cid, seq, text, "error", {"error": msg})
             self._drop(cid)
             self._emit(cid, seq, "error", text, error=msg, limits=ai.usage_limits())
@@ -523,15 +523,16 @@ class ChatService:
         if course is None:
             raise RuntimeError("Unknown course.")
         days = ", ".join(f"{d['long']} ({d['kind']})" for d in v["days"])
+        who = ai.PROVIDER_LABELS.get(ai.provider()) or "AI"
         lines = [f"# {v['title']}", "",
                  f"**Course:** {v['course_name']}  ", f"**Class days:** {days}  ",
-                 f"**Model:** Claude {v['model'].title()}" + (" · highlights only" if v["focus"] == "highlights" else ""),
-                 "", f"*Chat with Claude in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
+                 f"**Model:** {ai.model_label(v['model'])}" + (" · highlights only" if v["focus"] == "highlights" else ""),
+                 "", f"*Chat with {who} in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
         for m in v["messages"]:
             if m["role"] == "user":
                 lines += [f"**You:** {m['text'].strip()}", ""]
             elif m["text"].strip():
-                lines += ["**Claude:**", "", m["text"].strip() + (" *(stopped)*" if m["status"] == "stopped" else ""),
+                lines += [f"**{who}:**", "", m["text"].strip() + (" *(stopped)*" if m["status"] == "stopped" else ""),
                           "", "---", ""]
         stamp = ((self.lib.get_chat(chat_id) or {}).get("created_at") or "")[:10]
         name = safe_name(f"{stamp} - {v['title']}" if stamp else v["title"], limit=110) + f" [{chat_id[:6]}]"

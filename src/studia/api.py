@@ -863,8 +863,10 @@ class Api:
 
     @safe
     def ai_notes(self, day_key: str, template: str = "notes", include_slides: bool = False) -> dict[str, Any]:
+        from .ai import ai_name
+
         if self._ai_cancel is not None:
-            return {"ok": False, "error": "Claude is already working on something."}
+            return {"ok": False, "error": f"{ai_name()} is already working on something."}
         cancel = threading.Event()
         self._ai_cancel = cancel
 
@@ -932,9 +934,9 @@ class Api:
 
         info = claude_info()
         if not info["available"]:
-            return {"ok": False, "error": "Set up Claude or ChatGPT in Settings → AI first (needed to build the plan)."}
+            return {"ok": False, "error": "Set up ChatGPT or Claude in Settings → AI first (needed to build the plan)."}
         if info.get("can_plans") is False:
-            return {"ok": False, "error": "Study plans need Claude or ChatGPT — the offline model is too small for them."}
+            return {"ok": False, "error": "Study plans need ChatGPT or Claude — the offline model is too small for them."}
         pid = self._s.plans.create(course_id, scope or {})
         self._s.plans.start(pid)
         return {"ok": True, "plan": self._s.lib.plan_brief(pid)}
@@ -1018,14 +1020,15 @@ class Api:
 
     @safe
     def digest_summary(self, offset: int = 0) -> dict[str, Any]:
-        """A short written summary of the week by Claude (light model); saved, and written to the output folder."""
-        from .ai import claude_info, one_shot
+        """A short written summary of the week by the chosen AI (light model); saved, and written to the output
+        folder."""
+        from .ai import ai_name, claude_info, one_shot
         from .digest import digest_markdown, digest_prompt, weekly_digest
 
         if not claude_info()["available"]:
-            return {"ok": False, "error": "Claude Code is not installed on this PC."}
+            return {"ok": False, "error": "Set up AI in Settings → AI first."}
         if self._ai_cancel is not None:
-            return {"ok": False, "error": "Claude is already working on something."}
+            return {"ok": False, "error": f"{ai_name()} is already working on something."}
         cancel = threading.Event()
         self._ai_cancel = cancel
         offset = int(offset or 0)
@@ -1049,7 +1052,8 @@ class Api:
                 self._s.lib.set_meta(f"digest:{d['week']['start']}", json.dumps(saved, ensure_ascii=False))
                 self._push({"type": "digest", "phase": "done", "offset": offset, **saved})
             except Exception as exc:  # noqa: BLE001
-                self._push({"type": "digest", "phase": "error", "offset": offset, "message": str(exc) or "Claude failed"})
+                self._push({"type": "digest", "phase": "error", "offset": offset,
+                            "message": str(exc) or f"{ai_name()} could not write the summary."})
             finally:
                 self._ai_cancel = None
 

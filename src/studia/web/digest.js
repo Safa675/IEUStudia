@@ -50,7 +50,7 @@
         <div class="dg-nav"><button class="btn ghost icon sm" data-act="dg-week" data-d="-1" title="Previous week">${I("chevron-left", "sm")}</button>
           <button class="btn ghost sm" data-act="dg-week" data-d="0" ${d.week.offset === 0 ? "disabled" : ""}>This week</button>
           <button class="btn ghost icon sm" data-act="dg-week" data-d="1" title="Next week">${I("chevron-right", "sm")}</button>
-          <button class="btn primary sm" data-act="dg-summary" ${ai.available && !g.running ? "" : "disabled"} title="${ai.available ? `A short written summary by ${St.aiName()} (light model)` : "Install Claude Code to enable"}">${I("ai", "sm")} ${g.summary ? "Summarize again" : "Summarize with Claude"}</button></div></div>
+          <button class="btn primary sm" data-act="dg-summary" ${ai.available && !g.running ? "" : "disabled"} title="${ai.available ? `A short written summary by ${St.aiName()} (light model)` : St.aiHint()}">${I("ai", "sm")} ${g.summary ? "Summarize again" : `Summarize with ${esc(St.aiName())}`}</button></div></div>
       ${sum ? `<div class="card dg-summary">${sum}</div>` : ""}
       ${todo ? `<div class="section-title">${I("list-checks")} To do</div><div class="card dg-todos">${todo}</div>` : ""}
       <div class="section-title">${I("book")} Your courses this week</div>

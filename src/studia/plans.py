@@ -1284,7 +1284,7 @@ class PlanRunner:
         add_usage("write", res)
         md = (res.get("text") or "").strip()
         if len(md) < 200:
-            raise RuntimeError("Claude returned an empty prep pack. Try again.")
+            raise RuntimeError("The AI returned an empty prep pack. Try again.")
         title = prep_title(scope, facts)
         result = {"kind": "prep", "title": title, "markdown": md,
                   "materials_missing": facts.get("materials_missing", []),

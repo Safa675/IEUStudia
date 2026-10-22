@@ -143,7 +143,7 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     for m in MODEL_PRESETS:
         print(f"Model {m:15s}", local_model_path(m) or "not downloaded")
     print("Signed in:    ", s.sync.profile, "| credentials stored:", s.sync.has_credentials())
-    print("Claude CLI:   ", claude_info())
+    print("AI:           ", claude_info())
     print("PDF renderer: ", find_browser() or "none (AI pack without PDF)")
     return 0
 

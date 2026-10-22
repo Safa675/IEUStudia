@@ -417,7 +417,7 @@
   function heroHTML(c) {
     const code = esc(c.code).replace(" ", "<br>");
     const ai = S.system.ai || {};
-    const ask = (c.counts.done_any ?? c.counts.done) ? `<button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${ai.available ? "" : "disabled"} title="${ai.available ? `Chat with ${aiName()} about this course's lectures` : aiHint()}">${I("chat", "sm")} Ask Claude</button>` : "";
+    const ask = (c.counts.done_any ?? c.counts.done) ? `<button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${ai.available ? "" : "disabled"} title="${ai.available ? `Chat with ${aiName()} about this course's lectures` : aiHint()}">${I("chat", "sm")} Ask ${esc(aiName())}</button>` : "";
     return `<div class="card hero"><div class="badge">${code}</div><div class="grow">
       <h1>${esc(c.display_name)}</h1>
       <div class="meta">${c.instructor ? `<span>${I("user", "sm")}${esc(c.instructor)}</span>` : ""}${c.term ? `<span>${I("calendar", "sm")}${esc(c.term)}</span>` : ""}${(c.my_section || c.section) ? `<span>${I("users", "sm")}Section ${esc(c.available_sections.length && c.my_section ? c.my_section : c.section)}</span>` : ""}</div>
@@ -939,6 +939,7 @@
     return d.toDateString() === new Date().toDateString() ? hm : `${WD[d.getDay()]} ${hm}`;
   }
   function limitsHTML() {
+    if ((S.system.ai || {}).provider !== "claude") return "";       // only Claude Code reports them
     const L = S.limits || {};
     const one = (k, label) => {
       const w = L[k]; if (!w || w.used == null) return "";
@@ -1023,7 +1024,7 @@
     const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming) : { text: m.text, html: "" };   // buttons the AI suggested
     const body = acts.text ? mdToHtml(acts.text, { cites: true }) + acts.html : streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "";
     const foot = streaming ? `<span class="dim">${SPIN()} ${esc(aiName())} is answering…</span>`
-      : `${m.status === "stopped" ? `<span class="pill">Stopped</span>` : ""}${tok ? `<span class="tok" title="Tokens this answer used. Text read from Claude's prompt cache is much cheaper than new text.">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} Copy</button>` : ""}`;
+      : `${m.status === "stopped" ? `<span class="pill">Stopped</span>` : ""}${tok ? `<span class="tok" title="Tokens this answer used. Text read from the prompt cache is much cheaper than new text.">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} Copy</button>` : ""}`;
     const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} Try again</button></div>` : "";
     const err = m.status === "error" ? `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || `${aiName()} could not answer.`)}${retry}</div></div>` : "";
     return `<div class="msg ai" data-seq="${m.seq}"><div class="ai-av">${I("ai")}</div><div class="ai-body">${body ? `<div class="md">${body}</div>` : ""}${err}<div class="msg-foot">${foot}</div></div></div>`;

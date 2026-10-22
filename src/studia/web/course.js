@@ -500,7 +500,7 @@
         r.missing.length ? `<button class="btn sm" data-act="rd-download">${I("download", "sm")} Download ${r.missing.length}</button>` : ""],
       [r.readable && r.read === r.readable, `Lectures read: ${r.read} of ${r.readable}`, "ticked when you open a transcript, or tick them below", ""],
       [!!(prep && prep.status === "done") || !!(video && video.status === "done"), "A prep pack or video plan for it",
-        plans.length ? plans.map((p) => `${(p.scope || {}).kind === "prep" ? "prep pack" : "video plan"}: ${esc(p.status === "done" ? "ready" : p.status)}`).join(" · ") : "made by AI when you ask (Claude or ChatGPT)",
+        plans.length ? plans.map((p) => `${(p.scope || {}).kind === "prep" ? "prep pack" : "video plan"}: ${esc(p.status === "done" ? "ready" : p.status)}`).join(" · ") : "made by AI when you ask (ChatGPT or Claude)",
         `<span class="rd-acts">${plans.length ? `<button class="btn sm" data-act="plan-open" data-id="${esc(plans[0].id)}">${I("arrow-right", "sm")} Open</button>`
           : `<button class="btn sm" data-act="plan-new" data-id="${esc(c.id)}" data-kind="prep" data-focus="${esc(e.name)}">${I("cap", "sm")} Prep pack</button>
              <button class="btn sm" data-act="plan-new" data-id="${esc(c.id)}" data-kind="videos" data-focus="${esc(e.name)}">${I("youtube", "sm")} Video plan</button>`}</span>`],

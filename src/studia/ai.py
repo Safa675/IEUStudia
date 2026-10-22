@@ -593,6 +593,24 @@ def claude_info() -> dict[str, Any]:          # the name the rest of the app use
     return ai_info()
 
 
+def ai_name() -> str:
+    """The chosen AI in messages: "ChatGPT", "Claude" or "The offline model"."""
+    p = provider()
+    return "The offline model" if p == "local" else PROVIDER_LABELS.get(p) or "The AI"
+
+
+REASONING = {"haiku": "quick", "sonnet": "standard", "opus": "thorough"}      # the app's levels, for ChatGPT
+
+
+def model_label(level: str) -> str:
+    """The chosen AI with the app's model level, e.g. in an exported chat: "Claude Sonnet", "ChatGPT, standard
+    reasoning"."""
+    p = provider()
+    if p in ("chatgpt", "codex"):
+        return f"ChatGPT, {REASONING.get(level, level)} reasoning"
+    return f"Claude {level.title()}" if p == "claude" else PROVIDER_LABELS.get(p) or "AI"
+
+
 def _run(cmd: list[str], timeout: float = 20, env: Optional[dict[str, str]] = None) -> tuple[int, str]:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=_NO_WINDOW,
@@ -758,8 +776,10 @@ def _codex_one_shot(system_prompt: str, content: list[dict[str, Any]], model: st
     if not texts:
         last = error or next((ln for ln in reversed(err.splitlines()) if "ERROR" in ln and "rmcp" not in ln), "")
         raise RuntimeError(_codex_error(last))
+    from . import appconfig
+
     return {"text": _join(texts), "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
-            "model": model}
+            "model": appconfig.load().codex_model or "Codex's default model"}
 
 
 class ChatGPTSession:

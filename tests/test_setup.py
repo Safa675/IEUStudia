@@ -232,6 +232,14 @@ def test_no_ai_and_offline_choices(monkeypatch):
     assert info["label"] == "Offline model" and not info["available"] and not info["can_plans"]
 
 
+def test_messages_name_the_chosen_ai():
+    for provider, name, label in (("chatgpt", "ChatGPT", "ChatGPT, standard reasoning"),
+                                  ("codex", "ChatGPT", "ChatGPT, standard reasoning"),
+                                  ("claude", "Claude", "Claude Sonnet"), ("local", "The offline model", "Offline model")):
+        appconfig.update({"ai_provider": provider})
+        assert (ai.ai_name(), ai.model_label("sonnet")) == (name, label)
+
+
 def test_offline_model_prompt_and_chunks(monkeypatch):
     from studia import local_llm
 

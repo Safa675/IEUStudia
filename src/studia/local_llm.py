@@ -1,6 +1,6 @@
 """The offline AI option: a small instruct model (Qwen3, Apache-2.0) run by CTranslate2 — the engine that already runs
 the speech model, so nothing else is installed. Good enough for short study notes, a weekly summary and simple
-questions about a lecture; study plans and prep packs need Claude or ChatGPT.
+questions about a lecture; study plans and prep packs need ChatGPT or Claude.
 
 Long transcripts are summarised in parts first (the small model keeps a few thousand tokens in view). On an NVIDIA GPU
 it writes ~40 words/s; on the processor a few words per second, so notes for a lecture take minutes there.
