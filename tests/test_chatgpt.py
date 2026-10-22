@@ -371,12 +371,22 @@ def test_an_earlier_chatgpt_choice_moves_to_the_app_sign_in_once(openai):
     assert appconfig.load().ai_provider == "codex"
 
 
-def test_an_earlier_codex_cli_choice_stays(openai):
+def test_an_earlier_codex_cli_choice_stays(openai, monkeypatch):
     from studia import appconfig
 
-    appconfig.save(appconfig.AppConfig(ai_provider="codex"))              # not signed in in the app: it was the CLI
+    monkeypatch.setattr(ai, "_codex_candidates", lambda: ["C:/tools/codex.exe"])
+    appconfig.save(appconfig.AppConfig(ai_provider="codex"))              # the CLI, never signed in the other way
     appconfig.migrate()
     assert appconfig.load().ai_provider == "codex" and appconfig.load().version == 1
+
+
+def test_an_earlier_chatgpt_choice_without_the_cli_moves_too(openai, monkeypatch):
+    from studia import appconfig
+
+    monkeypatch.setattr(ai, "_codex_candidates", lambda: [])
+    appconfig.save(appconfig.AppConfig(ai_provider="codex"))              # chose ChatGPT but never signed in yet
+    appconfig.migrate()
+    assert appconfig.load().ai_provider == "chatgpt"
 
 
 def test_rs256_verification():

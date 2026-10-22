@@ -271,14 +271,14 @@ def ask_json(system_prompt: str, text: str, *, model: str = "sonnet", effort: st
     res = one_shot(system_prompt, [{"type": "text", "text": text}], model, effort, cancel, None, timeout_s)
     data = parse_json(res["text"])
     if data is None:
-        log.info("Claude's answer was not JSON; asking again")
+        log.info("The answer was not JSON; asking again")
         again = one_shot(system_prompt, [{"type": "text", "text": text + "\n\nReply with the JSON object only."}],
                          model, effort, cancel, None, timeout_s)
         for k, v in again["usage"].items():
             res["usage"][k] = res["usage"].get(k, 0) + v
         data = parse_json(again["text"])
         if data is None:
-            raise RuntimeError("Claude's answer could not be read (it was not valid JSON). Try again.")
+            raise RuntimeError(f"{ai_name()}'s answer could not be read (it was not valid JSON). Try again.")
     return data, res
 
 
@@ -672,15 +672,22 @@ def codex_auth() -> dict[str, Any]:
 CODEX_EFFORT = {"haiku": "low", "sonnet": "medium", "opus": "high"}
 
 
-def _codex_command(work: Path, model: str, effort: str, images: Sequence[Path] = ()) -> list[str]:
+def _codex_model() -> str:
+    """The ChatGPT model chosen in Settings, if the Codex CLI offers it ("" = Codex's default). The setting is shared
+    with "Continue with ChatGPT", whose list can differ."""
     from . import appconfig
 
+    chosen = appconfig.load().codex_model
+    return chosen if chosen in codex_models() else ""
+
+
+def _codex_command(work: Path, model: str, effort: str, images: Sequence[Path] = ()) -> list[str]:
     info = codex_cli_info()
     if not info["available"]:
         raise RuntimeError("The Codex CLI is not installed on this PC (Settings → AI).")
     cmd = [info["path"], "exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
            "-s", "read-only", "-C", str(work), "-c", f'model_reasoning_effort="{CODEX_EFFORT.get(model, effort)}"']
-    chosen = appconfig.load().codex_model
+    chosen = _codex_model()
     if chosen:
         cmd += ["-m", chosen]
     for img in images:
@@ -776,10 +783,8 @@ def _codex_one_shot(system_prompt: str, content: list[dict[str, Any]], model: st
     if not texts:
         last = error or next((ln for ln in reversed(err.splitlines()) if "ERROR" in ln and "rmcp" not in ln), "")
         raise RuntimeError(_codex_error(last))
-    from . import appconfig
-
     return {"text": _join(texts), "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
-            "model": appconfig.load().codex_model or "Codex's default model"}
+            "model": _codex_model() or "Codex's default model"}
 
 
 class ChatGPTSession:

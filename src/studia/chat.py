@@ -390,7 +390,7 @@ class ChatService:
         """The chat's live Claude process, or a new one when there is none for this model and material; for a
         new one the slide images to attach to its first message are returned too (else None)."""
         cid = chat["id"]
-        key = (chat.get("model"), json.dumps(chat.get("scope") or {}, sort_keys=True))
+        key = (ai.provider(), chat.get("model"), json.dumps(chat.get("scope") or {}, sort_keys=True))
         with self._lock:
             live = self._live.get(cid)
             if live is not None and live.alive() and live.key == key:

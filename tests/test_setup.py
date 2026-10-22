@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import threading
 import zipfile
 
 import pytest
@@ -196,6 +197,7 @@ class _FakeProc:
 def test_chatgpt_through_the_codex_cli(monkeypatch):
     appconfig.update({"ai_provider": "codex", "codex_model": "gpt-x"})
     monkeypatch.setattr(ai, "codex_cli_info", lambda: {"available": True, "path": "codex.exe", "version": "0.1"})
+    monkeypatch.setattr(ai, "codex_models", lambda: ["gpt-x"])
     calls = []
 
     def popen(cmd, **kw):
@@ -216,6 +218,9 @@ def test_chatgpt_through_the_codex_cli(monkeypatch):
     assert s.ask([{"type": "text", "text": "q1"}])["text"] == "Hello **notes**"
     s.ask([{"type": "text", "text": "q2"}])
     assert len(calls) == 3                                                            # one exec per turn
+    monkeypatch.setattr(ai, "codex_models", lambda: ["gpt-y"])                       # a model the CLI doesn't offer
+    ai.one_shot("x", [{"type": "text", "text": "y"}])
+    assert "-m" not in calls[-1]
 
     monkeypatch.setattr(ai.subprocess, "Popen", lambda cmd, **kw: _FakeProc([{"type": "error", "message": "You've hit your usage limit"}]))
     with pytest.raises(RuntimeError, match="usage limit"):
@@ -270,3 +275,16 @@ def test_setup_api(monkeypatch):
     done = api.finish_setup()
     assert done["ok"] and done["app"]["onboarded"] and done["app"]["terms_accepted"]
     assert api.get_bootstrap()["app"]["onboarded"]
+    # a finished sign-in or install, and signing out, change whether the AI can be used: the app checks again
+    checked, pushed = threading.Event(), []
+    monkeypatch.setattr(api, "_system_info", checked.set)
+    monkeypatch.setattr(api, "_push", pushed.append)
+    api._ai_event({"type": "chatgpt", "state": "error", "error": "x"})
+    assert pushed and not checked.wait(0.3)
+    api._ai_event({"type": "chatgpt", "state": "done", "error": ""})
+    assert checked.wait(5)
+    checked.clear()
+    from studia import chatgpt
+
+    monkeypatch.setattr(chatgpt, "sign_out", lambda: {"revoked": True})
+    assert api.ai_sign_out("chatgpt")["revoked"] and checked.wait(5)

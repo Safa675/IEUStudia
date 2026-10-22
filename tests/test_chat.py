@@ -218,6 +218,30 @@ def test_slides_go_with_the_first_message_only(env):
     assert ask(env, chat["id"], "q2")["text"].startswith("Answer 2 (images 0")
 
 
+def test_another_ai_choice_gets_its_own_session(env):
+    chat = env.svc.create("c", [DAY1])
+    ask(env, chat["id"], "q1")
+    first = env.svc._live[chat["id"]]
+    made = []
+
+    class Stub:
+        key, last_used = None, 0.0
+
+        def alive(self):
+            return True
+
+        def close(self):
+            pass
+
+        terminate = close
+
+    env.mp.setattr(ai, "new_session", lambda *a, **k: made.append(Stub()) or made[-1])
+    appconfig.update({"ai_provider": "chatgpt"})
+    session, _ = env.svc._session(env.lib.get_chat(chat["id"]))
+    assert session is made[0] and session is not first and session.key[0] == "chatgpt"
+    assert env.svc._session(env.lib.get_chat(chat["id"]))[0] is session
+
+
 def test_export_rename_and_delete(env):
     chat = env.svc.create("c", [DAY1])
     ask(env, chat["id"], "Summarise")

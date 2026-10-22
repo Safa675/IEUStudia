@@ -319,9 +319,15 @@ class Api:
 
         if which == "chatgpt":
             ai_setup.forget_test("chatgpt")
-            return {"ok": True, **chatgpt.start_sign_in(self._push, consent=bool(consent))}
+            return {"ok": True, **chatgpt.start_sign_in(self._ai_event, consent=bool(consent))}
         start_login(which)
         return {"ok": True}
+
+    def _ai_event(self, e: dict[str, Any]) -> None:
+        """A sign-in or an install to the page; once it is through, whether the AI can be used changed."""
+        self._push(e)
+        if e.get("state") == "done":
+            threading.Thread(target=self._system_info, daemon=True).start()
 
     @safe
     def ai_sign_out(self, which: str) -> dict[str, Any]:
@@ -331,14 +337,16 @@ class Api:
         if which != "chatgpt":
             return {"ok": False, "error": "Sign out in Claude Code or the Codex CLI itself."}
         ai_setup.forget_test("chatgpt")
-        return {"ok": True, **chatgpt.sign_out()}
+        out = chatgpt.sign_out()
+        threading.Thread(target=self._system_info, daemon=True).start()
+        return {"ok": True, **out}
 
     @safe
     def ai_install(self, which: str) -> dict[str, Any]:
         """Install Claude Code or the Codex CLI in the background (events: type "ai_setup")."""
         from .ai_setup import start_install
 
-        return {"ok": True, "job": start_install(which, self._push)}
+        return {"ok": True, "job": start_install(which, self._ai_event)}
 
     @safe
     def ai_test(self, which: str) -> dict[str, Any]:

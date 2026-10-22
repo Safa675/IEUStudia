@@ -89,15 +89,16 @@ def update(patch: dict[str, Any]) -> AppConfig:
 
 
 def migrate() -> None:
-    """Once, at start-up: "codex" used to mean ChatGPT either way, through "Continue with ChatGPT" if the user had
-    signed in like that, else through the Codex CLI. Now that sign-in is "chatgpt" and "codex" only the CLI."""
+    """Once, at start-up: "codex" used to mean ChatGPT either way, through "Continue with ChatGPT" (the main way, and
+    the card's own sign-in) or through the Codex CLI. Now that sign-in is "chatgpt" and "codex" only the CLI, which
+    stays the choice only for someone who has the CLI and never signed in the other way."""
     cfg = load()
     if cfg.version >= 1:
         return
     patch: dict[str, Any] = {"version": 1}
     if cfg.ai_provider == "codex":
-        from . import chatgpt
+        from . import ai, chatgpt
 
-        if chatgpt.signed_in():
+        if chatgpt.status()["registered"] or not ai._codex_candidates():
             patch["ai_provider"] = "chatgpt"
     update(patch)
