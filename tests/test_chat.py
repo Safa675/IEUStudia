@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from studia import ai, chat as chat_mod, store
+from studia import ai, appconfig, chat as chat_mod, store
 from studia.chat import ChatService, replay_text
 from studia.config import Settings
 from studia.domain import Course, Recording, Segment, Transcript
@@ -34,6 +34,7 @@ def wait_for(cond, timeout=15.0):
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))          # Claude work folders stay in the test dir
+    appconfig.update({"ai_provider": "claude"})                      # also on a PC without Claude Code (CI)
     monkeypatch.setattr(ai, "_require_claude", lambda: sys.executable)
     monkeypatch.setattr(ai, "_command", lambda model, effort, sp, partial=False: [sys.executable, FAKE, str(sp)])
     with ai._limits_lock:
