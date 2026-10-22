@@ -47,7 +47,7 @@
     const r = await call("ai_status", which || "");
     if (!r.ok) return;
     const before = JSON.stringify(U.ai);
-    U.ai = which && U.ai ? { ...U.ai, ...r } : r;
+    U.ai = which ? { ...(U.ai || {}), ...r } : r;           // one AI's status can come back before the full one
     for (const key of Object.keys(VENDOR)) {
       const a = U.ai[key];
       if (a && (a.logged_in || a.signed_in)) delete U.busy["login:" + key];
@@ -142,7 +142,7 @@
       intro: "IEUStudia talks to Claude through <b>Claude Code</b>, Anthropic's official command-line tool. It's free to install and works with your Claude Pro or Max subscription. It isn't the Claude desktop app, and you won't need to open it yourself.",
       manual: [["Install Claude Code (in PowerShell)", "irm https://claude.ai/install.ps1 | iex"], ["Sign in", "claude auth login"]] },
     codex: { name: "ChatGPT", tool: "Codex CLI", maker: "OpenAI", plans: "ChatGPT Plus or Pro", upgrade: "https://chatgpt.com/pricing",
-      intro: "IEUStudia talks to ChatGPT through OpenAI's <b>Codex CLI</b>, signed in with your ChatGPT account. Pick this if you already use the Codex CLI; IEUStudia can also install it for you. Otherwise ChatGPT at the top is simpler, with nothing to install.",
+      intro: "IEUStudia talks to ChatGPT through OpenAI's <b>Codex CLI</b>, signed in with your ChatGPT account. Pick this if you already use the Codex CLI; IEUStudia can also install it for you. Otherwise plain ChatGPT is simpler, with nothing to install.",
       manual: [["Install the Codex CLI (needs Node.js)", "npm install -g @openai/codex"], ["Sign in", "codex login"]] },
   };
   // ChatGPT: "Continue with ChatGPT" (chatgpt.py), nothing to install
@@ -230,7 +230,7 @@
     if (before.every((s) => s.ok || s.unknown)) { U.autoTested[key] = true; runTest(key); }
   }
   function stepAi() {
-    const loc = (U.ai && U.ai.local.models) || [];
+    const loc = (U.ai && U.ai.local && U.ai.local.models) || [];
     const rec = U.st.verdict.recommended_llm;
     const llmBody = rec ? `<div class="presets">${loc.map((m) => `<button class="preset ${U.ch.llm === m.id ? "on" : ""}" data-act="su-llm" data-id="${m.id}" ${m.id === "qwen3-4b" && rec !== "qwen3-4b" ? "disabled" : ""}>
         <div class="n">${esc(m.label)} ${m.id === rec ? `<span class="pill now">Fits this PC</span>` : ""}<span class="sz">${gb(m.size_mb)}${m.ready ? " · on this PC" : ""}</span></div><div class="d">${esc(m.description)}</div></button>`).join("")}</div>
