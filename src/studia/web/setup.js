@@ -1,5 +1,6 @@
-/* IEUStudia — the first-start setup: welcome and notice, this PC's check, the speech model, AI (Claude / ChatGPT /
- * offline / none), the background helper and notifications, the downloads (with sizes), then signing in.
+/* IEUStudia — the first-start setup: welcome and notice, this PC's check, the speech model, AI (ChatGPT / Claude /
+ * ChatGPT through the Codex CLI / offline / none), the background helper and notifications, the downloads (with
+ * sizes), then signing in.
  * Also the AI, background, storage and about cards of Settings. Plugs into app.js through window.Studia. */
 (function () {
   "use strict";
@@ -33,7 +34,7 @@
     const ready = (id) => (r.catalog.speech.find((x) => x.id === id) || {}).ready;
     U.ch = {
       speech: app.onboarded || ready(r.model) ? r.model : v.recommended_model,
-      ai: app.ai_provider || "",
+      ai: app.ai_provider || "chatgpt",
       llm: app.local_model && app.local_model !== "qwen3-1.7b" ? app.local_model : (v.recommended_llm || "qwen3-1.7b"),
       tray: app.onboarded ? app.tray : true, startup: app.onboarded ? r.startup : true,
       notify_recordings: app.notify_recordings, notify_announcements: app.notify_announcements, notify_materials: app.notify_materials,
@@ -47,10 +48,9 @@
     if (!r.ok) return;
     const before = JSON.stringify(U.ai);
     U.ai = which && U.ai ? { ...U.ai, ...r } : r;
-    if (!U.ch.ai && !which) U.ch.ai = r.claude.logged_in ? "claude" : r.codex.logged_in ? "codex" : "";
-    for (const key of ["claude", "codex"]) {
+    for (const key of Object.keys(VENDOR)) {
       const a = U.ai[key];
-      if (a && a.logged_in) delete U.busy["login:" + key];
+      if (a && (a.logged_in || a.signed_in)) delete U.busy["login:" + key];
     }
     autoTest();
     if (JSON.stringify(U.ai) !== before) rerenderAi();     // nothing new: leave the page alone
@@ -69,10 +69,10 @@
       const key = aiKey();
       const inSetup = S.mode === "setup" && STEPS[U.step][0] === "ai";
       if (!inSetup && !(S.mode === "app" && S.view.name === "settings")) { pollAi(false); return; }
-      if (!(key === "claude" || key === "codex") || (U.ai && U.ai[key] && aiReady(key, U.ai[key]))) return;
+      if (!VENDOR[key] || (U.ai && U.ai[key] && aiReady(key, U.ai[key]))) return;
       // in Settings only while something is under way (a sign-in or an install), so other settings aren't disturbed
       const a = (U.ai || {})[key] || {};
-      const busy = U.busy["login:" + key] || (a.job && a.job.state === "running") || ((a.native || {}).sign_in || {}).state === "waiting";
+      const busy = U.busy["login:" + key] || (a.job && a.job.state === "running") || (a.sign_in || {}).state === "waiting";
       if (inSetup || busy) loadAi(key);
     }, 4000);
   }
@@ -134,42 +134,43 @@
     return `<div class="su-ai ${U.ch.ai === id ? "on" : ""}"><button class="su-ai-head" data-act="su-ai" data-id="${id}"><span class="su-radio"></span><div><b>${title}</b><div class="d">${sub}</div></div></button>
       ${U.ch.ai === id && body ? `<div class="su-ai-body">${body}</div>` : ""}</div>`;
   }
-  // ------------------------------------------------------------------ connecting Claude or ChatGPT, one step at a time
+  // ------------------------------------------------------------------ connecting ChatGPT or Claude, one step at a time
   const VENDOR = {
+    chatgpt: { name: "ChatGPT", maker: "OpenAI",
+      intro: "You sign in on OpenAI's own page and allow IEUStudia to use your ChatGPT Plus or Pro plan. There's nothing to install, and IEUStudia never sees your password. In ChatGPT's settings you can see what it uses, set a limit, or disconnect it." },
     claude: { name: "Claude", tool: "Claude Code", maker: "Anthropic", plans: "Claude Pro or Max", upgrade: "https://claude.ai/upgrade",
       intro: "IEUStudia talks to Claude through <b>Claude Code</b>, Anthropic's official command-line tool. It's free to install and works with your Claude Pro or Max subscription. It isn't the Claude desktop app, and you won't need to open it yourself.",
       manual: [["Install Claude Code (in PowerShell)", "irm https://claude.ai/install.ps1 | iex"], ["Sign in", "claude auth login"]] },
     codex: { name: "ChatGPT", tool: "Codex CLI", maker: "OpenAI", plans: "ChatGPT Plus or Pro", upgrade: "https://chatgpt.com/pricing",
-      intro: "You sign in on OpenAI's own page and allow IEUStudia to use your ChatGPT Plus or Pro plan. There's nothing to install, and IEUStudia never sees your password. In ChatGPT's settings you can see what it uses, set a limit, or disconnect it.",
+      intro: "IEUStudia talks to ChatGPT through OpenAI's <b>Codex CLI</b>, signed in with your ChatGPT account. Pick this if you already use the Codex CLI; IEUStudia can also install it for you. Otherwise ChatGPT at the top is simpler, with nothing to install.",
       manual: [["Install the Codex CLI (needs Node.js)", "npm install -g @openai/codex"], ["Sign in", "codex login"]] },
   };
-  // ChatGPT: "Continue with ChatGPT" (chatgpt.py), or the Codex CLI for people who already use it.
+  // ChatGPT: "Continue with ChatGPT" (chatgpt.py), nothing to install
   function chatgptSteps(a) {
-    const n = a.native || {}, si = n.sign_in || {}, t = a.test || {}, viaCli = a.method === "cli";
-    const waiting = si.state === "waiting" || (U.busy["login:codex"] && !n.signed_in && si.state !== "error");
-    const noPlanUse = n.signed_in && !n.plan_allowed;
+    const si = a.sign_in || {}, t = a.test || {}, ready = a.signed_in && a.plan_allowed;
+    const waiting = si.state === "waiting" || (U.busy["login:chatgpt"] && !a.signed_in && si.state !== "error");
+    const noPlanUse = a.signed_in && !a.plan_allowed;
     const notEligible = t.ok === false && /Plus or Pro/.test(t.error || "");
     return [
-      { id: "signin", ok: a.method === "app" || viaCli, title: "Continue with ChatGPT",
-        okText: viaCli ? "Using your Codex CLI sign-in" : `Signed in${n.email ? ` as ${esc(n.email)}` : ""}`,
+      { id: "signin", ok: ready, title: "Continue with ChatGPT", okText: `Signed in${a.email ? ` as ${esc(a.email)}` : ""}`,
         text: "Opens OpenAI's sign-in page in your browser. Sign in, then allow IEUStudia to use your ChatGPT plan.",
         busy: waiting && !noPlanUse ? "Finish on the page that opened in your browser. This list notices when you're done." : "",
         error: si.state === "error" ? esc(si.error) : noPlanUse ? "You're signed in, but IEUStudia may not use your ChatGPT plan. That needs ChatGPT Plus or Pro (the free plan can't be used in apps). If you have one, click Allow it and accept on OpenAI's page." : "",
-        btn: noPlanUse ? `<button class="btn sm" data-act="ai-login" data-id="codex" data-consent="1">Allow it</button>`
-          : `<button class="btn sm" data-act="ai-login" data-id="codex">Continue with ChatGPT</button>` },
+        btn: noPlanUse ? `<button class="btn sm" data-act="ai-login" data-id="chatgpt" data-consent="1">Allow it</button>`
+          : `<button class="btn sm" data-act="ai-login" data-id="chatgpt">Continue with ChatGPT</button>` },
       { id: "plan", ok: t.ok === true, title: "Your plan", okText: "It works with your plan",
         text: "Needs ChatGPT Plus or Pro.", error: notEligible ? esc(t.error) : "",
-        unknown: (a.method && t.ok !== true && !notEligible) ? "Plus or Pro is needed. The test message shows whether your plan can be used in apps." : "",
+        unknown: (ready && t.ok !== true && !notEligible) ? "Plus or Pro is needed. The test message shows whether your plan can be used in apps." : "",
         btn: notEligible ? `<button class="btn sm" data-act="url" data-url="https://chatgpt.com/pricing">${I("external", "sm")} See plans</button>` : "" },
       { id: "test", ok: t.ok === true, title: "Test message", okText: `ChatGPT answered in ${t.seconds} s`,
         text: "One short message to check that everything works. It uses a little of your plan.",
-        busy: U.busy["test:codex"] ? "Sending a short test message…" : "", error: t.ok === false && !notEligible ? esc(t.error) : "",
-        btn: `<button class="btn sm" data-act="ai-test" data-id="codex">${t.ok === false ? "Try again" : "Send a test message"}</button>` },
+        busy: U.busy["test:chatgpt"] ? "Sending a short test message…" : "", error: t.ok === false && !notEligible ? esc(t.error) : "",
+        btn: `<button class="btn sm" data-act="ai-test" data-id="chatgpt">${t.ok === false ? "Try again" : "Send a test message"}</button>` },
     ];
   }
   // The checklist for one AI: each step is done, busy, failed, unknown, the one to do now, or later.
   function connectSteps(key, a) {
-    if (key === "codex") return chatgptSteps(a);
+    if (key === "chatgpt") return chatgptSteps(a);
     const v = VENDOR[key], out = [];
     const running = (j) => j && j.state === "running" ? (j.line || "Installing…") : "";
     const failed = (j) => j && j.state === "error" ? j.error : "";
@@ -209,13 +210,10 @@
     return `<p class="cn-intro">${v.intro}</p><div class="cn-steps">${rows}</div>
       ${ready ? `<div class="callout success">${I("check-circle")}<div><b>${v.name} is ready.</b> AI features in IEUStudia will use your ${v.name} plan.</div></div>`
         : `<div class="dim su-note">${I("info", "xs")} You can also continue now and finish this later in Settings → AI.</div>`}
-      ${key === "codex" && a.method === "app" && S.mode === "app" ? `<div class="dim su-note">${I("lock", "xs")} Signed in with ChatGPT. <button class="link" data-act="ai-signout" data-id="codex">Sign out</button> · <button class="link" data-act="url" data-url="https://chatgpt.com/settings/usage">Usage in ChatGPT's settings</button></div>` : ""}
-      <details class="cn-manual"><summary>${key === "codex" ? "Already use the Codex CLI?" : "Rather do it yourself?"}</summary>
-        <div class="dim">${key === "codex" ? "IEUStudia can use OpenAI's Codex CLI instead of the sign-in above. Install it, or let IEUStudia install it, and sign in with <code>codex login</code>; this list notices it."
-          : "Run these in PowerShell, then come back: this list updates by itself."}</div>
-        ${key === "codex" ? `<div class="cn-cmd"><span class="dim">${a.available ? `Codex CLI ${esc(a.version)} is installed` : "Install it for you"}</span><span class="dim">${esc(((a.job || {}).state === "running" && a.job.line) || ((a.job || {}).state === "error" && a.job.error) || "")}</span>
-          ${a.available ? `<button class="btn ghost sm" data-act="ai-login" data-id="codex-cli">codex login</button>` : `<button class="btn ghost sm" data-act="ai-install" data-id="codex" ${(a.job || {}).state === "running" ? "disabled" : ""}>${I("download", "sm")} Install</button>`}</div>` : ""}
-        ${v.manual.map(([l, cmd]) => `<div class="cn-cmd"><span class="dim">${esc(l)}</span><code>${esc(cmd)}</code><button class="btn ghost sm" data-act="ai-copy" data-text="${esc(cmd)}">${I("copy", "sm")}</button></div>`).join("")}</details>`;
+      ${key === "chatgpt" && a.signed_in && S.mode === "app" ? `<div class="dim su-note">${I("lock", "xs")} Signed in with ChatGPT. <button class="link" data-act="ai-signout" data-id="chatgpt">Sign out</button> · <button class="link" data-act="url" data-url="https://chatgpt.com/settings/usage">Usage in ChatGPT's settings</button></div>` : ""}
+      ${v.manual ? `<details class="cn-manual"><summary>Rather do it yourself?</summary>
+        <div class="dim">Run these in PowerShell, then come back: this list updates by itself.</div>
+        ${v.manual.map(([l, cmd]) => `<div class="cn-cmd"><span class="dim">${esc(l)}</span><code>${esc(cmd)}</code><button class="btn ghost sm" data-act="ai-copy" data-text="${esc(cmd)}">${I("copy", "sm")}</button></div>`).join("")}</details>` : ""}`;
   }
   async function runTest(key) {
     U.busy["test:" + key] = true; rerenderAi();
@@ -227,7 +225,7 @@
   function autoTest() {               // once everything else is done, check it really works (once per session)
     const key = aiKey();
     const a = U.ai && U.ai[key];
-    if (!a || !(key === "claude" || key === "codex") || U.autoTested[key] || U.busy["test:" + key] || (a.test && a.test.at)) return;
+    if (!a || !VENDOR[key] || U.autoTested[key] || U.busy["test:" + key] || (a.test && a.test.at)) return;
     const before = connectSteps(key, a).filter((s) => s.id !== "test");
     if (before.every((s) => s.ok || s.unknown)) { U.autoTested[key] = true; runTest(key); }
   }
@@ -239,8 +237,9 @@
         <div class="dim su-note">Runs entirely on this PC. Fine for short notes and simple questions; study plans and prep packs need Claude or ChatGPT.${U.st.verdict.gpu ? "" : " Without an NVIDIA GPU it writes slowly (notes for a lecture take several minutes)."}</div>`
       : `<div class="callout warning">${I("alert")}<div>This PC has too little memory for an offline model (8 GB needed).</div></div>`;
     return `<h2>AI help (optional)</h2><p class="lead">Study notes, chat about your lectures, video study plans and exam prep packs. Pick what you have — everything else in IEUStudia works without AI.</p>
-      ${aiCard("claude", "Claude", "Best results. Needs a Claude Pro or Max subscription.", connectHTML("claude"))}
-      ${aiCard("codex", "ChatGPT", "Needs a ChatGPT Plus or Pro subscription.", connectHTML("codex"))}
+      ${aiCard("chatgpt", "ChatGPT", "Needs a ChatGPT Plus or Pro subscription.", connectHTML("chatgpt"))}
+      ${aiCard("claude", "Claude", "Needs a Claude Pro or Max subscription.", connectHTML("claude"))}
+      ${aiCard("codex", "ChatGPT through the Codex CLI", "If you already use OpenAI's Codex CLI. Needs ChatGPT Plus or Pro.", connectHTML("codex"))}
       ${aiCard("local", "Offline model", "No subscription: a small model on this PC — basic notes and questions.", llmBody)}
       ${aiCard("none", "No AI", "Transcripts, heads-ups, search, calendar and everything else still work.", "")}
       <div class="callout info su-ai-note">${I("info")}<div><b>AI can make mistakes.</b> Answers are generated from your lectures, but check anything important against the lecture and your materials. Nothing is sent anywhere unless you use an AI feature.</div></div>`;
@@ -280,7 +279,7 @@
   function stepSignin() {
     return `<h2>Almost done</h2><p class="lead">${S.boot && S.boot.signed_in ? `You are signed in as ${esc((S.profile || {}).name || "")}. Finish to open IEUStudia.` : "Last step: sign in with your IEULearn (EkoID) account."}</p>
       <div class="card su-summary">${[["Transcription", (U.st.catalog.speech.find((m) => m.id === U.ch.speech) || {}).label || U.ch.speech],
-        ["AI", { claude: "Claude", codex: "ChatGPT", local: "Offline model", none: "No AI", "": "No AI" }[U.ch.ai]],
+        ["AI", { chatgpt: "ChatGPT", claude: "Claude", codex: "ChatGPT (Codex CLI)", local: "Offline model", none: "No AI", "": "No AI" }[U.ch.ai]],
         ["Background helper", U.ch.tray ? `On${U.ch.startup ? ", starts with Windows" : ""}` : "Off"]].map(([k, v]) => `<div class="su-row"><span class="grow">${k}</span><b>${esc(v)}</b></div>`).join("")}</div>`;
   }
 
@@ -360,11 +359,11 @@
   };
   // "Continue with ChatGPT" finished in the browser (chatgpt.py)
   St.onEvents.chatgpt = (e) => {
-    delete U.busy["login:codex"];
+    delete U.busy["login:chatgpt"];
     if (e.state === "error") toast(e.error, "error");
-    if (U.ai && U.ai.codex && U.ai.codex.native) U.ai.codex.native.sign_in = { state: e.state, error: e.error || "" };
-    U.autoTested.codex = false;
-    loadAi("codex");
+    if (U.ai && U.ai.chatgpt) U.ai.chatgpt.sign_in = { state: e.state, error: e.error || "" };
+    U.autoTested.chatgpt = false;
+    loadAi("chatgpt");
     rerenderAi();
   };
   Object.assign(A, {
@@ -376,13 +375,13 @@
       pollAi(true); rerenderAi();
     },
     "ai-login": async (el) => {
-      const which = el.dataset.id, key = which === "codex-cli" ? "codex" : which;
-      const r = await call("ai_login", which, !!el.dataset.consent);
+      const key = el.dataset.id;
+      const r = await call("ai_login", key, !!el.dataset.consent);
       if (!r.ok) { toast(r.error, "error"); return; }
       U.busy["login:" + key] = Date.now(); U.autoTested[key] = false;
       if (U.ai && U.ai[key]) {
         delete U.ai[key].test;
-        if (which === "codex" && U.ai.codex.native) U.ai.codex.native.sign_in = { state: "waiting", error: "" };
+        if (key === "chatgpt") U.ai.chatgpt.sign_in = { state: "waiting", error: "" };
       }
       setTimeout(() => { if (U.busy["login:" + key]) { delete U.busy["login:" + key]; rerenderAi(); } }, 10 * 60000);
       pollAi(true); rerenderAi();
@@ -392,7 +391,7 @@
       const r = await call("ai_sign_out", el.dataset.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       toast(r.revoked ? "Signed out of ChatGPT." : "Signed out here. OpenAI didn't confirm it, so also disconnect IEUStudia in ChatGPT's settings.", r.revoked ? "success" : "info");
-      U.autoTested.codex = false; loadAi("codex");
+      U.autoTested.chatgpt = false; loadAi("chatgpt");
     },
     "ai-test": (el) => runTest(el.dataset.id),
     "ai-copy": async (el) => { const r = await call("copy_text", el.dataset.text); toast(r.ok ? "Copied" : r.error, r.ok ? "success" : "error"); },
@@ -414,19 +413,21 @@
     const app = (S.boot || {}).app || {};
     const a = U.ai;
     if (!a) { setTimeout(loadAi, 0); }
-    const label = { claude: "Claude (your Claude Pro or Max plan)", codex: "ChatGPT (your ChatGPT Plus or Pro plan)", local: "Offline model on this PC", none: "No AI" };
-    const status = !a ? `${SPIN()} Checking…` : app.ai_provider === "claude" ? (a.claude.logged_in ? `Claude Code ${esc(a.claude.version)} · signed in${a.claude.plan ? ` (${esc(a.claude.plan)})` : ""}` : a.claude.available ? "Claude Code is installed but not signed in." : "Claude Code is not installed.")
-      : app.ai_provider === "codex" ? (a.codex.method === "app" ? `Signed in with ChatGPT${(a.codex.native || {}).email ? ` as ${a.codex.native.email}` : ""}.` : a.codex.method === "cli" ? `Using the Codex CLI ${a.codex.version}, signed in with ChatGPT.` : "Not connected yet.")
-        : app.ai_provider === "local" ? ((a.local.models.find((m) => m.id === app.local_model) || {}).ready ? `${esc(app.local_model)} is on this PC.` : "The offline model is not downloaded yet.") : "AI features are hidden.";
-    const needs = a && a.local && app.ai_provider === "local" && !(a.local.models.find((m) => m.id === app.local_model) || {}).ready;
-    const cli = (app.ai_provider === "claude" || app.ai_provider === "codex") && a && a[app.ai_provider];
-    if (cli && !U.timer) pollAi(true);
-    return `<div class="set-row"><div class="txt"><div class="t">AI service</div><div class="d">${esc(status)}</div></div>
-        <select class="input" style="width:260px" data-act="ai-provider">${Object.entries(label).map(([v, l]) => `<option value="${v}" ${(app.ai_provider || "none") === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-      ${cli ? `<div class="set-connect">${connectHTML(app.ai_provider)}</div>` : ""}
+    const label = { chatgpt: "ChatGPT (Plus or Pro plan)", claude: "Claude (Pro or Max plan)", codex: "ChatGPT through the Codex CLI", local: "Offline model on this PC", none: "No AI" };
+    const p = app.ai_provider, x = (a && a[p]) || {};
+    const status = p === "chatgpt" ? (x.signed_in && x.plan_allowed ? `Signed in with ChatGPT${x.email ? ` as ${x.email}` : ""}.` : "Not connected yet.")
+      : p === "claude" ? (x.logged_in ? `Claude Code ${x.version} · signed in${x.plan ? ` (${x.plan})` : ""}` : x.available ? "Claude Code is installed but not signed in." : "Claude Code is not installed.")
+      : p === "codex" ? (x.logged_in ? `Codex CLI ${x.version} · signed in with ChatGPT` : x.available ? "The Codex CLI is installed but not signed in." : "The Codex CLI is not installed.")
+      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? `${app.local_model} is on this PC.` : "The offline model is not downloaded yet." : "AI features are hidden.";
+    const needs = a && a.local && p === "local" && !(a.local.models.find((m) => m.id === app.local_model) || {}).ready;
+    const steps = VENDOR[p] && a && a[p];
+    if (steps && !U.timer) pollAi(true);
+    return `<div class="set-row"><div class="txt"><div class="t">AI service</div><div class="d">${a ? esc(status) : `${SPIN()} Checking…`}</div></div>
+        <select class="input" style="width:260px" data-act="ai-provider">${Object.entries(label).map(([v, l]) => `<option value="${v}" ${(p || "none") === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      ${steps ? `<div class="set-connect">${connectHTML(p)}</div>` : ""}
       ${needs ? `<div class="set-row"><div class="txt"><div class="t">Download the offline model</div><div class="d">It is downloaded in the setup's AI step.</div></div><button class="btn sm" data-act="setup-ai">${I("arrow-right", "sm")} Set up AI</button></div>` : ""}
-      ${app.ai_provider === "codex" && a && a.codex.models.length ? `<div class="set-row"><div class="txt"><div class="t">ChatGPT model</div><div class="d">The default is usually right; pick another only if your plan offers it.</div></div>
-        <select class="input" style="width:200px" data-act="codex-model"><option value="">Default</option>${a.codex.models.map((m) => `<option ${app.codex_model === m ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>` : ""}
+      ${(p === "chatgpt" || p === "codex") && (x.models || []).length ? `<div class="set-row"><div class="txt"><div class="t">ChatGPT model</div><div class="d">The default is usually right; pick another only if your plan offers it.</div></div>
+        <select class="input" style="width:200px" data-act="codex-model"><option value="">Default</option>${x.models.map((m) => `<option ${app.codex_model === m ? "selected" : ""}>${esc(m)}</option>`).join("")}</select></div>` : ""}
       <div class="callout info">${I("info")}<div><b>AI can make mistakes.</b> Check important details against your lectures and materials. AI only runs when you ask.</div></div>`;
   };
   St.settingsMore = () => {
@@ -497,23 +498,25 @@
       { id: "medium", label: "Medium", description: "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture).", size_mb: 1530, ready: false },
       { id: "small", label: "Small", description: "The one for PCs without an NVIDIA GPU: fast enough on the processor, a bit less accurate.", size_mb: 484, ready: false }],
     cuda: { needed: true, ready: false, size_mb: 560 }, llm: [] } });
-  // the preview walks through a fresh PC: Claude Code, then signing in (#ready: all done already)
-  const M = St.mockAi = { claude: location.hash.includes("ready"), codex: false,
-    login: { claude: location.hash.includes("ready"), codex: false, chatgpt: false }, test: {} };
+  // the preview walks through a fresh PC: signing in with ChatGPT, or Claude Code / the Codex CLI and their sign-in
+  // (#ready: ChatGPT and Claude are connected already)
+  const connected = location.hash.includes("ready");
+  const M = St.mockAi = { claude: connected, codex: false, login: { chatgpt: connected, claude: connected, codex: false }, test: {} };
   const mockJob = (which) => ({ state: M[which] ? "done" : "", line: "", error: "" });
   St.mocks.ai_status = (which) => {
     const all = { ok: true, provider: "none", chosen: "",
+      chatgpt: { signed_in: M.login.chatgpt, email: M.login.chatgpt ? "student@example.com" : "", plan_allowed: M.login.chatgpt, registered: M.login.chatgpt, sign_in: {},
+        model: "", models: M.login.chatgpt ? ["gpt-6.1-sol", "gpt-6-sol-mini"] : [], needs: "ChatGPT Plus or Pro subscription", test: M.test.chatgpt || {} },
       claude: { available: M.claude, version: M.claude ? "2.1.290" : "", logged_in: M.login.claude, plan: M.login.claude ? "pro" : "", email: M.login.claude ? "student@example.com" : "",
         needs: "Claude Pro or Max subscription", plan_status: M.login.claude ? { ok: true, label: "Claude Pro", note: "" } : { ok: null, label: "", note: "" },
         job: mockJob("claude"), test: M.test.claude || {} },
       codex: { available: M.codex, version: M.codex ? "0.157.0" : "", logged_in: M.login.codex, plan: M.login.codex ? "chatgpt" : "", email: "", ours: M.codex, model: "",
-        models: M.login.chatgpt ? ["gpt-6.1-sol", "gpt-6-sol-mini"] : [], method: M.login.chatgpt ? "app" : M.login.codex ? "cli" : "",
-        native: { signed_in: M.login.chatgpt, email: M.login.chatgpt ? "student@example.com" : "", plan_allowed: M.login.chatgpt, registered: M.login.chatgpt, sign_in: {} },
-        needs: "ChatGPT Plus or Pro subscription", plan_status: { ok: null, label: "", note: "" }, job: mockJob("codex"), test: M.test.codex || {} },
+        models: M.login.codex ? ["gpt-6.1-sol", "gpt-6-sol-mini"] : [], needs: "ChatGPT Plus or Pro subscription",
+        plan_status: M.login.codex ? { ok: null, label: "ChatGPT", note: "Codex does not show your plan; the test message below shows whether it works." } : { ok: null, label: "", note: "" },
+        job: mockJob("codex"), test: M.test.codex || {} },
       local: { model: "qwen3-1.7b", models: [{ id: "qwen3-1.7b", label: "Basic", description: "Qwen3 1.7B: short notes and simple questions; runs on most PCs (8 GB memory).", size_mb: 1745, ready: false },
         { id: "qwen3-4b", label: "Better", description: "Qwen3 4B Instruct: clearly better notes and answers; needs a GPU with 8 GB or 16 GB of memory.", size_mb: 4045, ready: false }] } };
-    if (which) { delete all.local; delete all[which === "claude" ? "codex" : "claude"]; }
-    return all;
+    return which ? { ok: true, provider: all.provider, chosen: all.chosen, [which]: all[which] } : all;
   };
   St.mocks.ai_install = (which) => {
     const lines = { claude: ["Downloading Claude Code from claude.ai...", "Setting up Claude Code...", "Claude Code successfully installed!"],
@@ -523,14 +526,14 @@
     return { ok: true, job: { state: "running", line: "Starting…", error: "" } };
   };
   St.mocks.ai_login = (which) => {
-    if (which === "codex") {            // "Continue with ChatGPT": the browser comes back after a while
+    if (which === "chatgpt") {          // "Continue with ChatGPT": the browser comes back after a while
       setTimeout(() => { M.login.chatgpt = true; window.__lsEvent({ type: "chatgpt", state: "done", error: "", email: "student@example.com" }); }, 2500);
       return { ok: true, state: "waiting" };
     }
-    setTimeout(() => { M.login[which === "codex-cli" ? "codex" : which] = true; }, 3000);
+    setTimeout(() => { M.login[which] = true; }, 3000);
     return { ok: true };
   };
-  St.mocks.ai_sign_out = () => { M.login.chatgpt = false; delete M.test.codex; return { ok: true, revoked: true }; };
+  St.mocks.ai_sign_out = () => { M.login.chatgpt = false; delete M.test.chatgpt; return { ok: true, revoked: true }; };
   St.mocks.ai_test = (which) => new Promise((res) => setTimeout(() => { M.test[which] = { ok: true, seconds: 3.4, error: "", at: Date.now() / 1000 }; res({ ok: true, test: M.test[which] }); }, 1500));
   St.mocks.setup_plan = (speech, llm) => {
     const items = [{ id: `speech:${speech}`, label: "Speech model (Fast & accurate)", size_mb: 1620 }, { id: "cuda", label: "NVIDIA GPU libraries (CUDA 12 cuBLAS)", size_mb: 560 }];

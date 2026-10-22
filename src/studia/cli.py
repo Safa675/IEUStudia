@@ -161,10 +161,12 @@ def main(argv: list[str] | None = None) -> int:
 
         app_main(argv)
         return 0
+    from . import appconfig
     from .accounts import activate
     from .paths import migrate_legacy_data
 
     migrate_legacy_data()            # the data folder of the app's earlier name (Studia, LectureScribe)
+    appconfig.migrate()
     ap = argparse.ArgumentParser(prog="studia", description="Sync and transcribe IEULearn/Panopto lectures.")
     ap.add_argument("--profile", help="run the command for this profile (id, username or name; see: studia profiles)")
     sub = ap.add_subparsers(dest="cmd", required=True)

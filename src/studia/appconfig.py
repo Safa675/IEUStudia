@@ -9,15 +9,15 @@ import os
 import threading
 from typing import Any
 
-AI_PROVIDERS = ("claude", "codex", "local", "none")
+AI_PROVIDERS = ("chatgpt", "claude", "codex", "local", "none")
 
 
 @dc.dataclass
 class AppConfig:
     onboarded: bool = False            # the first-start setup was completed
     terms_accepted: str = ""           # when the user accepted the notice (ISO date)
-    ai_provider: str = ""              # "" (not chosen yet) | claude | codex | local | none
-    codex_model: str = ""              # "" = Codex's own default
+    ai_provider: str = ""              # "" (not chosen yet) | chatgpt | claude | codex (ChatGPT through the CLI) | local | none
+    codex_model: str = ""              # the ChatGPT model, also through the Codex CLI ("" = the default)
     local_model: str = "qwen3-1.7b"    # components.LLM_PRESETS
     tray: bool = False                 # keep a small helper in the tray: checks IEULearn, shows notifications
     start_with_windows: bool = False   # start that helper when you sign in to Windows
@@ -25,6 +25,7 @@ class AppConfig:
     notify_announcements: bool = True  # new announcements (assessment news first)
     notify_materials: bool = False     # new files on IEULearn
     sync_minutes: int = 30             # how often the helper checks
+    version: int = 0                   # 1: "codex" is only the Codex CLI (see migrate)
 
     def to_json(self) -> dict[str, Any]:
         return dc.asdict(self)
@@ -85,3 +86,18 @@ def update(patch: dict[str, Any]) -> AppConfig:
     cfg = _from_dict(merged)
     save(cfg)
     return cfg
+
+
+def migrate() -> None:
+    """Once, at start-up: "codex" used to mean ChatGPT either way, through "Continue with ChatGPT" if the user had
+    signed in like that, else through the Codex CLI. Now that sign-in is "chatgpt" and "codex" only the CLI."""
+    cfg = load()
+    if cfg.version >= 1:
+        return
+    patch: dict[str, Any] = {"version": 1}
+    if cfg.ai_provider == "codex":
+        from . import chatgpt
+
+        if chatgpt.signed_in():
+            patch["ai_provider"] = "chatgpt"
+    update(patch)

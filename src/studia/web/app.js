@@ -889,8 +889,8 @@
         ${(() => {
           const ai = sys.ai || {};
           if (!ai.available || ai.provider === "local") return "";
-          const pick = (key, opts) => `<select class="input" style="width:190px" data-act="set-sel" data-key="${key}">${opts.map(([v, l]) => `<option value="${v}" ${s[key] === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
-          const M = ai.provider === "codex" ? [["haiku", "Quick"], ["sonnet", "Standard (recommended)"], ["opus", "Thorough"]]
+          const pick = (key, opts) => `<select class="input" style="width:220px" data-act="set-sel" data-key="${key}">${opts.map(([v, l]) => `<option value="${v}" ${s[key] === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+          const M = isChatGPT(ai) ? [["haiku", "Quick"], ["sonnet", "Standard (recommended)"], ["opus", "Thorough"]]
             : [["haiku", "Haiku (lightest)"], ["sonnet", "Sonnet (recommended)"], ["opus", "Opus (best, heavy)"]];
           return row("Chat and study notes", "Ask, study notes, exam focus and flashcards.", pick("ai_model", M))
             + row("Study plans and prep packs", "Works out what to learn from your material and builds the plan or writes the pack.", pick("plan_model", [["", "Same as chat"], ...M]))
@@ -922,10 +922,13 @@
     "Give me 8 practice questions in the lecturer's style.",
   ];
   const MODELS = [["haiku", "Haiku", "lightest"], ["sonnet", "Sonnet", "recommended"], ["opus", "Opus", "best, uses the most"]];
-  const aiName = () => ((S.system.ai || {}).label || "AI");          // Claude, ChatGPT or Offline model
-  const aiPlan = () => ({ claude: "your own Claude plan", codex: "your own ChatGPT plan", local: "the offline model on this PC" }[(S.system.ai || {}).provider] || "the AI you chose");
+  const aiName = () => ((S.system.ai || {}).label || "AI");          // ChatGPT, Claude or Offline model
+  const aiPlan = () => ({ chatgpt: "your own ChatGPT plan", claude: "your own Claude plan", codex: "your own ChatGPT plan", local: "the offline model on this PC" }[(S.system.ai || {}).provider] || "the AI you chose");
   const aiHint = () => "Set up AI in Settings → AI to use this";
-  const modelsFor = () => ((S.system.ai || {}).provider === "codex" ? [["haiku", "Quick", "light reasoning"], ["sonnet", "Standard", "recommended"], ["opus", "Thorough", "slowest, uses the most"]] : MODELS);
+  // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons
+  const isChatGPT = (ai) => ["chatgpt", "codex"].includes((ai || S.system.ai || {}).provider);
+  const REASONING = [["haiku", "Quick", "light reasoning"], ["sonnet", "Standard", "recommended"], ["opus", "Thorough", "slowest, uses the most"]];
+  const modelsFor = () => (isChatGPT() ? REASONING : MODELS);
   const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const fmtK = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : String(Math.round(n || 0)));
   const shortDate = (iso) => { const d = new Date(iso + "T00:00:00"); return `${WD[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`; };
@@ -1153,7 +1156,7 @@
       const oldBody = $(".cp-scroll"), keepBody = oldBody ? oldBody.scrollTop : 0;
       const ai = S.system.ai || {}, who = aiName();
       const max = (st.scope && st.scope.max_tokens) || 150000, tot = total(), over = tot > max, sc = slideCount();
-      const images = ai.can_images !== false && ai.provider !== "local" && ai.provider !== "codex" ? true : ai.provider === "codex";
+      const images = ai.can_images !== false && ai.provider !== "local";
       const modes = [["full", "file-text", "Chosen class days", "Full transcripts of the days you pick. Best for questions about specific lectures."],
         ["highlights", "star", "Highlights only", "Only what the lecturer stressed, from the days you pick. Lightest."],
         ["course", "library", "Whole course", "Every lecture's highlights, plus matching pages of your slides and PDFs for each question."]];
@@ -1163,8 +1166,7 @@
         : `<div class="cp-days">${days.map((d) => { const on = st.sel.has(d.day_key); return `<label class="cp-day ${on ? "on" : ""}"><input type="checkbox" class="check" data-act="cp-day" data-key="${esc(d.day_key)}" ${on ? "checked" : ""}>
             <span class="cp-d"><b>${esc(d.label)}</b> <span class="dim">· ${esc(d.kind_label)} · ${plural(d.parts, "part")}</span></span>
             <span class="cp-meta">${d.stars ? `<span title="Moments the lecturer stressed">${I("star", "xs")} ${d.stars}</span>` : ""}<span title="How much text ${esc(who)} reads for this day">≈${fmtK(tokOf(d))} tokens</span></span></label>`; }).join("")}</div>`;
-      const models = ai.provider === "codex" ? [["haiku", "Quick", "light reasoning"], ["sonnet", "Standard", "recommended"], ["opus", "Thorough", "slowest, uses the most"]]
-        : MODELS;
+      const models = modelsFor();
       const used = limitsHTML();
       modal(`<div class="cp-scroll">
         <h2>${I("chat")} Ask ${esc(who)} about your lectures</h2>
@@ -1176,7 +1178,7 @@
           : `<div class="field"><label class="cp-label">Class days <span class="dim sm">${st.sel.size} of ${days.length} picked</span><span class="cp-tools"><button type="button" class="btn ghost sm" data-act="cp-last">Last 3</button><button type="button" class="btn ghost sm" data-act="cp-all">All</button><button type="button" class="btn ghost sm" data-act="cp-none">None</button></span></label>${list}</div>`}
         <div class="cp-opts">
           ${ai.provider === "local" ? `<div class="cp-opt"><div class="t">${I("cpu", "xs")} Offline model</div><div class="d">Runs on this PC: a shortened version of the lectures is used.</div></div>`
-            : `<div class="cp-opt"><div class="t">${ai.provider === "codex" ? "Reasoning" : "Model"}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
+            : `<div class="cp-opt"><div class="t">${isChatGPT(ai) ? "Reasoning" : "Model"}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
           ${images ? `<label class="cp-opt cp-switch"><div><div class="t">Include slide images</div><div class="d">${sc ? `${plural(Math.min(60, sc), "slide")} · formulas and figures · ≈${fmtK(Math.min(60, sc) * 800)} more tokens` : "No slides were captured for these days."}</div></div>
             <input type="checkbox" class="switch" data-act="cp-slides" ${st.slides && sc ? "checked" : ""} ${sc ? "" : "disabled"}></label>` : ""}</div>
         ${over ? `<div class="callout error">${I("alert-circle")}<div>That is more than one chat can hold (≈${fmtK(max)} tokens). Pick fewer days, or Highlights only.</div></div>` : ""}
@@ -1505,7 +1507,7 @@
   Object.assign(Studia, { S, call, esc, I, SPIN, plural, fmtDur, rel, pct, toast, modal, closeModal, menu, go, render,
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, MONTHS, WD, fmtK, limitsHTML, isReal: () => REAL,
-    aiName, aiPlan, aiHint, modelsFor, afterBoot, openTarget, runSearch });
+    aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }

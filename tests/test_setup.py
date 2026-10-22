@@ -118,6 +118,7 @@ def test_app_config_round_trip():
     assert not c.onboarded and c.ai_provider == "" and not c.tray
     c = appconfig.update({"ai_provider": "codex", "tray": True, "sync_minutes": 2, "nonsense": 1})
     assert c.ai_provider == "codex" and c.tray and c.sync_minutes == 10                 # clamped
+    assert appconfig.update({"ai_provider": "chatgpt"}).ai_provider == "chatgpt"
     assert appconfig.update({"ai_provider": "gemini"}).ai_provider == ""             # unknown -> not chosen
 
 
@@ -192,7 +193,7 @@ class _FakeProc:
         pass
 
 
-def test_chatgpt_through_codex(monkeypatch):
+def test_chatgpt_through_the_codex_cli(monkeypatch):
     appconfig.update({"ai_provider": "codex", "codex_model": "gpt-x"})
     monkeypatch.setattr(ai, "codex_cli_info", lambda: {"available": True, "path": "codex.exe", "version": "0.1"})
     calls = []

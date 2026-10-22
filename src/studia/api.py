@@ -312,15 +312,15 @@ class Api:
 
     @safe
     def ai_login(self, which: str, consent: bool = False) -> dict[str, Any]:
-        """Sign in: "claude" opens Claude Code's own sign-in; "codex" is "Continue with ChatGPT" in the browser
-        (events: type "chatgpt"); "codex-cli" opens the Codex CLI's own sign-in."""
+        """Sign in: "chatgpt" is "Continue with ChatGPT" in the browser (events: type "chatgpt"); "claude" and "codex"
+        open Claude Code's or the Codex CLI's own sign-in."""
         from . import ai_setup, chatgpt
         from .ai import start_login
 
-        if which == "codex":
-            ai_setup.forget_test("codex")
+        if which == "chatgpt":
+            ai_setup.forget_test("chatgpt")
             return {"ok": True, **chatgpt.start_sign_in(self._push, consent=bool(consent))}
-        start_login("codex" if which == "codex-cli" else which)
+        start_login(which)
         return {"ok": True}
 
     @safe
@@ -328,21 +328,21 @@ class Api:
         """Sign out of ChatGPT ("Continue with ChatGPT"): OpenAI revokes the session, IEUStudia forgets it."""
         from . import ai_setup, chatgpt
 
-        if which != "codex":
-            return {"ok": False, "error": "Sign out of Claude in Claude Code itself (claude auth logout)."}
-        ai_setup.forget_test("codex")
+        if which != "chatgpt":
+            return {"ok": False, "error": "Sign out in Claude Code or the Codex CLI itself."}
+        ai_setup.forget_test("chatgpt")
         return {"ok": True, **chatgpt.sign_out()}
 
     @safe
     def ai_install(self, which: str) -> dict[str, Any]:
-        """Install Claude Code, the Codex CLI or Git for Windows in the background (events: type "ai_setup")."""
+        """Install Claude Code or the Codex CLI in the background (events: type "ai_setup")."""
         from .ai_setup import start_install
 
         return {"ok": True, "job": start_install(which, self._push)}
 
     @safe
     def ai_test(self, which: str) -> dict[str, Any]:
-        """A short test message through Claude Code or the Codex CLI (a few tokens of the user's plan)."""
+        """A short test message through ChatGPT, Claude Code or the Codex CLI (a few tokens of the user's plan)."""
         from .ai_setup import test
 
         return {"ok": True, "test": test(which)}

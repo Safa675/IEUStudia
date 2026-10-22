@@ -56,7 +56,7 @@ digest sums up what happened.
 checks IEULearn every half hour and shows a Windows notification for new recordings, announcements and files. It can
 start with Windows. It never transcribes or downloads anything on its own.
 
-**Use AI with your own subscription.** With Claude or ChatGPT you can chat about your lectures (answers point to the
+**Use AI with your own subscription.** With ChatGPT or Claude you can chat about your lectures (answers point to the
 exact moment they come from), write study notes or flashcards, put together an exam prep pack, or make a video study
 plan: YouTube videos for your weeks, each one checked through its captions against what your course actually
 covers. All of this is optional, see [AI features](#ai-features).
@@ -80,7 +80,7 @@ flowchart LR
     pan["Panopto<br/>lecture recordings"] --> app
     app["IEUStudia<br/>on your PC"] --> whisper["Whisper<br/>transcribes on your PC"]
     whisper --> lib["Your library<br/>transcripts, slides, heads-ups"]
-    lib -. "only when you ask" .-> ai["Claude or ChatGPT<br/>with your own account"]
+    lib -. "only when you ask" .-> ai["ChatGPT or Claude<br/>with your own account"]
 ```
 
 Everything runs on your computer. There's no IEUStudia server and no account with us. Your EkoID password goes only
@@ -122,34 +122,38 @@ the app (or your PC) meanwhile.
 
 ## AI features
 
-AI is optional. Transcripts, heads-ups, search and everything else work without it. There are four choices:
+AI is optional. Transcripts, heads-ups, search and everything else work without it. There are five choices:
 
 | Choice | What you need | What you get |
 |---|---|---|
-| Claude | A Claude Pro or Max subscription | Everything: chat, notes, flashcards, prep packs, video study plans. |
-| ChatGPT | A ChatGPT Plus or Pro subscription | The same features. |
+| ChatGPT | A ChatGPT Plus or Pro subscription | Everything: chat, notes, flashcards, prep packs, video study plans. |
+| Claude | A Claude Pro or Max subscription | The same features. |
+| ChatGPT through the Codex CLI | A ChatGPT Plus or Pro subscription | The same features, for people who already use OpenAI's Codex CLI. |
 | Offline model | Nothing to pay for, but at least 8 GB of memory | Short notes and simple questions, on your PC (Qwen3 1.7B or 4B). No study plans. |
 | No AI | Nothing | The AI buttons are hidden. |
 
 You can change your choice any time in *Settings → AI*.
 
-### How Claude and ChatGPT are connected
+### How ChatGPT and Claude are connected
 
-You don't need the Claude or ChatGPT desktop apps, and IEUStudia never sees your Claude or ChatGPT password. When you
+You don't need the ChatGPT or Claude desktop apps, and IEUStudia never sees your ChatGPT or Claude password. When you
 pick one of them, the setup shows a short checklist and goes through it with you. You don't have to open a terminal.
 
 **ChatGPT** uses *Continue with ChatGPT*, OpenAI's sign-in for open-source apps. You sign in on OpenAI's page in your
 browser and allow IEUStudia to use your ChatGPT plan; there's nothing to install. You can see how much IEUStudia
 uses, set a limit or disconnect it any time in [ChatGPT's settings](https://chatgpt.com/settings/usage). On Plus,
-apps share the plan's five-hour usage limit with each other. If you already use OpenAI's
-[Codex CLI](https://github.com/openai/codex), IEUStudia can use that instead.
+apps share the plan's five-hour usage limit with each other.
 
 **Claude** works through [Claude Code](https://code.claude.com/docs), Anthropic's official command-line tool, because
 Anthropic only allows signing in with a Claude subscription through its own apps. The checklist installs Claude Code
 from claude.ai, opens Anthropic's sign-in page, checks that your plan includes Claude Code, and sends a short test
 message.
 
-<p align="center"><img src="docs/screenshots/setup-ai.png" width="640" alt="The checklist that connects Claude: Claude Code installed, signing in next"></p>
+**ChatGPT through the Codex CLI** is for people who already use OpenAI's [Codex CLI](https://github.com/openai/codex).
+The checklist works like Claude's: it installs the Codex CLI if it's missing (from OpenAI's own package, without
+Node.js), opens its sign-in and sends a short test message.
+
+<p align="center"><img src="docs/screenshots/setup-ai.png" width="640" alt="The checklist that connects ChatGPT: Continue with ChatGPT, then your plan and a test message"></p>
 
 If something goes wrong, the step that failed says why, and *Settings → AI* has the same checklist for later.
 
@@ -188,9 +192,9 @@ it. Follow your university's rules.
 No. The setup checks your PC and picks a speech model that fits. An NVIDIA graphics card just makes transcription a
 lot faster.
 
-**Do I need the Claude or ChatGPT app?**
+**Do I need the ChatGPT or Claude app?**
 No, you need the subscription, not the app. ChatGPT connects with a sign-in in your browser. For Claude, IEUStudia
-installs Claude Code for you during setup (see [above](#how-claude-and-chatgpt-are-connected)).
+installs Claude Code for you during setup (see [above](#how-chatgpt-and-claude-are-connected)).
 
 **Does the free ChatGPT or Claude plan work?**
 Not for the AI features. OpenAI lets apps use only ChatGPT Plus and Pro plans, and Claude Code needs Claude Pro or Max.

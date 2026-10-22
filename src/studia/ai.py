@@ -1,12 +1,14 @@
 """Optional AI features (study notes, chat, study plans, digest), only when the user asks, through one of:
 
-- **Claude** — the student's own Claude Pro/Max subscription, through the official Claude Code CLI;
-- **ChatGPT** — the student's own ChatGPT Plus/Pro subscription, through the official Codex CLI;
-- **Offline** — a small model on this PC (``local_llm``; basic notes and questions, no subscription);
-- **None** — AI features are hidden.
+- **ChatGPT** ("chatgpt") — the student's own ChatGPT Plus/Pro subscription, through "Continue with ChatGPT"
+  (``chatgpt``: OpenAI's sign-in for apps);
+- **Claude** ("claude") — the student's own Claude Pro/Max subscription, through the official Claude Code CLI;
+- **ChatGPT through the Codex CLI** ("codex") — the same subscription, through OpenAI's official Codex CLI;
+- **Offline** ("local") — a small model on this PC (``local_llm``; basic notes and questions, no subscription);
+- **None** ("none") — AI features are hidden.
 
-Signing in happens in the vendors' own CLIs (their official sign-in pages); IEUStudia never sees a password or
-token. AI answers can contain mistakes: the UI says so wherever they appear.
+Signing in happens on the vendors' own pages (for Claude and the Codex CLI in their own tools); IEUStudia never sees
+a password. AI answers can contain mistakes: the UI says so wherever they appear.
 
 For Claude, to keep subscription usage low we:
 - replace Claude Code's large default system prompt with a short one (--system-prompt-file),
@@ -285,6 +287,8 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
              timeout_s: int = 900) -> dict[str, Any]:
     """One request (no tools, no history) to the AI the user chose: text, usage, model."""
     p = provider()
+    if p == "chatgpt":
+        return _chatgpt_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
     if p == "codex":
         return _codex_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
     if p == "local":
@@ -547,7 +551,9 @@ def _join(blocks: list[str]) -> str:
 
 
 # ======================================================================= which AI, and its sign-in
-PROVIDER_LABELS = {"claude": "Claude", "codex": "ChatGPT", "local": "Offline model", "none": ""}
+# "chatgpt" is "Continue with ChatGPT" (chatgpt.py), "codex" ChatGPT through the Codex CLI
+PROVIDER_LABELS = {"chatgpt": "ChatGPT", "claude": "Claude", "codex": "ChatGPT", "local": "Offline model", "none": ""}
+PLAN_AIS = ("chatgpt", "claude", "codex")      # the user's own plan: big enough for study plans, reads images
 
 
 def provider() -> str:
@@ -566,15 +572,15 @@ def ai_info() -> dict[str, Any]:
 
     p = provider()
     out: dict[str, Any] = {"provider": p, "label": PROVIDER_LABELS.get(p, ""), "available": False, "path": "",
-                           "version": "", "can_plans": p in ("claude", "codex"), "can_images": p == "claude"}
+                           "version": "", "can_plans": p in PLAN_AIS, "can_images": p in PLAN_AIS}
     if p == "claude":
         out.update(claude_cli_info())
-    elif p == "codex":
+    elif p == "chatgpt":
         from . import chatgpt
 
+        out.update(available=chatgpt.signed_in(), version="Continue with ChatGPT")
+    elif p == "codex":
         out.update(codex_cli_info())
-        if chatgpt.signed_in():
-            out.update(available=True, path="", version="Continue with ChatGPT")
     elif p == "local":
         from .components import llm_ready
 
@@ -685,21 +691,25 @@ def _codex_error(message: str) -> str:
     if "usage limit" in low or "rate limit" in low or "too many requests" in low:
         return "You have reached your ChatGPT usage limit for Codex. Try again later."
     if "not logged in" in low or "login" in low or "unauthorized" in low or "401" in low:
-        return "Codex is not signed in. Use Settings → AI → Sign in with ChatGPT."
+        return "The Codex CLI is not signed in. Sign in under Settings → AI."
     if "not supported" in low and "model" in low:
-        return "Your ChatGPT plan does not offer the chosen model. Settings → AI → model: Codex default."
+        return "Your ChatGPT plan does not offer the chosen model. Settings → AI → ChatGPT model: Default."
     return f"ChatGPT: {message}"[:400] if message else "ChatGPT did not return an answer."
+
+
+def _chatgpt_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
+                      cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
+                      timeout_s: float) -> dict[str, Any]:
+    """One request on the user's ChatGPT plan through "Continue with ChatGPT" (chatgpt.py)."""
+    from . import chatgpt
+
+    return chatgpt.one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
 
 
 def _codex_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
                     cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
                     timeout_s: float) -> dict[str, Any]:
-    """One request to ChatGPT: through "Continue with ChatGPT" when the user signed in that way (chatgpt.py),
-    otherwise through the Codex CLI."""
-    from . import chatgpt
-
-    if chatgpt.signed_in():
-        return chatgpt.one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
+    """One request to ChatGPT through the Codex CLI."""
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="studia-codex-") as tmp:
         work = Path(tmp)
@@ -752,12 +762,15 @@ def _codex_one_shot(system_prompt: str, content: list[dict[str, Any]], model: st
             "model": model}
 
 
-class CodexSession:
-    """A chat through Codex: each turn is one ``codex exec`` that carries the lecture context and the conversation
-    so far (OpenAI caches the long, unchanged beginning, so follow-ups are cheap)."""
+class ChatGPTSession:
+    """A chat with ChatGPT ("Continue with ChatGPT", or one ``codex exec`` per turn through the Codex CLI): each
+    turn is one request that carries the lecture context and the conversation so far (OpenAI caches the long,
+    unchanged beginning, so follow-ups are cheap)."""
 
-    def __init__(self, system_prompt: str, model: str = "sonnet", effort: str = "low") -> None:
-        codex_cli_info()
+    def __init__(self, system_prompt: str, model: str = "sonnet", effort: str = "low", cli: bool = False) -> None:
+        if cli:
+            codex_cli_info()
+        self.request = _codex_one_shot if cli else _chatgpt_one_shot
         self.model = model
         self.key: Any = None
         self.system = system_prompt
@@ -780,8 +793,8 @@ class CodexSession:
             blocks = [b for b in content if b.get("type") != "text"]
             text = (f"=== CONVERSATION SO FAR ==={convo}\n\n" if convo else "") + f"=== NEW QUESTION ===\n{question}"
             try:
-                r = _codex_one_shot(self.system, [{"type": "text", "text": text}, *blocks], self.model, self.effort,
-                                    stop, on_text, timeout_s)
+                r = self.request(self.system, [{"type": "text", "text": text}, *blocks], self.model, self.effort,
+                                 stop, on_text, timeout_s)
             except Cancelled:
                 return {"text": "", "usage": {}, "stopped": True}
             self.history.append((question, r["text"]))
@@ -801,8 +814,8 @@ class CodexSession:
 def new_session(system_prompt: str, model: str = "sonnet", effort: str = "low") -> Any:
     """A chat with the chosen AI (Claude keeps one process per chat; the others are stateless)."""
     p = provider()
-    if p == "codex":
-        return CodexSession(system_prompt, model, effort)
+    if p in ("chatgpt", "codex"):
+        return ChatGPTSession(system_prompt, model, effort, cli=p == "codex")
     if p == "local":
         from . import appconfig
         from .local_llm import LocalSession
@@ -815,14 +828,21 @@ def new_session(system_prompt: str, model: str = "sonnet", effort: str = "low") 
 
 # ----------------------------------------------------------------------- set-up: status, sign-in, install
 def ai_status(which: str = "") -> dict[str, Any]:
-    """Everything the AI set-up shows, for each option: installed, signed in (for ChatGPT also "Continue with
-    ChatGPT"), the plan, a running install and the last test. ``which`` ("claude" or "codex"): check only that one
-    (the set-up polls it while you sign in); the other is then left out. Takes a second or two."""
+    """Everything the AI set-up shows, for each option: installed, signed in, the plan, a running install and the
+    last test. ``which`` ("chatgpt", "claude" or "codex"): check only that one (the set-up polls it while you sign
+    in); the others are then left out. Takes a second or two."""
     from . import ai_setup, appconfig
     from .components import LLM_PRESETS, llm_ready
 
     cfg = appconfig.load()
     out: dict[str, Any] = {"provider": provider(), "chosen": cfg.ai_provider}
+    if which in ("", "chatgpt"):
+        from . import chatgpt
+
+        native = chatgpt.status()          # signed_in, email, plan_allowed, registered, sign_in (a running attempt)
+        out["chatgpt"] = {**native, "model": cfg.codex_model, "needs": "ChatGPT Plus or Pro subscription",
+                          "models": _chatgpt_models() if native["signed_in"] and native["plan_allowed"] else [],
+                          "test": ai_setup.last_test("chatgpt")}
     if which in ("", "claude"):
         claude_cli_info.cache_clear()
         c = claude_cli_info()
@@ -831,15 +851,10 @@ def ai_status(which: str = "") -> dict[str, Any]:
                          "plan_status": ai_setup.plan_status("claude", auth["plan"], auth["logged_in"]),
                          "job": ai_setup.job("claude"), "test": ai_setup.last_test("claude")}
     if which in ("", "codex"):
-        from . import chatgpt
-
         codex_cli_info.cache_clear()
         x = codex_cli_info()
         auth = codex_auth() if x["available"] else {"logged_in": False, "plan": "", "email": ""}
-        native = chatgpt.status()
-        method = "app" if native["signed_in"] and native["plan_allowed"] else "cli" if auth["logged_in"] else ""
-        out["codex"] = {**x, **auth, "native": native, "method": method, "model": cfg.codex_model,
-                        "models": _chatgpt_models() if method == "app" else codex_models(),
+        out["codex"] = {**x, **auth, "model": cfg.codex_model, "models": codex_models(),
                         "needs": "ChatGPT Plus or Pro subscription", "ours": bool(ai_setup.codex_exe()),
                         "plan_status": ai_setup.plan_status("codex", auth["plan"], auth["logged_in"]),
                         "job": ai_setup.job("codex"), "test": ai_setup.last_test("codex")}

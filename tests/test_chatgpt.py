@@ -317,25 +317,66 @@ def test_stop_ends_a_quiet_answer_at_once(openai):
     assert isinstance(out.get("exc"), Cancelled) and time.monotonic() - started < 2
 
 
+def _no_cli():
+    return {"available": False, "path": "", "version": ""}
+
+
+_no_cli.cache_clear = lambda: None
+
+
 def test_the_app_uses_it_for_chatgpt_and_signing_out_forgets_it(openai, monkeypatch):
     from studia import appconfig
 
-    appconfig.update({"ai_provider": "codex"})
-
-    def no_cli():
-        return {"available": False, "path": "", "version": ""}
-    no_cli.cache_clear = lambda: None
-    monkeypatch.setattr(ai, "codex_cli_info", no_cli)
+    appconfig.update({"ai_provider": "chatgpt"})
+    monkeypatch.setattr(ai, "codex_cli_info", _no_cli)
+    assert not ai.ai_info()["available"]
     _sign_in(openai)
-    assert ai.ai_info()["available"]
+    info = ai.ai_info()
+    assert info["available"] and info["label"] == "ChatGPT" and info["can_plans"] and info["can_images"]
     openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "OK"}, {"type": "response.completed", "response": {}}))]
-    assert ai_setup.test("codex")["ok"]                                     # the set-up's test goes the new way
-    s = ai.ai_status("codex")["codex"]
-    assert s["method"] == "app" and s["native"]["email"] == "student@example.com" and s["models"] == ["gpt-6.1-sol"]
+    assert ai_setup.test("chatgpt")["ok"] and ai_setup.last_test("codex") == {}
+    s = ai.ai_status("chatgpt")
+    assert "claude" not in s and "codex" not in s
+    s = s["chatgpt"]
+    assert s["signed_in"] and s["plan_allowed"] and s["email"] == "student@example.com" and s["models"] == ["gpt-6.1-sol"]
+    openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "Hi"}, {"type": "response.completed", "response": {}}))]
+    assert ai.new_session("ctx").ask([{"type": "text", "text": "q"}])["text"] == "Hi"
     out = chatgpt.sign_out()
     assert out["revoked"] and not chatgpt.signed_in() and not (chatgpt._dir() / "chatgpt.bin").exists()
     revoke = [c[2] for c in openai.calls if c[1].endswith("/revoke")][0]
     assert revoke == {"token": "rt-1", "token_type_hint": "refresh_token", "client_id": "oaiapp_123"}
+
+
+def test_the_codex_cli_choice_never_uses_the_app_sign_in(openai, monkeypatch):
+    from studia import appconfig
+
+    _sign_in(openai)
+    appconfig.update({"ai_provider": "codex"})
+    monkeypatch.setattr(ai, "codex_cli_info", _no_cli)
+    assert not ai.ai_info()["available"]
+    with pytest.raises(RuntimeError, match="Codex CLI is not installed"):
+        ai.one_shot("x", [{"type": "text", "text": "y"}])
+    assert not [c for c in openai.calls if c[1].endswith("/responses")]
+
+
+def test_an_earlier_chatgpt_choice_moves_to_the_app_sign_in_once(openai):
+    from studia import appconfig
+
+    appconfig.save(appconfig.AppConfig(ai_provider="codex"))              # as an earlier version stored it
+    _sign_in(openai)
+    appconfig.migrate()
+    assert appconfig.load().ai_provider == "chatgpt" and appconfig.load().version == 1
+    appconfig.update({"ai_provider": "codex"})                            # chosen on purpose afterwards: kept
+    appconfig.migrate()
+    assert appconfig.load().ai_provider == "codex"
+
+
+def test_an_earlier_codex_cli_choice_stays(openai):
+    from studia import appconfig
+
+    appconfig.save(appconfig.AppConfig(ai_provider="codex"))              # not signed in in the app: it was the CLI
+    appconfig.migrate()
+    assert appconfig.load().ai_provider == "codex" and appconfig.load().version == 1
 
 
 def test_rs256_verification():

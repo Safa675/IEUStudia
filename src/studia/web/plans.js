@@ -293,7 +293,7 @@
     const todo = picked.flatMap((w) => w.todo_days || []);
     const ai = r.ai || {};
     const prep = sc.kind === "prep";
-    const models = (S.system.ai || {}).provider === "codex" ? [["sonnet", "Standard (recommended)"], ["haiku", "Quick"], ["opus", "Thorough (slowest)"]]
+    const models = St.isChatGPT() ? [["sonnet", "Standard (recommended)"], ["haiku", "Quick"], ["opus", "Thorough (slowest)"]]
       : [["sonnet", "Sonnet (recommended)"], ["haiku", "Haiku (lightest)"], ["opus", "Opus (best, heavy)"]];
     const kinds = [["videos", "youtube", "Video study plan", "Finds YouTube videos for these weeks and checks each one's transcript (captions) to see what it really teaches."],
       ["prep", "cap", "Exam prep pack", "A written pack: key ideas per learning outcome, a formula sheet, practice questions with solutions."]];
@@ -317,7 +317,7 @@
       <div class="cp-opts">
         ${prep ? "" : `<div class="cp-opt"><div class="t">Time for videos</div><select class="input" data-pd="minutes">${[60, 120, 180, 300, 480, 720].map((m) => `<option value="${m}" ${+sc.minutes === m ? "selected" : ""}>${m / 60} h</option>`).join("")}</select></div>`}
         <div class="cp-opt"><div class="t">Deadline</div><input class="input" type="date" data-pd="deadline" value="${esc(sc.deadline || "")}"></div>
-        <div class="cp-opt"><div class="t">${(S.system.ai || {}).provider === "codex" ? "Reasoning" : "Model"}</div><select class="input" data-pd="model">${models.map(([k, l]) => `<option value="${k}" ${sc.model === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        <div class="cp-opt"><div class="t">${St.isChatGPT() ? "Reasoning" : "Model"}</div><select class="input" data-pd="model">${models.map(([k, l]) => `<option value="${k}" ${sc.model === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
         ${prep ? "" : `<label class="cp-opt cp-switch"><div><div class="t">Turkish videos too</div><div class="d">Also consider videos in Turkish.</div></div><input type="checkbox" class="switch" data-pd="allow_tr" ${sc.allow_tr ? "checked" : ""}></label>`}
         ${prep || !sc.focus ? "" : `<label class="cp-opt cp-switch"><div><div class="t">Extras</div><div class="d">Also videos for the topics of these weeks that ${esc(sc.focus)} doesn't ask for (optional; a longer search).</div></div><input type="checkbox" class="switch" data-pd="extras" ${sc.extras ? "checked" : ""}></label>`}
       </div>

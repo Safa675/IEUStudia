@@ -275,6 +275,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
         return
     write_instance(name)
     set_app_id()
+    from . import appconfig
     from .accounts import activate
     from .config import load_settings
     from .log import setup_logging
@@ -282,6 +283,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
     from .winutil import process_age, windows_dark_mode
 
     moved = migrate_legacy_data()            # before anything opens the data folder
+    appconfig.migrate()                      # the AI choice as an earlier version stored it
     account = activate()                     # whose library, settings and password this run uses
     theme = load_settings().theme
     dark = theme == "dark" or (theme == "system" and windows_dark_mode())

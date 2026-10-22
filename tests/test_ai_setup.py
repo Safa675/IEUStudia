@@ -181,12 +181,14 @@ def test_the_test_message(monkeypatch):
     assert ai_setup.last_test("claude") == {}
     monkeypatch.setattr(ai, "_codex_one_shot", lambda *a, **k: {"text": ""})
     assert ai_setup.test("codex") == {**ai_setup.last_test("codex"), "ok": False, "error": "No answer came back."}
+    monkeypatch.setattr(ai, "_chatgpt_one_shot", lambda *a, **k: {"text": "OK"})
+    assert ai_setup.test("chatgpt")["ok"] and not ai_setup.last_test("codex")["ok"]
 
 
 def test_status_for_one_ai_only(monkeypatch):
     monkeypatch.setattr(ai, "claude_cli_info", _cached({"available": True, "path": "claude.exe", "version": "2.1.0"}))
     monkeypatch.setattr(ai, "claude_auth", lambda: {"logged_in": True, "plan": "pro", "email": "a@b.c"})
     s = ai.ai_status("claude")
-    assert "codex" not in s and "local" not in s
+    assert "chatgpt" not in s and "codex" not in s and "local" not in s
     c = s["claude"]
     assert c["plan_status"]["label"] == "Claude Pro" and c["job"] == {} and c["test"] == {}

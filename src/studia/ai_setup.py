@@ -1,12 +1,12 @@
-"""Connecting Claude or ChatGPT, step by step: what is missing on this PC, installing it (without a console window),
+"""Connecting ChatGPT or Claude, step by step: what is missing on this PC, installing it (without a console window),
 the sign-in, the plan and a short test message.
 
-Claude is reached only through Anthropic's own Claude Code (not the Claude desktop app), installed with Anthropic's
-installer script (https://claude.ai/install.ps1, into ~\\.local\\bin); signing in happens in Claude Code's own flow
-(:func:`studia.ai.start_login`). ChatGPT is reached with "Continue with ChatGPT" (chatgpt.py) or, for people who
-already use it, through OpenAI's Codex CLI, which this module can install: OpenAI's npm package for Windows
-(@openai/codex, the win32 build), fetched from the npm registry and checked against its published SHA-512 - the same
-files npm would install, so Node.js is not needed.
+ChatGPT is reached with "Continue with ChatGPT" (chatgpt.py), which needs nothing installed, or, as its own choice
+for people who already use it, through OpenAI's Codex CLI, which this module can install: OpenAI's npm package for
+Windows (@openai/codex, the win32 build), fetched from the npm registry and checked against its published SHA-512 -
+the same files npm would install, so Node.js is not needed. Claude is reached only through Anthropic's own Claude
+Code (not the Claude desktop app), installed with Anthropic's installer script (https://claude.ai/install.ps1, into
+~\\.local\\bin); signing in happens in Claude Code's own flow (:func:`studia.ai.start_login`), as for the Codex CLI.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ TEST_SYSTEM = "This is a connection test. Reply with the single word OK and noth
 
 _lock = threading.Lock()
 _jobs: dict[str, dict[str, Any]] = {}       # "claude" | "codex" -> {"state", "line", "error", "started"}
-_tests: dict[str, dict[str, Any]] = {}      # "claude" | "codex" -> the last test's result
+_tests: dict[str, dict[str, Any]] = {}      # "chatgpt" | "claude" | "codex" -> the last test's result
 
 
 # ----------------------------------------------------------------------------- where things are
@@ -335,8 +335,9 @@ def test(which: str) -> dict[str, Any]:
     try:
         if which == "claude":
             res = ai._claude_one_shot(TEST_SYSTEM, content, model="haiku", effort="low", timeout_s=180)
-        elif which == "codex":
-            res = ai._codex_one_shot(TEST_SYSTEM, content, "haiku", "low", None, None, 180)
+        elif which in ("chatgpt", "codex"):
+            ask = ai._chatgpt_one_shot if which == "chatgpt" else ai._codex_one_shot
+            res = ask(TEST_SYSTEM, content, "haiku", "low", None, None, 180)
         else:
             raise ValueError(which)
         ok = bool((res.get("text") or "").strip())
