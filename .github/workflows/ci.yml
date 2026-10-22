@@ -1,0 +1,26 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: uv sync --group dev
+      - name: Tests
+        run: uv run pytest -q
+      - name: UI scripts parse
+        shell: pwsh
+        run: |
+          Get-ChildItem src/studia/web/*.js | ForEach-Object {
+            node -e "new Function(require('fs').readFileSync(process.argv[1], 'utf8'))" $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Syntax error in $($_.Name)" }
+          }

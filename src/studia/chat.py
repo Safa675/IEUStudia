@@ -1,0 +1,540 @@
+"""Free chat with Claude about the student's lectures: one class day, or several days of a course.
+
+A chat's material (instructions + compact transcripts, optionally slide images) is fixed when it starts.
+While a chat is in use it keeps one Claude Code process, so follow-up questions read the lectures from
+Claude's prompt cache instead of paying for them again. Idle processes are closed after a while; the next
+question then starts a fresh process that receives the earlier conversation as text.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import glob
+import json
+import logging
+import os
+import shutil
+import tempfile
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Optional
+
+from . import ai, store
+from .domain import Course, Recording
+from .knowledge import course_brief, retrieve
+from .outputs.ai_copy import compact_day
+from .outputs.common import MONTHS, WEEKDAYS_SHORT, course_display, kind_label, long_date
+from .outputs.markdown import part_views
+from .outputs.writer import atomic_write, course_dir, safe_name
+
+log = logging.getLogger("studia")
+
+MAX_CONTEXT_TOKENS = 150_000      # leaves room for the conversation in Claude's 200k context window
+MAX_SLIDES = 60
+IDLE_CLOSE_S = 600                # Claude's prompt cache expires after ~5 idle minutes anyway
+MAX_LIVE = 3                      # Claude Code processes kept open at once
+MODELS = ("haiku", "sonnet", "opus")
+FOCUS = ("full", "highlights", "course")      # course: every lecture's highlights + search per question
+EMIT_EVERY_S = 0.08
+SAVE_EVERY_S = 3.0
+
+
+def system_prompt(n_days: int, focus: str, slides: bool) -> str:
+    multi = n_days > 1
+    cite = "[L2 P1 05:10] (lecture, part, time)" if multi else "[P2 14:05] (part, time)"
+    fmt = ("Format: a line starting with '#' begins a lecture" + (" (L1, L2, … in date order)" if multi else "")
+           + ", '## Part N (hh:mm–hh:mm)' begins one recording of it, and every paragraph starts with [mm:ss] "
+           "from the start of that part. ⭐ marks moments the lecturer emphasised (exam, quiz, important, homework, "
+           "deadlines); ⚠ and [unclear] mark audio that was hard to understand.")
+    if slides:
+        fmt += " (slide N) is the slide on screen; the slide images are attached to the student's first message."
+    lines = [
+        "You are a friendly, precise study assistant for a university engineering student, chatting about the "
+        "student's own lectures. They are given below as automatic speech-recognition transcripts: mostly English, "
+        "with Turkish passages tagged [TR]. Names, symbols and formulas may be misheard — fix obvious errors from "
+        "context and say when you are guessing.",
+        "",
+        fmt,
+    ]
+    if focus in ("highlights", "course"):
+        lines += ["", "Only the moments the lecturer emphasised (⭐) are included, not the full lectures; say so "
+                      "when a question needs more than that."]
+    lines += [
+        "",
+        "Under COURSE you get the course's learning outcomes (LO1, LO2, …), its weekly plan, the assessments the lecturer "
+        "announced (with the outcomes each covers) and the latest announcements. Some questions come with passages "
+        "from the course files (slides, PDFs) and from other lectures, found by keyword search: use the relevant ones "
+        "and cite them as labelled, e.g. [Week05_Student.pdf p.12].",
+        "",
+        "How to answer:",
+        "- Answer directly and concisely in Markdown; formulas in LaTeX ($...$). Use lists or tables when they help.",
+        f"- Base answers on the lectures and cite the moments you rely on as {cite}, so the student can jump there.",
+        "- If the lectures do not cover something, say so; you may then answer from general knowledge, clearly "
+        "labelled as such.",
+        "- For questions about quizzes or exams, first list what the lecturer explicitly said (brief quotes with "
+        "citations), then give your own prediction, clearly labelled as a prediction.",
+        "- Reply in the language the student writes in.",
+        "",
+        "You are inside the IEUStudia app, which can do things for the student. When it would clearly help, or when "
+        "the student asks for something the app does, end your answer with ONE block like this; the app shows it as "
+        "a button the student can press (you never start anything yourself, so never say that you did):",
+        "```ieustudia",
+        '{"action": "video_plan", "weeks": [4, 5], "focus": "Quiz 2"}',
+        "```",
+        "Actions (all for this course): video_plan (YouTube videos for weeks, checked through their transcripts; "
+        "weeks, focus), prep_pack (written exam prep pack; weeks, focus), get_ready (checklist for an assessment; "
+        "focus), transcribe (lectures of weeks, or of one date YYYY-MM-DD), download_files (weeks), study_notes "
+        "(date), open_lecture (date, part, at \"mm:ss\"), weekly_digest, calendar (put the announced quizzes and "
+        "exams in the student's calendar), sync_course (check IEULearn, transcribe and download what is missing). "
+        "Use the week numbers and assessment names exactly as listed under COURSE.",
+    ]
+    return "\n".join(lines)
+
+
+def replay_text(history: list[dict[str, Any]]) -> str:
+    """The earlier conversation, for a new Claude process (after an idle close, a model switch or a crash)."""
+    lines = ["(We already talked about these lectures. The conversation so far, oldest first:)", ""]
+    for m in history:
+        text = (m.get("text") or "").strip()
+        if not text:
+            continue
+        if m["role"] == "user":
+            lines.append(f"Student: {text}")
+        else:
+            lines.append(f"You: {text}" + (" (answer was stopped early)" if m.get("status") == "stopped" else ""))
+        lines.append("")
+    lines.append("(End of the earlier conversation. My new question:)")
+    return "\n".join(lines)
+
+
+def short_date(d: dt.date) -> str:
+    return f"{WEEKDAYS_SHORT[d.weekday()]} {d.day} {MONTHS[d.month - 1][:3]}"
+
+
+def _clean_stale_workdirs(max_age_s: float = 12 * 3600) -> None:
+    """Remove Claude work folders left behind by a crash (they hold a copy of the transcripts)."""
+    now = time.time()
+    for p in glob.glob(os.path.join(tempfile.gettempdir(), "studia-chat-*")) + glob.glob(os.path.join(tempfile.gettempdir(), "ls-chat-*")):
+        try:
+            if now - os.path.getmtime(p) > max_age_s:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
+
+
+class ChatService:
+    def __init__(self, services: Any) -> None:
+        self._s = services
+        self._lock = threading.Lock()
+        self._live: dict[str, ai.ClaudeSession] = {}
+        self._running: dict[str, threading.Event] = {}      # chat id -> stop event of the answer being written
+        self._closing: list[threading.Thread] = []
+        try:
+            ai.restore_limits(json.loads(self.lib.get_meta("claude_limits") or "{}"))
+        except ValueError:
+            pass
+        threading.Thread(target=_clean_stale_workdirs, daemon=True).start()
+        threading.Thread(target=self._reaper, name="chat-reaper", daemon=True).start()
+
+    @property
+    def lib(self) -> Any:
+        return self._s.lib
+
+    # ------------------------------------------------------------------ material
+    def _load_days(self, course_id: str, day_keys: list[str]) -> list[Optional[tuple[str, Course, list[Recording], dict]]]:
+        out: list[Optional[tuple[str, Course, list[Recording], dict]]] = []
+        for key in day_keys:
+            try:
+                course, recs = self._s.day(key)
+            except KeyError:
+                out.append(None)
+                continue
+            trans = store.load_transcripts([r.delivery_id for r in recs]) if course.id == course_id else {}
+            out.append((key, course, recs, trans) if trans else None)
+        return out
+
+    def all_days(self, course_id: str) -> list[str]:
+        """Every transcribed class day of a course (the "whole course" chat)."""
+        done = self.lib.transcribed_ids()
+        return list(dict.fromkeys(r.day_key for r in self.lib.recordings(course_id) if r.delivery_id in done))
+
+    def ordered_days(self, course_id: str, day_keys: list[str]) -> list[str]:
+        """The transcribed days among ``day_keys``, in lecture order (they become L1, L2, …)."""
+        days = [d for d in self._load_days(course_id, list(dict.fromkeys(day_keys))) if d]
+        days.sort(key=lambda d: min(r.start for r in d[2]))
+        return [d[0] for d in days]
+
+    def context(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False) -> dict[str, Any]:
+        """System prompt and slide images for ``day_keys`` (already in lecture order; a day that is gone keeps
+        its L-number so citations in older answers stay valid)."""
+        multi = len(day_keys) > 1
+        texts: list[str] = []
+        images: list[tuple[str, Path]] = []        # every slide image available, whether attached or not
+        for n, d in enumerate(self._load_days(course_id, day_keys), start=1):
+            if d is None:
+                continue
+            _, course, recs, trans = d
+            label = f"L{n}" if multi else ""
+            sl = {r.delivery_id: store.load_slides(r.delivery_id) for r in recs}
+            text = compact_day(course, recs, trans, sl if slides else None, label=label,
+                               only_starred=focus in ("highlights", "course"))
+            if not text:
+                continue
+            texts.append(text)
+            for p in part_views(recs, trans, sl):
+                seen: set[int] = set()
+                for s in p.slides if p.transcript else []:
+                    if s.index not in seen and s.path and os.path.isfile(s.path):
+                        seen.add(s.index)
+                        images.append((f"[{label + ' ' if label else ''}Part {p.index}, slide {s.index}]",
+                                       Path(s.path)))
+        attached = images[:MAX_SLIDES] if slides else []
+        brief = course_brief(self.lib, self._s.settings, course_id)
+        prompt = (system_prompt(len(day_keys), focus, bool(attached)) + (f"\n\n=== COURSE ===\n\n{brief}" if brief else "")
+                  + "\n\n=== LECTURES ===\n\n" + "\n\n".join(texts))
+        return {"system": prompt, "images": attached, "slides_total": len(images), "n_days": len(texts),
+                "tokens": ai.estimate_tokens(prompt, len(attached))["input"]}
+
+    def scope_options(self, course_id: str) -> dict[str, Any]:
+        """The transcribed class days of a course with their size, for the "new chat" picker."""
+        course = self.lib.get_course(course_id)
+        if course is None:
+            raise RuntimeError("Unknown course.")
+        done = self.lib.transcribed_ids()
+        keys = list(dict.fromkeys(r.day_key for r in self.lib.recordings(course_id) if r.delivery_id in done))
+        days = []
+        for d in self._load_days(course_id, keys):
+            if d is None:
+                continue
+            key, _, recs, trans = d
+            full = compact_day(course, recs, trans)
+            if not full:
+                continue
+            hl = compact_day(course, recs, trans, only_starred=True)
+            parts = part_views(recs, trans)
+            start = min(r.start for r in recs)
+            days.append({
+                "day_key": key, "date": start.date().isoformat(), "label": short_date(start.date()),
+                "kind": recs[0].kind, "kind_label": kind_label(recs[0].kind),
+                "parts": sum(1 for p in parts if p.transcript),
+                "stars": sum(1 for p in parts for para in p.paragraphs if para.star),
+                "slides": sum(len({s.index for s in store.load_slides(r.delivery_id)}) for r in recs
+                              if r.delivery_id in trans),
+                "tokens": ai.text_tokens(full), "hl_tokens": ai.text_tokens(hl),
+                "start": start.isoformat(),
+            })
+        days.sort(key=lambda x: x["start"], reverse=True)
+        return {"course": {"id": course.id, "code": course.code, "name": course.name}, "days": days,
+                "max_tokens": MAX_CONTEXT_TOKENS, "max_slides": MAX_SLIDES}
+
+    def courses(self) -> list[dict[str, Any]]:
+        """Courses that have at least one transcribed class day."""
+        done = self.lib.transcribed_ids()
+        out = []
+        for c in self.lib.courses():
+            days = {r.day_key for r in self.lib.recordings(c.id) if r.delivery_id in done}
+            if days:
+                out.append({"id": c.id, "code": c.code, "name": c.name, "days": len(days)})
+        return out
+
+    # ------------------------------------------------------------------ chats
+    def _scope_days(self, chat: dict[str, Any]) -> list[str]:
+        return [str(k) for k in (chat.get("scope") or {}).get("days") or []]
+
+    def _day_labels(self, chat: dict[str, Any]) -> list[dict[str, Any]]:
+        out = []
+        for n, key in enumerate(self._scope_days(chat), start=1):
+            try:
+                _, recs = self._s.day(key)
+                start = min(r.start for r in recs)
+                out.append({"key": key, "n": n, "label": short_date(start.date()), "kind": kind_label(recs[0].kind),
+                            "long": long_date(start.date()), "gone": False})
+            except KeyError:
+                _, date_s, kind = (key.split("|") + ["", ""])[:3]
+                out.append({"key": key, "n": n, "label": date_s, "kind": kind_label(kind), "long": date_s, "gone": True})
+        return out
+
+    def _title(self, chat: dict[str, Any], days: list[dict[str, Any]]) -> str:
+        if chat.get("title"):
+            return chat["title"]
+        q = " ".join((chat.get("first_question") or "").split())
+        if q:
+            return q if len(q) <= 64 else q[:61].rstrip() + "…"
+        return "New chat"
+
+    def _scope_label(self, chat: dict[str, Any], days: list[dict[str, Any]]) -> str:
+        if len(days) == 1:
+            label = f"{days[0]['label']} · {days[0]['kind']}"
+        else:
+            label = f"{len(days)} class days" + (f" ({days[0]['label']} – {days[-1]['label']})" if days else "")
+        if (chat.get("scope") or {}).get("focus") == "course":
+            return f"Whole course · {len(days)} lectures' highlights + course files"
+        if (chat.get("scope") or {}).get("focus") == "highlights":
+            label += " · highlights only"
+        return label
+
+    def summary(self, chat: dict[str, Any]) -> dict[str, Any]:
+        course = self.lib.get_course(chat["course_id"])
+        days = self._day_labels(chat)
+        return {"id": chat["id"], "course_id": chat["course_id"], "course_code": course.code if course else "",
+                "title": self._title(chat, days), "scope_label": self._scope_label(chat, days),
+                "model": chat.get("model") or "sonnet", "updated_at": chat.get("updated_at"),
+                "n_messages": chat.get("n_messages", 0), "running": chat["id"] in self._running}
+
+    def list(self) -> list[dict[str, Any]]:
+        out = []
+        cutoff = (dt.datetime.now() - dt.timedelta(hours=1)).isoformat(timespec="seconds")
+        for c in self.lib.chats():
+            if c.get("n_messages"):
+                out.append(self.summary(c))
+            elif (c.get("created_at") or "") < cutoff and c["id"] not in self._running:
+                self.lib.delete_chat(c["id"])          # started but never used
+        return out
+
+    def view(self, chat_id: str) -> dict[str, Any]:
+        chat = next((c for c in self.lib.chats() if c["id"] == chat_id), None)
+        if chat is None:
+            raise RuntimeError("This chat no longer exists.")
+        scope = chat.get("scope") or {}
+        ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"), bool(scope.get("slides")))
+        course = self.lib.get_course(chat["course_id"])
+        messages = [{"seq": m["seq"], "role": m["role"], "text": m["text"], "status": m["status"],
+                     "usage": m.get("usage") or {}, "created_at": m["created_at"]} for m in self.lib.chat_messages(chat_id)]
+        return {**self.summary(chat), "days": self._day_labels(chat), "focus": scope.get("focus", "full"),
+                "slides": bool(scope.get("slides")), "context_tokens": ctx["tokens"], "images": len(ctx["images"]),
+                "course_name": course_display(course) if course else "", "messages": messages,
+                "limits": ai.usage_limits()}
+
+    def create(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False,
+               model: str = "sonnet") -> dict[str, Any]:
+        focus = focus if focus in FOCUS else "full"
+        model = model if model in MODELS else "sonnet"
+        days = self.ordered_days(course_id, self.all_days(course_id) if focus == "course" else day_keys)
+        if not days:
+            raise RuntimeError("Pick at least one transcribed class day.")
+        ctx = self.context(course_id, days, focus, slides)
+        if ctx["tokens"] > MAX_CONTEXT_TOKENS:
+            raise RuntimeError(f"That is too much for one chat (~{ctx['tokens'] // 1000}k tokens, the limit is "
+                               f"{MAX_CONTEXT_TOKENS // 1000}k). Pick fewer class days or use highlights only.")
+        chat_id = uuid.uuid4().hex[:12]
+        self.lib.create_chat(chat_id, course_id, {"days": days, "focus": focus, "slides": bool(slides and ctx["images"])},
+                             model)
+        return self.view(chat_id)
+
+    def update(self, chat_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        if self.lib.get_chat(chat_id) is None:
+            raise RuntimeError("This chat no longer exists.")
+        fields: dict[str, Any] = {}
+        if "title" in patch:
+            fields["title"] = " ".join(str(patch["title"] or "").split())[:120]
+        if patch.get("model") in MODELS:
+            fields["model"] = patch["model"]          # the next question starts a new process with this model
+        if fields:
+            self.lib.update_chat(chat_id, **fields)
+        return self.view(chat_id)
+
+    def delete(self, chat_id: str) -> None:
+        self.stop(chat_id)
+        self._drop(chat_id)
+        self.lib.delete_chat(chat_id)
+
+    def stop(self, chat_id: str) -> None:
+        with self._lock:
+            ev = self._running.get(chat_id)
+        if ev is not None:
+            ev.set()
+
+    # ------------------------------------------------------------------ asking
+    def send(self, chat_id: str, text: str) -> dict[str, Any]:
+        chat = self.lib.get_chat(chat_id)
+        if chat is None:
+            raise RuntimeError("This chat no longer exists.")
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("Type a question first.")
+        with self._lock:
+            if chat_id in self._running:
+                raise RuntimeError("Claude is still answering the previous question.")
+            stop = self._running[chat_id] = threading.Event()
+        try:
+            history = self.lib.chat_messages(chat_id)
+            user_seq = self.lib.add_chat_message(chat_id, "user", text)
+            seq = self.lib.add_chat_message(chat_id, "assistant", "", status="streaming")
+        except Exception:
+            with self._lock:
+                self._running.pop(chat_id, None)
+            raise
+        threading.Thread(target=self._answer, args=(chat, history, text, seq, stop), name="chat", daemon=True).start()
+        return {"user_seq": user_seq, "seq": seq}
+
+    def retry(self, chat_id: str, seq: int) -> dict[str, Any]:
+        """Ask the question behind a failed last answer again, replacing both (no duplicate in the history)."""
+        msgs = self.lib.chat_messages(chat_id)
+        if not msgs or msgs[-1]["seq"] != seq or msgs[-1]["role"] != "assistant" or msgs[-1]["status"] != "error":
+            raise RuntimeError("Only a failed last answer can be tried again.")
+        question = next((m for m in reversed(msgs) if m["role"] == "user"), None)
+        if question is None:
+            raise RuntimeError("Only a failed last answer can be tried again.")
+        with self._lock:
+            if chat_id in self._running:
+                raise RuntimeError("Claude is still answering the previous question.")
+        self.lib.delete_chat_messages(chat_id, question["seq"])
+        return {**self.send(chat_id, question["text"]), "removed_from": question["seq"], "question": question["text"]}
+
+    def _emit(self, chat_id: str, seq: int, state: str, text: str, **extra: Any) -> None:
+        self._s.emit({"type": "chat", "chat_id": chat_id, "seq": seq, "state": state, "text": text, **extra})
+
+    def _session(self, chat: dict[str, Any]) -> tuple[ai.ClaudeSession, Optional[list[tuple[str, Path]]]]:
+        """The chat's live Claude process, or a new one when there is none for this model and material; for a
+        new one the slide images to attach to its first message are returned too (else None)."""
+        cid = chat["id"]
+        key = (chat.get("model"), json.dumps(chat.get("scope") or {}, sort_keys=True))
+        with self._lock:
+            live = self._live.get(cid)
+            if live is not None and live.alive() and live.key == key:
+                return live, None
+            old = self._live.pop(cid, None)
+        if old is not None:
+            self._close_later(old)
+        scope = chat.get("scope") or {}
+        ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"), bool(scope.get("slides")))
+        if not ctx["n_days"]:
+            raise RuntimeError("The class days of this chat are no longer available.")
+        session = ai.new_session(ctx["system"], model=chat.get("model") or "sonnet")
+        session.key = key
+        with self._lock:
+            self._live[cid] = session
+            idle = sorted((s.last_used, c) for c, s in self._live.items() if c != cid and c not in self._running)
+            extra = [self._live.pop(c) for _, c in idle[:max(0, len(self._live) - MAX_LIVE)]]
+        for s in extra:
+            self._close_later(s)
+        return session, ctx["images"]
+
+    def _answer(self, chat: dict[str, Any], history: list[dict[str, Any]], question: str, seq: int,
+                stop: threading.Event) -> None:
+        cid = chat["id"]
+        text = ""
+        last_emit, last_save = [0.0], [time.monotonic()]
+
+        def on_text(t: str) -> None:
+            nonlocal text
+            text = t
+            now = time.monotonic()
+            if now - last_emit[0] >= EMIT_EVERY_S:
+                last_emit[0] = now
+                self._emit(cid, seq, "streaming", t)
+            if now - last_save[0] >= SAVE_EVERY_S:     # keep the partial answer if the app is closed meanwhile
+                last_save[0] = now
+                self.lib.update_chat_message(cid, seq, t, "streaming")
+
+        try:
+            self._emit(cid, seq, "streaming", "")
+            session, images = self._session(chat)
+            content: list[dict[str, Any]] = []
+            if images is not None:                          # a new process: give it what it has not seen
+                if images:
+                    content.append({"type": "text", "text": "The slide images of these lectures, in order:"})
+                    for label, path in images:
+                        if stop.is_set():
+                            break
+                        content += [{"type": "text", "text": label}, ai.image_block(path)]
+                if history:
+                    content.append({"type": "text", "text": replay_text(history)})
+            scope = chat.get("scope") or {}
+            try:                                            # course files and other lectures that match the question
+                found, sources = retrieve(self.lib, chat["course_id"], question,
+                                          skip_days=self._scope_days(chat) if scope.get("focus", "full") == "full" else ())
+            except Exception:  # noqa: BLE001 - the answer works without it
+                log.debug("retrieval failed", exc_info=True)
+                found, sources = "", []
+            if found:
+                content.append({"type": "text", "text": found})
+            content.append({"type": "text", "text": question})
+            if stop.is_set():
+                res = {"text": "", "usage": {}, "stopped": True}
+                if images is not None:      # it never got its first message: start afresh next time
+                    self._drop(cid)
+            else:
+                res = session.ask(content, on_text, stop)
+            text = res["text"] or text
+            state = "stopped" if res["stopped"] else "done"
+            usage = {**(res["usage"] or {}), **({"sources": sources} if sources else {})}
+            self.lib.update_chat_message(cid, seq, text, state, usage)
+            if not session.alive():
+                self._drop(cid)
+            self._emit(cid, seq, state, text, usage=usage, limits=ai.usage_limits())
+        except Exception as exc:  # noqa: BLE001 - reported in the chat
+            log.warning("Chat %s failed: %s", cid, exc)
+            msg = str(exc) or "Claude failed."
+            self.lib.update_chat_message(cid, seq, text, "error", {"error": msg})
+            self._drop(cid)
+            self._emit(cid, seq, "error", text, error=msg, limits=ai.usage_limits())
+        finally:
+            with self._lock:
+                self._running.pop(cid, None)
+            if self.lib.get_chat(cid) is None:     # deleted while its process was starting
+                self._drop(cid)
+            lim = ai.usage_limits()
+            if lim:
+                self.lib.set_meta("claude_limits", json.dumps(lim))
+
+    # ------------------------------------------------------------------ processes
+    def _close_later(self, session: ai.ClaudeSession) -> None:
+        t = threading.Thread(target=session.close, name="chat-close", daemon=True)
+        t.start()
+        with self._lock:
+            self._closing = [x for x in self._closing if x.is_alive()] + [t]
+
+    def _drop(self, chat_id: str) -> None:
+        with self._lock:
+            s = self._live.pop(chat_id, None)
+        if s is not None:
+            self._close_later(s)
+
+    def _reaper(self) -> None:
+        while True:
+            time.sleep(30)
+            now = time.monotonic()
+            with self._lock:
+                idle = [c for c, s in self._live.items()
+                        if c not in self._running and (now - s.last_used > IDLE_CLOSE_S or not s.alive())]
+            for c in idle:
+                self._drop(c)
+
+    def shutdown(self) -> None:
+        """App is closing: end every Claude process right away."""
+        with self._lock:
+            for ev in self._running.values():
+                ev.set()
+            sessions = list(self._live.values())
+            self._live.clear()
+            closing = list(self._closing)
+        for s in sessions:
+            s.terminate()
+        for t in closing:
+            t.join(timeout=6)
+
+    # ------------------------------------------------------------------ export
+    def export(self, chat_id: str) -> Path:
+        v = self.view(chat_id)
+        course = self.lib.get_course(v["course_id"])
+        if course is None:
+            raise RuntimeError("Unknown course.")
+        days = ", ".join(f"{d['long']} ({d['kind']})" for d in v["days"])
+        lines = [f"# {v['title']}", "",
+                 f"**Course:** {v['course_name']}  ", f"**Class days:** {days}  ",
+                 f"**Model:** Claude {v['model'].title()}" + (" · highlights only" if v["focus"] == "highlights" else ""),
+                 "", f"*Chat with Claude in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
+        for m in v["messages"]:
+            if m["role"] == "user":
+                lines += [f"**You:** {m['text'].strip()}", ""]
+            elif m["text"].strip():
+                lines += ["**Claude:**", "", m["text"].strip() + (" *(stopped)*" if m["status"] == "stopped" else ""),
+                          "", "---", ""]
+        stamp = ((self.lib.get_chat(chat_id) or {}).get("created_at") or "")[:10]
+        name = safe_name(f"{stamp} - {v['title']}" if stamp else v["title"], limit=110) + f" [{chat_id[:6]}]"
+        path = course_dir(self._s.output_root, course, self.lib.courses(True)) / "AI chats" / f"{name}.md"
+        atomic_write(path, "\n".join(lines).rstrip() + "\n")
+        return path

@@ -1,0 +1,42 @@
+[project]
+name = "studia"
+version = "2.1.0"
+description = "IEUStudia: an unofficial study app for IEU students. IEULearn courses and Panopto lectures transcribed on your PC, heads-ups about quizzes and exams, study plans and optional AI."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "faster-whisper>=1.2.1,<1.3",
+    "requests>=2.32",
+    "pywebview>=5.3",
+    "pypdfium2>=4.30",          # PDF text + page images of course materials
+    "yt-dlp>=2025.1",           # video study plans: YouTube search, captions and chapters (no API key)
+]
+
+[project.urls]
+Homepage = "https://github.com/mirzaisi/IEUStudia"
+Issues = "https://github.com/mirzaisi/IEUStudia/issues"
+
+[project.optional-dependencies]
+# Only needed on machines WITHOUT the CUDA 12 toolkit on PATH (provides cuBLAS / cuDNN DLLs).
+gpu = ["nvidia-cublas-cu12>=12.4", "nvidia-cudnn-cu12>=9,<10"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+build = ["pyinstaller>=6.10"]           # Windows release build: packaging/IEUStudia.spec
+
+[project.scripts]
+studia = "studia.cli:main"
+
+[project.gui-scripts]
+studia-gui = "studia.app:main"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/studia"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

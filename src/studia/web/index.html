@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IEUStudia</title>
+  <script>
+    // apply the theme before first paint (no white flash in dark mode)
+    (function () {
+      var t = "system";
+      try { t = localStorage.getItem("studia-theme") || localStorage.getItem("ls-theme") || "system"; } catch (e) {}
+      var dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    })();
+  </script>
+  <style>
+    /* start-up screen: inline so it shows on the very first paint, before any script or stylesheet */
+    html, body { margin: 0; height: 100%; background: #fafafa; }
+    :root[data-theme="dark"], :root[data-theme="dark"] body { background: #0b0b0b; }
+    .splash { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 12px; background: #fafafa; color: #3d3d3d; user-select: none;
+      font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; transition: opacity .25s ease; }
+    :root[data-theme="dark"] .splash { background: #0b0b0b; color: #c6c6c6; }
+    .splash.out { opacity: 0; pointer-events: none; }
+    .splash-logo { width: 72px; height: 72px; filter: drop-shadow(0 10px 22px rgba(0, 0, 0, .2));
+      animation: splash-pop .45s cubic-bezier(.2, .9, .3, 1.2) both; }
+    :root[data-theme="dark"] .splash-logo { filter: drop-shadow(0 0 1px rgba(255, 255, 255, .5)); }   /* a hairline so the black tile shows */
+    .splash-name { font: 600 22px "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; letter-spacing: -.01em;
+      color: #0a0a0a; margin-top: 4px; }
+    :root[data-theme="dark"] .splash-name { color: #f0f0f0; }
+    .splash-bar { width: 176px; height: 3px; border-radius: 2px; background: rgba(128, 128, 128, .2); overflow: hidden; margin-top: 8px; }
+    .splash-bar i { display: block; width: 38%; height: 100%; border-radius: 2px; background: #0a0a0a;
+      animation: splash-slide 1.15s ease-in-out infinite; }
+    :root[data-theme="dark"] .splash-bar i { background: #f4f4f4; }
+    .splash-status { min-height: 20px; max-width: 420px; text-align: center; padding: 0 20px; }
+    .splash-error { max-width: 460px; text-align: center; color: #dc2626; padding: 0 20px; user-select: text; }
+    :root[data-theme="dark"] .splash-error { color: #f87171; }
+    .splash-actions { display: flex; gap: 8px; margin-top: 4px; }
+    @keyframes splash-slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(270%); } }
+    @keyframes splash-pop { from { opacity: 0; transform: scale(.9); } }
+  </style>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="root">
+    <div class="splash" id="splash" role="status" aria-live="polite">
+      <!-- the mark from assets/logo.svg, inlined so it paints before any file loads -->
+      <svg class="splash-logo" viewBox="0 0 256 256" aria-hidden="true">
+        <path fill="#000" d="M56 0h144a56 56 0 0 1 56 56v144a56 56 0 0 1-56 56H56a56 56 0 0 1-56-56V56A56 56 0 0 1 56 0Z"/>
+        <path fill="#fff" d="M85 59h86c8 0 14 6 14 14v120c0 4-4 7-9 4l-48-29-48 29c-5 3-9 0-9-4V73c0-8 6-14 14-14Z"/>
+        <path fill="#000" d="m110 93 48 31-48 31V93Z"/>
+      </svg>
+      <div class="splash-name">IEUStudia</div>
+      <div class="splash-bar"><i></i></div>
+      <div class="splash-status" id="splash-status">Starting…</div>
+    </div>
+  </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="overlay"></div>
+  <script src="icons.js"></script>
+  <script src="app.js"></script>
+  <script src="course.js"></script>
+  <script src="plans.js"></script>
+  <script src="digest.js"></script>
+  <script src="catchup.js"></script>
+  <script src="setup.js"></script>
+  <script src="chatactions.js"></script>
+</body>
+</html>

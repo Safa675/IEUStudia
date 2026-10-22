@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- The IEUStudia logo for dark backgrounds (the README on GitHub in dark mode): the colours of logo.svg swapped. -->
+  <path fill="#fff" d="M56 0h144a56 56 0 0 1 56 56v144a56 56 0 0 1-56 56H56a56 56 0 0 1-56-56V56A56 56 0 0 1 56 0Z"/>
+  <path fill="#000" d="M85 59h86c8 0 14 6 14 14v120c0 4-4 7-9 4l-48-29-48 29c-5 3-9 0-9-4V73c0-8 6-14 14-14Z"/>
+  <path fill="#fff" d="m110 93 48 31-48 31V93Z"/>
+</svg>

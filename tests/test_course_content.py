@@ -1,0 +1,254 @@
+"""Course content: IEULearn pages and the public syllabus (parsers), the lecturer's heads-up (alerts) and assessment
+plan, weeks for plans without dates, and the dashboard cover pictures."""
+
+import datetime as dt
+import sqlite3
+
+import pytest
+
+from studia import alerts, coursesite, store
+from studia.alerts import _excerpt, assessment_plan, categories, course_alerts, matches
+from studia.config import Settings
+from studia.coursesite import Announcement, Unit, parse_announcements, parse_overview, parse_unit_plan
+from studia.domain import Course, Recording, Segment, Transcript
+from studia.ieulearn import parse_dashboard
+from studia.library import Library
+from studia.materials import unit_week
+from studia.outputs.highlights import _tr_lower
+from studia.syllabus import parse_syllabus
+from studia.views import EXAM_TOPIC, _cover_uri, course_detail
+
+# ------------------------------------------------------------------ IEULearn pages
+UNIT_PLAN = """
+<article class="curriculum-item is-open" data-item-id="501">
+  <span class="ovup-title-text" title="Hafta 1">Hafta 1</span>
+  <div class="item-subtitle">23 Eyl - 29 Eyl</div>
+  <div class="ovup-syl-desc-body"><p>Read chapter 1</p></div>
+  <button data-rv-payload="{&quot;id&quot;:9001,&quot;title&quot;:&quot;Week01&quot;,&quot;type&quot;:&quot;pdf&quot;,&quot;file_ext&quot;:&quot;PDF&quot;,&quot;url&quot;:&quot;https://x/f.pdf&quot;,&quot;file_name&quot;:&quot;Week01.pdf&quot;,&quot;download_url&quot;:&quot;https://learn.ieu.edu.tr/student/courses/1/resources/9001/download&quot;}"></button>
+</article>
+<article class="curriculum-item" data-item-id="502">
+  <span class="ovup-title-text" title="Hafta 15">Hafta 15</span>
+  <div class="item-subtitle">29 Ara - 4 Oca</div>
+</article>
+<article class="curriculum-item" data-item-id="503"><span class="ovup-title-text" title="Konu 3">Konu 3</span></article>
+"""
+
+
+def test_parse_unit_plan_dates_and_files():
+    units = parse_unit_plan(UNIT_PLAN, "2026-1 MATH 240 Mühendisler için Olasılık 1")
+    assert [u.id for u in units] == ["501", "502", "503"]
+    assert (units[0].start, units[0].end) == (dt.date(2026, 9, 23), dt.date(2026, 9, 29))
+    assert (units[1].start, units[1].end) == (dt.date(2026, 12, 29), dt.date(2027, 1, 4))    # across New Year
+    assert units[2].start is None and units[0].readings == "Read chapter 1"
+    r = units[0].resources[0]
+    assert (r.id, r.title, r.ext, r.file_name) == ("9001", "Week01", "pdf", "Week01.pdf")
+    assert r.download_url.endswith("/resources/9001/download")
+
+
+def test_parse_announcements():
+    page = """<article class="ov-ann-card is-new"><h4 class="ov-ann-card-title">Quiz 1 <span class="ov-badge-new">Yeni</span></h4>
+      <div class="ov-ann-card-meta"><span>Dr X</span><span>19.10.2026 15:53</span></div>
+      <div class="st-ov-ann-full"><p>Our first quiz is next week.</p><p>Good luck!</p></div></article>"""
+    (a,) = parse_announcements(page)
+    assert (a.title, a.author, a.posted_at) == ("Quiz 1", "Dr X", dt.datetime(2026, 10, 19, 15, 53))
+    assert a.body == "Our first quiz is next week.\nGood luck!"
+
+
+def test_parse_overview():
+    page = """<ol class="ov-intro-lo-list"><li><span class="ov-intro-lo-no">1.</span> <span class="ov-intro-lo-text">olasılığı açıklar</span></li></ol>
+      <span class="ov-ects-week-no">1</span> <span class="ov-ects-week-topic">Örnek uzay</span>
+      <ul><li class="ov-ects-assess-item"><span class="ov-ects-assess-name">Quiz</span><span class="ov-ects-assess-count">4</span>
+        <span class="ov-ects-assess-pct">20 %</span></li></ul><p class="ov-intro-paragraph">Bu derste olasılık.</p>"""
+    ov = parse_overview(page)
+    assert [(o.no, o.text) for o in ov.outcomes] == [(1, "olasılığı açıklar")]
+    assert [(w.no, w.topic) for w in ov.weeks] == [(1, "Örnek uzay")]
+    assert [(g.name, g.count, g.weight) for g in ov.grading] == [("Quiz", 4, 20.0)]
+    assert ov.description == "Bu derste olasılık."
+
+
+def test_parse_dashboard_cover_and_progress():
+    page = """<article class="dash-course" data-course-id="7" data-course-status="ongoing" data-course-title="2026-1 MATH 240 Olasılık 1">
+      <a href="h" class="dash-course-cover" style="background-image:url('https://learn.ieu.edu.tr/img/covers/course-cover-3.jpg?v=1')"></a>
+      <span class="dash-course-school" title="Dr X">Dr X</span><span class="dash-course-students"><i></i><span>İlerleme: 40%</span></span>
+      </article>"""
+    _, (c,) = parse_dashboard(page)
+    assert c.cover_url == "https://learn.ieu.edu.tr/img/covers/course-cover-3.jpg?v=1" and c.progress == 40
+
+
+SYLLABUS = """<div id="course_name">Probability for Engineers</div>
+<table><tr><td><strong>Code</strong></td><td><strong>Semester</strong></td><td><strong>Theory</strong></td>
+  <td><strong>Lab</strong></td><td><strong>Local Credits</strong></td><td><strong>ECTS</strong></td></tr>
+  <tr><td>MATH 240</td><td>Fall</td><td>3</td><td>0</td><td>3</td><td>6</td></tr></table>
+<div id="pre_requisites">MATH 154</div>
+<table><tr><td><strong>Course Language</strong></td><td>English</td></tr>
+  <tr><td><strong>Course Lecturer(s)</strong></td><!-- old --><td>Dr X</td></tr></table>
+<ul id="outcome"><li>explain probability</li><li>use Bayes' theorem</li></ul>
+<table id="weeks"><tr id="hafta_1"><td>1</td><td>Sample spaces</td><td>Ch. 2.1</td></tr></table>
+EVALUATION SYSTEM <table><tr><td>Quizzes</td><td>4</td><td>20</td></tr><tr><td>Midterm</td><td>1</td><td>30</td></tr></table>"""
+
+
+def test_parse_syllabus():
+    s = parse_syllabus(SYLLABUS, "MATH 240", "https://ce.ieu.edu.tr/x")
+    assert s.name == "Probability for Engineers" and s.outcomes == ["explain probability", "use Bayes' theorem"]
+    assert (s.semester, s.ects, s.prerequisites, s.language, s.lecturers) == ("Fall", "6", "MATH 154", "English", "Dr X")
+    assert s.weeks == [{"no": 1, "subject": "Sample spaces", "preparation": "Ch. 2.1"}]
+    assert s.grading == [{"activity": "Quizzes", "number": 4, "weight": 20.0}, {"activity": "Midterm", "number": 1, "weight": 30.0}]
+    assert parse_syllabus("<html>no outcomes</html>") is None
+
+
+# ------------------------------------------------------------------ heads-up: what the lecturer said
+@pytest.mark.parametrize("text,lang,expected", [
+    ("Next week, we have a quiz.", "en", "quiz"),
+    ("This will be on the final.", "en", "final"),
+    ("The midterm covers chapters one to four.", "en", "midterm"),
+    ("Submit your project report by Friday.", "en", "project"),
+    ("The homework is due next Monday.", "en", "homework"),
+    ("You are responsible for LO3 in the exam.", "en", "exam"),
+    ("There is no class next Tuesday.", "en", "schedule"),
+    ("This is really important.", "en", "important"),
+    ("Haftaya ara sınav var, LO1-LO4 sorumlusunuz.", "tr", "midterm"),
+    ("Ödevleri cuma gününe kadar teslim edin.", "tr", "homework"),
+    ("Finalde bu konudan soru gelecek.", "tr", "final"),
+])
+def test_alert_categories(text, lang, expected):
+    assert categories(text, lang)[0] == expected
+
+
+@pytest.mark.parametrize("text", [
+    "So an assignment gives these probabilities to three outcomes.",
+    "In the final step we add the two terms.",
+    "We project the vector onto the plane.",
+    "These two terms cancel out, so the answer is zero.",
+    "For example, take a fair coin.",
+])
+def test_ordinary_lecture_talk_is_not_a_warning(text):
+    assert categories(text) == []
+
+
+def test_excerpt_points_at_the_cue():
+    text = "Intro sentence about limits. " * 12 + "Next week we have a quiz on chapter two. " + "More words follow here. " * 10
+    ex, hl = _excerpt(text, matches(text)["quiz"], 160)
+    assert ex.startswith("…Next week") and ex[hl[0]:hl[1]] == "quiz" and len(ex) <= 162
+
+
+TABLE = {"id": "a1", "title": "Quiz Takvimi", "posted_at": "2026-10-05T10:00", "first_seen": "", "body":
+         "Quiz ve ara sınav takvimi aşağıdaki gibidir.\n\nSınav\n\nHafta\n\nKapsam\n\nQuiz 1\n\n5. hafta\n\nLO1–LO2\n\n"
+         "Ara Sınav\n\n8. hafta\n\n—\n\nQuiz 2\n\n12. hafta\n\nLO5–LO6\n\n------\n\nAssessment\n\nWeek\n\nCoverage\n\n"
+         "Quiz 1\n\nWeek 5\n\nLO1–LO2\n\nMidterm\n\nWeek 8\n\n—"}
+NOTE = {"id": "a2", "title": "About Quiz 1", "posted_at": "2026-10-16T09:00", "first_seen": "",
+        "body": "Our first quiz will be held next week. **Inverse Matrices (Learning Outcome 3)** will be covered."}
+PROSE = {"id": "a3", "title": "Course rules", "posted_at": "2026-09-22T09:00", "first_seen": "",
+         "body": "Four quizzes will be given. Quizzes will be held in the weeks specified in the course plan "
+                 "(Weeks 3, 5, 10 and 12), during a class hour."}
+
+
+def test_assessment_plan_from_a_table_and_a_note():
+    plan = {e["name"]: e for e in assessment_plan([TABLE, NOTE])}
+    assert (plan["Quiz 1"]["week"], plan["Quiz 1"]["los"]) == (5, [1, 2, 3])
+    assert (plan["Midterm"]["week"], plan["Midterm"]["los"]) == (8, [])
+    assert (plan["Quiz 2"]["week"], plan["Quiz 2"]["los"]) == (12, [5, 6])
+    assert [s["id"] for s in plan["Quiz 1"]["sources"]] == ["a2", "a1"]          # newest first
+
+
+def test_assessment_plan_from_prose():
+    assert [(e["name"], e["week"]) for e in assessment_plan([PROSE])] == [("Quiz 1", 3), ("Quiz 2", 5), ("Quiz 3", 10), ("Quiz 4", 12)]
+
+
+def _course_with_lecture(tmp_path):
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="P", term="T")])
+    rec = Recording(delivery_id="r1", course_id="c", folder_id="f", folder_path="", name="n",
+                    start=dt.datetime(2026, 10, 14, 9, 0), duration_s=3000, viewer_url="https://v/r1")
+    lib.merge_recordings("c", [rec], first_sync=True)
+    t = Transcript(delivery_id="r1", segments=[Segment(0, 6, "Today we continue with conditional probability.", "en", 0.9),
+                                              Segment(60, 66, "Next week we have a quiz on this topic.", "en", 0.9),
+                                              Segment(70, 75, "Remember, the quiz is in the first hour.", "en", 0.9),
+                                              Segment(900, 906, "Bu konu finalde çıkacak.", "tr", 0.9)],
+                   duration_s=3000, speech_s=30, language_seconds={"en": 20, "tr": 6}, model="m", device="cpu",
+                   engine_version="t", created_at="2026-10-14T12:00:00")
+    lib.save_transcript(t, store.save_transcript(t))
+    lib.set_status("r1", "done")
+    lib.merge_announcements("c", [Announcement("a1", "Class Rescheduling", "Dr X", dt.datetime(2026, 10, 19, 15, 53),
+                                               "Our class has been rescheduled to Saturday.")], first_sync=False)
+    return lib, rec
+
+
+def test_course_alerts_from_lectures_and_announcements(tmp_path):
+    lib, rec = _course_with_lecture(tmp_path)
+    al = course_alerts(lib, "c")
+    found = [(i["category"], i["source"]) for i in al["items"]]
+    assert found[0] == ("schedule", "announcement") and ("final", "lecture") in found
+    quiz = [i for i in al["items"] if i["category"] == "quiz"]
+    assert len(quiz) == 1                       # the reminder 10 s later is the same point
+    q = quiz[0]
+    assert (q["day_key"], q["part"], q["t"], q["ts"]) == (rec.day_key, 1, 60.0, "01:00")
+    assert q["text"][q["hl"][0]:q["hl"][1]] == "quiz"
+    assert course_alerts(lib, "c") is al        # cached until a transcript or an announcement changes
+    lib.merge_announcements("c", [Announcement("a2", "Homework 1", "Dr X", dt.datetime(2026, 10, 20, 9, 0),
+                                               "Homework 1 is due next Monday.")], first_sync=False)
+    assert course_alerts(lib, "c")["items"][0]["category"] == "homework"
+
+
+# ------------------------------------------------------------------ weeks, exams, covers
+def test_numbered_units_and_the_term_calendar(tmp_path):
+    assert unit_week({"title": "Konu 3", "start_date": ""}, None) == 3
+    assert unit_week({"title": "LAB MATERIALS", "start_date": ""}, None) is None
+    first = dt.date(2026, 9, 21)                 # a Monday; this plan's week 5 starts on the Sunday before
+    assert unit_week({"title": "Hafta 5", "start_date": "2026-10-18", "end_date": "2026-10-24"}, first) == 5
+    assert unit_week({"title": "Hafta 4", "start_date": "2026-10-12", "end_date": "2026-10-17"}, first) == 4
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="a", title="2026-1 EEE 215 X 1", code="EEE 215", name="X", term="T"),
+                        Course(id="b", title="2026-1 MATH 250 Y 3", code="MATH 250", name="Y", term="T")])
+    lib.merge_units("a", [Unit("u1", 0, "Hafta 1", dt.date(2026, 9, 23), dt.date(2026, 9, 29))], first_sync=True)
+    lib.merge_units("b", [Unit("k3", 0, "Konu 3")], first_sync=True)
+    lib.merge_recordings("b", [Recording(delivery_id="r", course_id="b", folder_id="f", folder_path="", name="n",
+                                         start=dt.datetime(2026, 10, 7, 10, 0), duration_s=2400, viewer_url="v")],
+                         first_sync=True)
+    assert lib.term_start("T") == "2026-09-23"
+    d = course_detail(lib, Settings(), "b")
+    w3 = next(w for w in d["weeks"] if w["no"] == 3)
+    assert w3["start"] == "2026-10-05" and [u["title"] for u in w3["units"]] == ["Konu 3"] and len(w3["days"]) == 1
+    assert d["alerts"]["items"] == [] and d["alerts"]["plan"] == []
+
+
+@pytest.mark.parametrize("topic,exam", [("Midterm Exam", True), ("Ara Sınav", True), ("ARA SINAV", True), ("Vize", True),
+                                        ("Final", True), ("Final exam", True), ("Project analysis; final report", False),
+                                        ("Review for the final", False)])
+def test_exam_week_topics(topic, exam):
+    assert bool(EXAM_TOPIC.search(_tr_lower(topic))) == exam
+
+
+def test_old_library_gets_the_new_course_columns(tmp_path):
+    db = sqlite3.connect(tmp_path / "old.db")
+    db.execute("CREATE TABLE courses(id TEXT PRIMARY KEY, title TEXT, code TEXT, name TEXT, instructor TEXT, term TEXT, "
+               "status TEXT, section TEXT, folder_id TEXT, has_panopto INTEGER DEFAULT 1, position INTEGER DEFAULT 0, "
+               "active INTEGER DEFAULT 1)")
+    db.execute("INSERT INTO courses(id, title, code, name) VALUES('c', 't', 'MATH 240', 'P')")
+    db.commit()
+    db.close()
+    lib = Library(tmp_path / "old.db")
+    c = lib.get_course("c")
+    assert (c.cover_url, c.progress) == ("", None)
+    lib.upsert_courses([Course(id="c", title="t", code="MATH 240", name="P", cover_url="https://x/c.jpg", progress=40)])
+    assert (lib.get_course("c").cover_url, lib.get_course("c").progress) == ("https://x/c.jpg", 40)
+
+
+def test_cover_pictures_are_cached_once(monkeypatch):
+    calls = []
+
+    class Resp:
+        ok, content, headers = True, b"\xff\xd8jpeg", {"content-type": "image/jpeg"}
+
+    monkeypatch.setattr(coursesite.requests, "get", lambda url, timeout: calls.append(url) or Resp())
+    url = "https://learn.ieu.edu.tr/img/covers/course-cover-1.jpg?v=2"
+    assert _cover_uri(url) == ""
+    path = coursesite.fetch_cover(url)
+    assert path.read_bytes() == b"\xff\xd8jpeg" and coursesite.fetch_cover(url) == path and calls == [url]
+    assert _cover_uri(url) == path.as_uri()
+
+
+def test_alert_cache_is_per_course(tmp_path):
+    alerts._cache.clear()
+    lib, _ = _course_with_lecture(tmp_path)
+    course_alerts(lib, "c")
+    assert set(alerts._cache) == {"c"}

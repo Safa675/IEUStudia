@@ -1,0 +1,7 @@
+# LF everywhere, also on Windows checkouts (the code and its tests expect it); batch files keep CRLF for cmd.exe.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.gif binary
+*.ico binary

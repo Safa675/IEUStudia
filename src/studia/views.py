@@ -1,0 +1,300 @@
+"""Pure builders for the data shapes the UI renders (courses, class days, recordings, transcripts)."""
+
+from __future__ import annotations
+
+import datetime as dt
+import re
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from . import store
+from .config import Settings
+from .domain import Course, Recording
+from .outputs.common import (format_ts, kind_label, lang_tag, language_shares, long_date, time_range,
+                             weekday_short)
+from .outputs.highlights import LABELS, _tr_lower, excerpt
+from .outputs.markdown import part_views
+from .paths import transcripts_dir
+from .quality import worst_level
+from .sections import available_sections, classify, guess_my_section, parse_section_tag
+from .slides import jpeg_size
+
+
+def _too_short(rec: Recording, settings: Settings) -> bool:
+    return 0 < rec.duration_s < settings.min_duration_s
+
+
+def recording_view(rec: Recording, settings: Settings, mine: Optional[bool], part: Optional[int], parts: int,
+                   job: Optional[dict[str, Any]], warnings: list[dict[str, Any]], has_slides: bool) -> dict[str, Any]:
+    status = rec.status
+    progress = detail = None
+    error = rec.error or None
+    if job:
+        status = {"queued": "queued", "downloading": "downloading", "transcribing": "transcribing",
+                  "writing": "transcribing"}.get(job["stage"], status)
+        progress, detail = job["progress"], job["detail"]
+    end = rec.start + dt.timedelta(seconds=rec.duration_s)
+    return {
+        "id": rec.delivery_id, "name": rec.name, "start": rec.start.isoformat(), "time": f"{rec.start:%H:%M}",
+        "end_time": f"{end:%H:%M}", "duration_s": round(rec.duration_s), "part": part, "parts": parts,
+        "kind": rec.kind, "section_tag": rec.section_tag, "mine": mine, "is_new": rec.is_new,
+        "duplicate": bool(rec.duplicate_of), "hidden": rec.hidden, "too_short": _too_short(rec, settings),
+        "status": status, "progress": progress, "detail": detail, "error": error, "viewer_url": rec.viewer_url,
+        "warnings": [{"level": w.get("level", "info"), "message": w.get("message", "")} for w in warnings],
+        "warn_level": worst_level(warnings), "has_slides": has_slides,
+        "no_sound": any(w.get("code") == "no_speech" for w in warnings),
+    }
+
+
+def _day_label(d: dt.date) -> str:
+    return long_date(d)
+
+
+def _cover_uri(url: str) -> str:
+    """The cached IEULearn cover picture of a course, if the content sync fetched it."""
+    if not url:
+        return ""
+    from .coursesite import cover_file
+
+    path = cover_file(url)
+    return path.as_uri() if path.is_file() else ""
+
+
+def course_view(course: Course, recs: list[Recording], settings: Settings, jobs: dict[str, dict[str, Any]],
+                warnings: dict[str, list[dict[str, Any]]], slides_ids: set[str]) -> dict[str, Any]:
+    prefs = settings.prefs(course.id)
+    my_section = prefs.my_section or guess_my_section(course)
+    sections = available_sections(recs)
+    mine_map = classify(course, recs, my_section) if sections else {r.delivery_id: None for r in recs}
+    days: dict[str, list[Recording]] = defaultdict(list)
+    for r in recs:
+        days[r.day_key].append(r)
+    day_views = []
+    for key, rs in days.items():
+        rs.sort(key=lambda r: (r.start, bool(r.duplicate_of), r.delivery_id))
+        countable = [r for r in rs if not r.duplicate_of and not r.hidden and not _too_short(r, settings)]
+        part_no = {r.delivery_id: i for i, r in enumerate(countable, start=1)}
+        rviews = [recording_view(r, settings, mine_map.get(r.delivery_id), part_no.get(r.delivery_id), len(countable),
+                                 jobs.get(r.delivery_id), warnings.get(r.delivery_id, []), r.delivery_id in slides_ids)
+                  for r in rs]
+        flags = [mine_map.get(r.delivery_id) for r in countable] or [None]
+        mine = True if any(f is True for f in flags) else (False if all(f is False for f in flags) else None)
+        done = [r for r in countable if r.status == "done"]
+        d = rs[0].start.date()
+        day_views.append({
+            "day_key": key, "date": d.isoformat(), "weekday": weekday_short(d), "label": _day_label(d),
+            "kind": rs[0].kind, "kind_label": kind_label(rs[0].kind), "mine": mine,
+            "transcribed": bool(countable) and len(done) == len(countable), "any_done": bool(done),
+            "duration_s": round(sum(r.duration_s for r in countable)), "parts": len(countable),
+            "is_new": any(r.is_new for r in countable),
+            "warn_level": worst_level([w for r in countable for w in warnings.get(r.delivery_id, [])]),
+            "recordings": rviews,
+        })
+    day_views.sort(key=lambda d: (d["date"], d["recordings"][0]["start"]), reverse=True)
+    active = [r for r in recs if not r.duplicate_of and not r.hidden and not _too_short(r, settings)]
+    # several sections publish here and you follow yours: count your section's lectures (badges, progress)
+    own = active
+    if len(sections) > 1 and prefs.show_mode != "all":
+        own = [r for r in active if mine_map.get(r.delivery_id) is not False]
+    return {
+        "id": course.id, "code": course.code, "name": course.name,
+        "display_name": prefs.alias or course.name or course.code, "instructor": course.instructor,
+        "term": course.term, "section": course.section, "has_panopto": course.has_panopto,
+        "cover": _cover_uri(course.cover_url), "lms_progress": course.progress,
+        "show_mode": prefs.show_mode if sections else "all", "my_section": my_section,
+        "available_sections": sections,
+        "counts": {"total": len(own), "new": sum(1 for r in own if r.is_new),
+                   "done": sum(1 for r in own if r.status == "done"),
+                   "processing": sum(1 for r in own if r.status == "processing"),
+                   "done_any": sum(1 for r in active if r.status == "done"),    # any section: enough for Claude
+                   "other_sections": len(active) - len(own)},
+        "days": day_views,
+    }
+
+
+def all_course_views(lib: Any, settings: Settings, jobs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    job_map = {j["id"]: j for j in jobs}
+    warnings = lib.all_warnings()
+    slides_ids = {p.name.split(".")[0] for p in transcripts_dir().glob("*.slides.json")}
+    out = []
+    all_recs = lib.recordings()
+    by_course: dict[str, list[Recording]] = defaultdict(list)
+    for r in all_recs:
+        by_course[r.course_id].append(r)
+    mats: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for m in lib.materials():
+        mats[m["course_id"]].append(m)
+    new_anns: dict[str, int] = defaultdict(int)
+    for a in lib.announcements(limit=500):
+        new_anns[a["course_id"]] += 1 if a["is_new"] else 0
+    for c in lib.courses():
+        v = course_view(c, by_course.get(c.id, []), settings, job_map, warnings, slides_ids)
+        cm = mats.get(c.id, [])
+        v["content"] = {"materials": len(cm), "materials_new": sum(1 for m in cm if m["is_new"]),
+                        "downloaded": sum(1 for m in cm if m.get("local_path")),
+                        "announcements_new": new_anns.get(c.id, 0)}
+        out.append(v)
+    return out
+
+
+# an exam week's topic ("Midterm", "Ara Sınav", "Final Exam"); not "… final report" or "review for the final"
+EXAM_TOPIC = re.compile(r"\b(?:mid-?terms?|exams?|examination|vize)\b|ara sınav|final sınav|^\s*final\b|\bfinal exam")
+
+
+def material_view(m: dict[str, Any]) -> dict[str, Any]:
+    downloaded = bool(m.get("local_path")) and Path(m["local_path"]).is_file()
+    return {"id": m["resource_id"], "title": m["title"], "file_name": m.get("file_name") or "", "ext": m.get("ext") or "",
+            "kind": m.get("kind") or "", "size": m.get("size") or 0, "downloaded": downloaded,
+            "outdated": downloaded and bool(m.get("downloaded_url")) and m.get("downloaded_url") != m.get("url"),
+            "is_new": bool(m.get("is_new")), "pages": m.get("pages") or 0, "text": m.get("text_status") or "",
+            "gone": bool(m.get("gone"))}
+
+
+def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[dict[str, Any]] = ()) -> Optional[dict[str, Any]]:
+    """Everything about one course, organised by week: topics (EN/TR), readings, materials, lecture days, and what
+    the lecturer said about quizzes, exams, projects and homework (``alerts``)."""
+    from .alerts import course_alerts
+    from .materials import unit_week, week_of, week_starts
+
+    course = lib.get_course(course_id)
+    if course is None:
+        return None
+    info = lib.course_info(course_id)
+    ov, syl = info.get("overview") or {}, info.get("syllabus") or {}
+    units = lib.units(course_id)
+    mats: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for m in lib.materials(course_id):
+        mats[m["unit_id"]].append(material_view(m))
+    recs = lib.recordings(course_id)
+    cv = course_view(course, recs, settings, {j["id"]: j for j in jobs}, lib.all_warnings(),
+                     {p.name.split(".")[0] for p in transcripts_dir().glob("*.slides.json")})
+    first = week_starts(units)
+    if first is None and course.term:      # no dates in this plan: the term's calendar from the other courses
+        start = lib.term_start(course.term)
+        if start:
+            first = dt.date.fromisoformat(start)
+            first -= dt.timedelta(days=first.weekday())
+    tr_topics = {w["no"]: w["topic"] for w in ov.get("weeks", [])}
+    en_weeks = {w["no"]: w for w in syl.get("weeks", [])}
+    weeks: dict[int, dict[str, Any]] = {}
+
+    def week(n: int) -> dict[str, Any]:
+        if n not in weeks:
+            start = first + dt.timedelta(days=7 * (n - 1)) if first else None
+            topic_en = (en_weeks.get(n) or {}).get("subject", "")
+            topic_tr = tr_topics.get(n, "")
+            exam = next((t for t in (topic_en, topic_tr) if t and EXAM_TOPIC.search(_tr_lower(t))), "")
+            weeks[n] = {"no": n, "start": start.isoformat() if start else "",
+                        "end": (start + dt.timedelta(days=6)).isoformat() if start else "",
+                        "topic_en": topic_en, "topic_tr": topic_tr,
+                        "readings": (en_weeks.get(n) or {}).get("preparation", ""),
+                        "exam": bool(exam), "exam_label": exam, "units": [], "days": []}
+        return weeks[n]
+
+    general = []
+    for u in units:
+        n = unit_week(u, first)
+        item = {"id": u["unit_id"], "title": u["title"], "readings": u.get("readings", ""), "materials": mats.get(u["unit_id"], [])}
+        if n is None:
+            general.append(item)
+            continue
+        w = week(n)
+        if u.get("start_date"):
+            w["start"], w["end"] = u["start_date"], u.get("end_date") or w["end"]
+        w["units"].append(item)
+        if not w["readings"] and u.get("readings"):
+            w["readings"] = u["readings"]
+    for n in sorted(set(tr_topics) | set(en_weeks)):
+        week(n)
+    for d in cv["days"]:
+        n = week_of(dt.date.fromisoformat(d["date"]), first) if first else None
+        if n:
+            week(n)["days"].append({k: d[k] for k in ("day_key", "date", "label", "kind_label", "parts", "transcribed",
+                                                     "any_done", "is_new", "mine", "duration_s")})
+    today = dt.date.today().isoformat()
+    out_weeks = sorted(weeks.values(), key=lambda w: w["no"])
+    for w in out_weeks:
+        w["current"] = bool(w["start"]) and w["start"] <= today <= (w["end"] or w["start"])
+        w["past"] = bool(w["end"]) and w["end"] < today
+    anns = [{"id": a["id"], "title": a["title"], "author": a["author"], "posted_at": a["posted_at"], "body": a["body"],
+             "is_new": bool(a["is_new"])} for a in lib.announcements(course_id)]
+    all_mats = [m for ms in mats.values() for m in ms]
+    return {
+        **{k: cv[k] for k in ("id", "code", "name", "display_name", "instructor", "term", "section", "has_panopto",
+                              "counts", "my_section", "cover", "lms_progress")},
+        "description": syl.get("description") or ov.get("description", ""),
+        "objectives": syl.get("objectives", ""),
+        "outcomes_en": syl.get("outcomes", []),
+        "outcomes_tr": [o["text"] for o in sorted(ov.get("outcomes", []), key=lambda o: o["no"])],
+        "grading": syl.get("grading") or [{"activity": g["name"], "number": g["count"], "weight": g["weight"]}
+                                          for g in ov.get("grading", [])],
+        "syllabus": {k: syl.get(k, "") for k in ("url", "name", "semester", "ects", "prerequisites", "language",
+                                                 "coordinator", "lecturers", "assistants", "textbooks", "readings")},
+        "weeks": out_weeks, "general": general, "announcements": anns,
+        "materials": {"total": len(all_mats), "downloaded": sum(m["downloaded"] for m in all_mats),
+                      "new": sum(m["is_new"] for m in all_mats)},
+        "content_at": info.get("content_at", ""),
+        "alerts": _label_other_sections(course_alerts(lib, course_id, recs), cv["days"]),
+    }
+
+
+def _label_other_sections(alerts: dict[str, Any], days: list[dict[str, Any]]) -> dict[str, Any]:
+    """Mark heads-ups heard in another section's lecture ("Section 1"): its dates may differ for your section.
+    (Matched by the recording's viewer link: one class day can hold several sections' recordings.)"""
+    other: dict[str, str] = {}
+    for d in days:
+        for r in d["recordings"]:
+            if r["mine"] is False and r.get("viewer_url"):
+                tag = r["section_tag"] or parse_section_tag(r["name"])
+                other[r["viewer_url"]] = f"Section {tag}" if tag else "Other section"
+    if not other:
+        return alerts
+    items = [dict(it, other_section=other[it["viewer_url"]]) if it.get("viewer_url") in other else it
+             for it in alerts.get("items", [])]
+    return {**alerts, "items": items}
+
+
+def day_detail(lib: Any, settings: Settings, day_key: str, files: dict[str, str]) -> Optional[dict[str, Any]]:
+    course_id, date_s, kind = day_key.split("|")
+    course = lib.get_course(course_id)
+    if course is None:
+        return None
+    recs = [r for r in lib.recordings(course_id) if r.day_key == day_key]
+    if not recs:
+        return None
+    ids = [r.delivery_id for r in recs]
+    trans = store.load_transcripts(ids)
+    slides = {i: store.load_slides(i) for i in ids}
+    warnings = {i: lib.warnings(i) for i in ids}
+    parts = part_views(recs, trans, slides, warnings)
+    shares = language_shares([p.transcript for p in parts if p.transcript])
+    highlights, out_parts = [], []
+    for p in parts:
+        sl = {s.index: s for s in p.slides}
+        paras = []
+        for para in p.paragraphs:
+            s = sl.get(para.slide) if para.slide is not None else None
+            w, h = jpeg_size(s.path) if s and s.path else (0, 0)
+            paras.append({"t": round(para.start, 1), "e": round(para.end, 1), "ts": format_ts(para.start),
+                          "text": para.text, "lang": para.lang, "tag": lang_tag(para.lang), "star": para.star,
+                          "tags": para.tags, "uncertain": para.uncertain, "slide": para.slide,
+                          "slide_image": Path(s.path).as_uri() if s and s.path else None, "slide_w": w, "slide_h": h})
+            if para.star:
+                highlights.append({"part": p.index, "t": round(para.start, 1), "ts": format_ts(para.start),
+                                   "text": excerpt(para.text, para.tags), "tags": [LABELS.get(t, t) for t in para.tags],
+                                   "viewer_url": p.rec.viewer_url})
+        out_parts.append({
+            "index": p.index, "id": p.rec.delivery_id, "title": f"Part {p.index}", "time_range": time_range(p.rec),
+            "viewer_url": p.rec.viewer_url, "status": p.rec.status, "paragraphs": paras,
+            "slides": len({s.index for s in p.slides}),
+            "warnings": [{"level": w.get("level"), "message": w.get("message")} for w in p.warnings],
+        })
+    d = dt.date.fromisoformat(date_s)
+    return {
+        "day_key": day_key, "title": f"{course.code} · {kind_label(kind)}", "date_label": long_date(d),
+        "subtitle": " · ".join(x for x in (course.name, course.instructor) if x),
+        "course": {"id": course.id, "code": course.code, "name": course.name, "instructor": course.instructor},
+        "kind": kind, "languages": {k: round(v, 3) for k, v in shares.items()},
+        "highlights": highlights, "parts": out_parts, "files": files,
+    }

@@ -1,0 +1,87 @@
+"""Settings of IEUStudia on this PC (not per account): the first-start setup, which AI the app uses, running in
+the background (tray), starting with Windows and notifications. Stored in ``<app data>\\app.json``."""
+
+from __future__ import annotations
+
+import dataclasses as dc
+import json
+import os
+import threading
+from typing import Any
+
+AI_PROVIDERS = ("claude", "codex", "local", "none")
+
+
+@dc.dataclass
+class AppConfig:
+    onboarded: bool = False            # the first-start setup was completed
+    terms_accepted: str = ""           # when the user accepted the notice (ISO date)
+    ai_provider: str = ""              # "" (not chosen yet) | claude | codex | local | none
+    codex_model: str = ""              # "" = Codex's own default
+    local_model: str = "qwen3-1.7b"    # components.LLM_PRESETS
+    tray: bool = False                 # keep a small helper in the tray: checks IEULearn, shows notifications
+    start_with_windows: bool = False   # start that helper when you sign in to Windows
+    notify_recordings: bool = True     # new lecture recordings (your section)
+    notify_announcements: bool = True  # new announcements (assessment news first)
+    notify_materials: bool = False     # new files on IEULearn
+    sync_minutes: int = 30             # how often the helper checks
+
+    def to_json(self) -> dict[str, Any]:
+        return dc.asdict(self)
+
+
+_lock = threading.Lock()
+
+
+def _path():
+    from .paths import app_dir
+
+    return app_dir() / "app.json"
+
+
+def _from_dict(raw: dict[str, Any]) -> AppConfig:
+    c = AppConfig()
+    for f in dc.fields(AppConfig):
+        if f.name not in raw:
+            continue
+        default, value = getattr(c, f.name), raw[f.name]
+        try:
+            if isinstance(default, bool):
+                value = bool(value)
+            elif isinstance(default, int):
+                value = int(value)
+            elif isinstance(default, str):
+                value = str(value)
+        except (TypeError, ValueError):
+            continue
+        setattr(c, f.name, value)
+    if c.ai_provider not in AI_PROVIDERS:
+        c.ai_provider = ""
+    c.sync_minutes = max(10, min(240, c.sync_minutes))
+    return c
+
+
+def load() -> AppConfig:
+    p = _path()
+    with _lock:
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        except (OSError, ValueError):
+            raw = {}
+    return _from_dict(raw if isinstance(raw, dict) else {})
+
+
+def save(cfg: AppConfig) -> None:
+    p = _path()
+    tmp = p.with_name(p.name + ".tmp")
+    with _lock:
+        tmp.write_text(json.dumps(cfg.to_json(), indent=2), encoding="utf-8")
+        os.replace(tmp, p)
+
+
+def update(patch: dict[str, Any]) -> AppConfig:
+    merged = load().to_json()
+    merged.update({k: v for k, v in (patch or {}).items() if k in merged})
+    cfg = _from_dict(merged)
+    save(cfg)
+    return cfg

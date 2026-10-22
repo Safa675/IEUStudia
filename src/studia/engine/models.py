@@ -1,0 +1,245 @@
+"""Whisper model presets, local model storage/download, GPU detection and device selection."""
+
+from __future__ import annotations
+
+import fnmatch
+import functools
+import glob
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import threading
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+import requests
+
+from ..cancel import check
+from .. import httpdl
+
+log = logging.getLogger("studia")
+
+# Sizes are the download size of the CTranslate2 conversion (float16 weights).
+MODEL_PRESETS: dict[str, dict[str, Any]] = {
+    "large-v3-turbo": {
+        "repo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+        "label": "Fast & accurate",
+        "description": "Recommended. Near large-v3 quality at a fraction of the time on a GPU.",
+        "size_mb": 1620,
+    },
+    "large-v3": {
+        "repo": "Systran/faster-whisper-large-v3",
+        "label": "Maximum accuracy",
+        "description": "Slowest, best for hard audio and long Turkish passages.",
+        "size_mb": 3090,
+    },
+    "medium": {
+        "repo": "Systran/faster-whisper-medium",
+        "label": "Medium",
+        "description": "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture).",
+        "size_mb": 1530,
+    },
+    "small": {
+        "repo": "Systran/faster-whisper-small",
+        "label": "Small",
+        "description": "The one for PCs without an NVIDIA GPU: fast enough on the processor, a bit less accurate.",
+        "size_mb": 484,
+    },
+}
+MODEL_FILE_PATTERNS = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
+
+
+def _models_root() -> Path:
+    try:
+        from ..paths import app_dir
+
+        base = app_dir()
+    except ImportError:  # paths module unavailable (e.g. isolated engine use)
+        base = Path(os.environ.get("STUDIA_HOME") or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Studia")
+    p = Path(base) / "models"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _repo(model: str) -> str:
+    if model not in MODEL_PRESETS:
+        raise ValueError(f"Unknown model '{model}'.")
+    return MODEL_PRESETS[model]["repo"]
+
+
+def _complete(d: Path) -> bool:
+    return (d / "model.bin").is_file() and (d / "config.json").is_file() and (d / "tokenizer.json").is_file()
+
+
+def _hf_cache_path(model: str) -> Optional[Path]:
+    """Path of the model in the Hugging Face cache if it is fully downloaded there."""
+    try:
+        from huggingface_hub import snapshot_download
+
+        p = Path(snapshot_download(_repo(model), allow_patterns=MODEL_FILE_PATTERNS, local_files_only=True))
+        return p if _complete(p) else None
+    except Exception:  # noqa: BLE001 - not cached / hub unavailable
+        return None
+
+
+def local_model_path(model: str) -> Optional[Path]:
+    """Where the model is on disk (our own folder first, then the shared HF cache), or None."""
+    own = _models_root() / model
+    if _complete(own) and (own / ".complete").exists():
+        return own
+    return _hf_cache_path(model)
+
+
+def _hf_cache_has(model: str) -> bool:
+    """The model is complete in the Hugging Face cache — a plain folder check (importing huggingface_hub to ask
+    takes ~1 s, too slow for the settings page)."""
+    env = os.environ
+    root = Path(env.get("HF_HUB_CACHE") or (Path(env["HF_HOME"]) / "hub" if env.get("HF_HOME") else
+                                             Path.home() / ".cache" / "huggingface" / "hub"))
+    snaps = root / f"models--{_repo(model).replace('/', '--')}" / "snapshots"
+    try:
+        return any(_complete(d) for d in snaps.iterdir() if d.is_dir())
+    except OSError:
+        return False
+
+
+def model_is_downloaded(model: str) -> bool:
+    own = _models_root() / model
+    return (_complete(own) and (own / ".complete").exists()) or _hf_cache_has(model)
+
+
+def download_model(model: str, progress: Callable[[int, int], None],
+                   cancel: Optional[threading.Event] = None) -> Path:
+    """Download the model files into %LOCALAPPDATA%\\Studia\\models\\<model> (resumable)."""
+    repo = _repo(model)
+    target = _models_root() / model
+    target.mkdir(parents=True, exist_ok=True)
+    session = requests.Session()
+    session.headers["User-Agent"] = "Studia/1.0"
+    info = session.get(f"https://huggingface.co/api/models/{repo}", params={"blobs": "true"}, timeout=30)
+    info.raise_for_status()
+    siblings = info.json().get("siblings", [])
+    files = [(s["rfilename"], int(s.get("size") or 0)) for s in siblings
+             if any(fnmatch.fnmatch(s["rfilename"], pat) for pat in MODEL_FILE_PATTERNS)]
+    if not any(name == "model.bin" for name, _ in files):
+        raise RuntimeError(f"Model files for {model} were not found on Hugging Face.")
+    grand_total = sum(size for _, size in files) or MODEL_PRESETS[model]["size_mb"] * 1024 * 1024
+    done_before = 0
+    for name, size in sorted(files, key=lambda f: f[1]):
+        check(cancel)
+        dest = target / name
+        base = done_before
+
+        def cb(done: int, total: int, base: int = base) -> None:
+            progress(base + done, grand_total)
+
+        httpdl.download(f"https://huggingface.co/{repo}/resolve/main/{name}", dest,
+                        session=session, progress=cb, cancel=cancel, parts=8)
+        done_before += size or dest.stat().st_size
+    (target / ".complete").write_text(json.dumps({"repo": repo}), encoding="utf-8")
+    progress(grand_total, grand_total)
+    return target
+
+
+def delete_model(model: str) -> None:
+    own = _models_root() / model
+    if own.exists():
+        shutil.rmtree(own, ignore_errors=True)
+
+
+# ----------------------------------------------------------------------------- GPU / device
+
+@functools.lru_cache(maxsize=1)
+def setup_cuda_dlls() -> list[str]:
+    """Make cuBLAS/cuDNN DLLs findable on Windows (CUDA toolkit or pip `nvidia-*` wheels)."""
+    if sys.platform != "win32":
+        return []
+    dirs: list[str] = []
+    try:  # downloaded on first start into <app data>/cuda (see components.py)
+        from ..components import cuda_dir
+
+        if (cuda_dir() / "cublas64_12.dll").is_file():
+            dirs.append(str(cuda_dir()))
+    except Exception:  # noqa: BLE001
+        pass
+    try:  # pip wheels: site-packages/nvidia/<lib>/bin
+        import nvidia  # type: ignore
+
+        for base in nvidia.__path__:
+            dirs += [d for d in glob.glob(os.path.join(base, "*", "bin")) if os.path.isdir(d)]
+    except ImportError:
+        pass
+    for key, val in os.environ.items():
+        if key.upper().startswith("CUDA_PATH") and val:
+            for sub in ("bin", os.path.join("bin", "x64")):
+                d = os.path.join(val, sub)
+                if os.path.isdir(d) and d not in dirs:
+                    dirs.append(d)
+    added = []
+    for d in dirs:
+        try:
+            os.add_dll_directory(d)
+            added.append(d)
+        except OSError:
+            pass
+    if added:
+        os.environ["PATH"] = os.pathsep.join(added + [os.environ.get("PATH", "")])
+    return added
+
+
+@functools.lru_cache(maxsize=1)
+def detect_gpu(quick: bool = False) -> dict[str, Any]:
+    """{"available": bool, "name": str, "vram_mb": int} for the first NVIDIA GPU usable by CTranslate2.
+    ``quick``: only ask nvidia-smi (for the display; loading CTranslate2 takes ~1 s and is checked when
+    transcribing anyway)."""
+    result: dict[str, Any] = {"available": False, "name": "", "vram_mb": 0}
+    if not quick:
+        setup_cuda_dlls()
+        try:
+            import ctranslate2
+
+            if ctranslate2.get_cuda_device_count() < 1:
+                return result
+            result["available"] = True
+        except Exception:  # noqa: BLE001
+            return result
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        first = (out.stdout or "").strip().splitlines()[0]
+        name, mem = [x.strip() for x in first.split(",")[:2]]
+        result.update(available=True, name=name, vram_mb=int(float(mem)))
+    except Exception:  # noqa: BLE001
+        if result["available"]:
+            result["name"] = "NVIDIA GPU"
+    return result
+
+
+def reset_gpu_cache() -> None:
+    """Forget what was found (after the GPU libraries were downloaded)."""
+    setup_cuda_dlls.cache_clear()
+    detect_gpu.cache_clear()
+
+
+def cublas_available() -> bool:
+    try:
+        from ..components import cuda_ready
+
+        return cuda_ready()
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def resolve_device(preference: str) -> tuple[str, str]:
+    """(device, compute_type) for a user preference of "auto" | "cuda" | "cpu". The GPU is used only when its
+    libraries (cuBLAS) are on this PC: without them CTranslate2 loads the model and then fails mid-way."""
+    pref = (preference or "auto").lower()
+    if pref != "cpu" and cublas_available() and detect_gpu()["available"]:
+        return "cuda", "float16"
+    return "cpu", "int8"

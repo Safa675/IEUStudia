@@ -1,0 +1,53 @@
+name: Release
+
+# Push a tag like v2.1.0 (matching src/studia/__init__.py) to build the installer and the portable zip and attach
+# them to a draft GitHub release. Check the draft, then publish it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: uv sync --group build --group dev
+      - name: Tests
+        run: uv run pytest -q
+      - name: Build the app (PyInstaller)
+        run: uv run pyinstaller packaging/IEUStudia.spec --noconfirm --distpath build/dist --workpath build/work
+      - name: Self-test of the build
+        shell: pwsh
+        run: |
+          $report = Join-Path $PWD "build\selftest.json"
+          $p = Start-Process "build\dist\IEUStudia\IEUStudia.exe" -ArgumentList "--selftest", "`"$report`"" -Wait -PassThru
+          Get-Content $report
+          if ($p.ExitCode -ne 0) { throw "self-test failed" }
+      - name: Installer and portable zip
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path "src\studia\__init__.py" -Pattern '__version__ = "([^"]+)"').Matches[0].Groups[1].Value
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$version") { throw "Tag ${{ github.ref_name }} does not match version $version" }
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          New-Item -ItemType Directory -Force build\installer | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DRepoUrl=${{ github.server_url }}/${{ github.repository }}" packaging\IEUStudia.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          Compress-Archive -Path build\dist\IEUStudia -DestinationPath "build\installer\IEUStudia-$version-portable.zip"
+          Get-ChildItem build\installer | ForEach-Object { "{0}  {1:N0} MB  SHA256 {2}" -f $_.Name, ($_.Length / 1MB), (Get-FileHash $_.FullName).Hash } | Tee-Object build\installer\SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            build/installer/IEUStudia-Setup-*.exe
+            build/installer/IEUStudia-*-portable.zip
+            build/installer/SHA256SUMS.txt
