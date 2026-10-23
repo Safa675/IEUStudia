@@ -68,3 +68,19 @@ def test_weekly_digest(tmp_path):
     assert "COURSE MATH 240" in text and "lecture" in text
     md = digest_markdown(d, "A calm week.")
     assert md.startswith("# Weekly digest") and "A calm week." in md and "## MATH 240" in md
+
+
+def test_a_quiz_is_done_in_the_digest_once_its_class_is_over(tmp_path):
+    from studia.digest import digest_prompt, weekly_digest
+
+    lib, _ = _lib(tmp_path)                                   # Wednesday lectures, 09:00-09:50; Quiz 1 in week 3
+    before = weekly_digest(lib, Settings(), now=dt.datetime(2026, 10, 7, 8, 0))
+    (quiz,) = [e for e in before["courses"][0]["coming"] if e["name"] == "Quiz 1"]
+    assert quiz["dates"] == ["2026-10-07"] and quiz["this_week"] and not quiz["done"]
+    assert any(t["kind"] == "prepare" and "Quiz 1 is this week" in t["text"] for t in before["todo"])
+    after = weekly_digest(lib, Settings(), now=dt.datetime(2026, 10, 9, 18, 0))
+    (quiz,) = [e for e in after["courses"][0]["coming"] if e["name"] == "Quiz 1"]
+    assert quiz["done"] and not any(t["kind"] == "prepare" for t in after["todo"])
+    assert "done: Quiz 1 in week 3" in digest_prompt(after)
+    nothing = weekly_digest(lib, Settings(), now=dt.datetime(2026, 10, 12, 9, 0))   # the week after: gone
+    assert all(e["name"] != "Quiz 1" for c in nothing["courses"] for e in c["coming"])

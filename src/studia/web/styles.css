@@ -754,6 +754,7 @@ button.stat:hover { box-shadow: inset 0 0 0 1px var(--border-strong); }
 .plan-pill b { color: var(--text); font-weight: 600; }
 .plan-pill .lo { font: 600 11.5px var(--mono); color: var(--accent-text); }
 .plan-pill.now { border-color: var(--blue); background: var(--blue-soft); box-shadow: inset 0 0 0 .5px var(--blue); }
+.plan-pill.done { opacity: .6; }
 .plan-pill:hover { border-color: var(--accent); }
 .plan { padding: 4px 8px 6px; margin-bottom: 12px; }
 .plan .mg-head b { display: inline-flex; align-items: center; gap: 6px; }

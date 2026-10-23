@@ -16,7 +16,7 @@ from studia.library import Library
 from studia.materials import unit_week
 from studia.outputs.highlights import _tr_lower
 from studia.syllabus import parse_syllabus
-from studia.views import EXAM_TOPIC, _cover_uri, course_detail
+from studia.views import EXAM_TOPIC, _cover_uri, class_times, classes_over, course_detail, week_classes
 
 # ------------------------------------------------------------------ IEULearn pages
 UNIT_PLAN = """
@@ -209,6 +209,56 @@ def test_numbered_units_and_the_term_calendar(tmp_path):
     w3 = next(w for w in d["weeks"] if w["no"] == 3)
     assert w3["start"] == "2026-10-05" and [u["title"] for u in w3["units"]] == ["Konu 3"] and len(w3["days"]) == 1
     assert d["alerts"]["items"] == [] and d["alerts"]["plan"] == []
+
+
+def _rec(cid, i, day, hour, minutes=45):
+    return Recording(delivery_id=f"{cid}{i}", course_id=cid, folder_id="f", folder_path="", name="n",
+                     start=dt.datetime(2026, 10, day, hour, 30), duration_s=minutes * 60, viewer_url="v")
+
+
+def test_the_class_days_tell_when_an_announced_quiz_is_held(tmp_path):
+    """IEULearn weeks of a Wednesday course run from Wednesday to Tuesday. A quiz announced for week 5 ("in an
+    unannounced class hour") is held on its Wednesday, so on Friday it is done although the week is not over."""
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="p", title="2026-1 MATH 240 P 1", code="MATH 240", name="P", term="T"),
+                        Course(id="m", title="2026-1 MATH 250 M 3", code="MATH 250", name="M", term="T")])
+    first = dt.date(2026, 9, 23)
+    lib.merge_units("p", [Unit(f"u{n}", n, f"Hafta {n}", first + dt.timedelta(weeks=n - 1),
+                               first + dt.timedelta(weeks=n - 1, days=6)) for n in range(1, 9)], first_sync=True)
+    lib.merge_recordings("p", [_rec("p", 0, 7, 8), _rec("p", 1, 7, 9), _rec("p", 2, 14, 8), _rec("p", 3, 14, 9)],
+                         first_sync=True)
+    lib.merge_announcements("p", [Announcement("a1", "About the course", "Dr X", dt.datetime(2026, 9, 22, 14, 0),
+                                               "Quiz 1–4\nWeeks 3, 5, 10 and 12, in an unannounced class hour")],
+                            first_sync=True)
+    friday_evening = dt.datetime(2026, 10, 23, 19, 0)
+    d = course_detail(lib, Settings(), "p", now=friday_evening)
+    assert [(e["name"], e["week"]) for e in d["alerts"]["plan"]][:2] == [("Quiz 1", 3), ("Quiz 2", 5)]
+    w5, w6 = (next(w for w in d["weeks"] if w["no"] == n) for n in (5, 6))
+    assert (w5["start"], w5["end"], w5["current"], w5["past"]) == ("2026-10-21", "2026-10-27", True, False)
+    assert w5["classes"] == [{"date": "2026-10-21", "end": "10:15"}] and w6["classes"][0]["date"] == "2026-10-28"
+    assert classes_over(w5["classes"], friday_evening)
+    assert not classes_over(w5["classes"], dt.datetime(2026, 10, 21, 10, 0))      # in class: not yet
+    assert not classes_over(w6["classes"], friday_evening) and not classes_over([], friday_evening)
+
+    # a Friday course without dates in its plan: weeks from the term's calendar (Monday to Sunday)
+    lib.merge_units("m", [Unit(f"k{n}", n, f"Konu {n}") for n in range(1, 9)], first_sync=True)
+    lib.merge_recordings("m", [_rec("m", 0, 16, 10, 150), _rec("m", 1, 23, 10, 150)], first_sync=True)
+    m = course_detail(lib, Settings(), "m", now=friday_evening)
+    w7 = next(w for w in m["weeks"] if w["no"] == 7)
+    assert (w7["start"], w7["classes"]) == ("2026-11-02", [{"date": "2026-11-06", "end": "13:00"}])
+
+
+def test_class_times_follow_your_section_and_skip_extra_recordings():
+    rec = lambda end, **kw: {"end_time": end, "duplicate": False, "hidden": False, "too_short": False, **kw}  # noqa: E731
+    days = [{"date": "2026-10-14", "mine": True, "recordings": [rec("09:20"), rec("11:15"), rec("23:50", duplicate=True)]},
+            {"date": "2026-10-15", "mine": False, "recordings": [rec("16:00")]},              # another section
+            {"date": "2026-10-16", "mine": None, "recordings": [rec("12:55"), rec("13:10", too_short=True)]},
+            {"date": "2026-08-03", "mine": True, "recordings": [rec("17:00")]}]               # long ago
+    times = class_times(days, dt.date(2026, 10, 23))
+    assert times == {2: "11:15", 4: "12:55"}
+    assert week_classes("2026-10-19", "2026-10-25", times) == [{"date": "2026-10-21", "end": "11:15"},
+                                                               {"date": "2026-10-23", "end": "12:55"}]
+    assert week_classes("", "", times) == [] and week_classes("2026-10-19", "2026-10-25", {}) == []
 
 
 @pytest.mark.parametrize("topic,exam", [("Midterm Exam", True), ("Ara Sınav", True), ("ARA SINAV", True), ("Vize", True),

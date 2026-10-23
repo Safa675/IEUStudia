@@ -151,9 +151,40 @@ def material_view(m: dict[str, Any]) -> dict[str, Any]:
             "gone": bool(m.get("gone"))}
 
 
-def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[dict[str, Any]] = ()) -> Optional[dict[str, Any]]:
-    """Everything about one course, organised by week: topics (EN/TR), readings, materials, lecture days, and what
-    the lecturer said about quizzes, exams, projects and homework (``alerts``)."""
+def class_times(days: list[dict[str, Any]], today: dt.date) -> dict[int, str]:
+    """When the course meets: weekday (Monday = 0) → when its last class that day ends ("HH:MM"). From the lecture
+    days of the last five weeks that are not another section's, or from all of them if there are none."""
+    own = [d for d in days if d["mine"] is not False and d["date"] <= today.isoformat()]
+    since = (today - dt.timedelta(weeks=5)).isoformat()
+    out: dict[int, str] = {}
+    for d in [d for d in own if d["date"] >= since] or own:
+        ends = [r["end_time"] for r in d["recordings"] if not (r["duplicate"] or r["hidden"] or r["too_short"])]
+        if ends:
+            wd = dt.date.fromisoformat(d["date"]).weekday()
+            out[wd] = max(out.get(wd, ""), *ends)
+    return out
+
+
+def week_classes(start: str, end: str, times: dict[int, str]) -> list[dict[str, str]]:
+    """The course's classes in a week by its usual schedule: [{"date", "end"}] (none if the schedule is unknown)."""
+    if not (start and times):
+        return []
+    a, b = dt.date.fromisoformat(start), dt.date.fromisoformat(end or start)
+    days = (a + dt.timedelta(days=i) for i in range((b - a).days + 1))
+    return [{"date": d.isoformat(), "end": times[d.weekday()]} for d in days if d.weekday() in times]
+
+
+def classes_over(classes: list[dict[str, str]], now: dt.datetime) -> bool:
+    """Are all these class hours behind us? A quiz announced for a week is held in one of them, so then it is done.
+    False without any classes: then only the week's end says so."""
+    today, hm = now.date().isoformat(), f"{now:%H:%M}"
+    return bool(classes) and all(c["date"] < today or (c["date"] == today and c["end"] <= hm) for c in classes)
+
+
+def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[dict[str, Any]] = (),
+                  now: Optional[dt.datetime] = None) -> Optional[dict[str, Any]]:
+    """Everything about one course, organised by week: topics (EN/TR), readings, materials, lecture days, when the
+    course meets in each week, and what the lecturer said about quizzes, exams, projects and homework (``alerts``)."""
     from .alerts import course_alerts
     from .materials import unit_week, week_of, week_starts
 
@@ -212,11 +243,18 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         if n:
             week(n)["days"].append({k: d[k] for k in ("day_key", "date", "label", "kind_label", "parts", "transcribed",
                                                      "any_done", "is_new", "mine", "duration_s")})
-    today = dt.date.today().isoformat()
+    alerts = _label_other_sections(course_alerts(lib, course_id, recs), cv["days"])
+    for e in alerts.get("plan") or []:              # a week an assessment was announced for, also without a unit
+        if e.get("week") and first:
+            week(e["week"])
+    now = now or dt.datetime.now()
+    today = now.date().isoformat()
+    times = class_times(cv["days"], now.date())
     out_weeks = sorted(weeks.values(), key=lambda w: w["no"])
     for w in out_weeks:
         w["current"] = bool(w["start"]) and w["start"] <= today <= (w["end"] or w["start"])
         w["past"] = bool(w["end"]) and w["end"] < today
+        w["classes"] = week_classes(w["start"], w["end"], times)
     anns = [{"id": a["id"], "title": a["title"], "author": a["author"], "posted_at": a["posted_at"], "body": a["body"],
              "is_new": bool(a["is_new"])} for a in lib.announcements(course_id)]
     all_mats = [m for ms in mats.values() for m in ms]
@@ -235,7 +273,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         "materials": {"total": len(all_mats), "downloaded": sum(m["downloaded"] for m in all_mats),
                       "new": sum(m["is_new"] for m in all_mats)},
         "content_at": info.get("content_at", ""),
-        "alerts": _label_other_sections(course_alerts(lib, course_id, recs), cv["days"]),
+        "alerts": alerts,
     }
 
 

@@ -115,15 +115,24 @@
       <span class="alert-go">${I("chevron-right", "sm")}</span></button>`;
   }
   // the assessment plan the lecturer announced: which week, which learning outcomes
-  const localToday = () => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; };
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const localToday = () => { const t = new Date(); return `${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`; };
+  const monday = (iso) => { const d = day(iso); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; };
+  // An assessment announced for a week is held in one of the course's classes that week (the backend lists them from
+  // the lecture days): it is done once they are all over. Before that, how far away it is counts calendar weeks.
   function weekRel(d, no) {
     const w = no && d.weeks.find((x) => x.no === no);
     if (!w || !w.start) return { w, rel: "", past: false };
-    if (w.current) return { w, rel: "this week", past: false, now: true };
-    if (w.past) return { w, rel: "done", past: true };
-    const n = Math.max(1, Math.round((day(w.start) - day(localToday())) / 6048e5));
-    return { w, rel: n === 1 ? "next week" : `in ${n} weeks`, past: false };
+    const now = new Date(), today = localToday(), hm = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+    const classes = w.classes || [], left = classes.filter((c) => c.date > today || (c.date === today && c.end > hm));
+    if (w.past || (classes.length && !left.length)) return { w, rel: "done", past: true };
+    const next = left.length ? left[0].date : w.start > today ? w.start : today;
+    const n = Math.round((monday(next) - monday(today)) / 6048e5);
+    const rel = next === today && left.length ? "today" : n <= 0 ? "this week" : n === 1 ? "next week" : `in ${n} weeks`;
+    return { w, rel, past: false, now: n <= 0, days: left.map((c) => c.date) };
   }
+  // when it is: the class day(s) still ahead if the course's schedule is known, else the week's dates
+  const relWhen = (r) => (r.days && r.days.length && r.days.length <= 2 ? r.days.map(dmw).join(" or ") : range(r.w.start, r.w.end));
   function loLabel(los) {
     const runs = [];
     for (const n of los) { const r = runs[runs.length - 1]; if (r && n === r[1] + 1) r[1] = n; else runs.push([n, n]); }
@@ -417,7 +426,7 @@
     if (soon.length) {
       h += `<div class="section-title">${I("cap")} Coming up <span class="dim sm">this week and next, as announced</span></div>
         <div class="soon">${soon.map(({ c, d, e, r }) => `<button class="soon-card ${r.now ? "now" : ""}" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(`Get ready: what to transcribe, download and read${e.los.length ? "\n" + loTitle(d, e.los) : ""}`)}">
-          <span class="soon-code">${esc(c.code)}</span><b>${esc(e.name)}</b><span class="soon-when">${esc(r.rel)}${r.w ? ` · ${esc(range(r.w.start, r.w.end))}` : ""}</span>
+          <span class="soon-code">${esc(c.code)}</span><b>${esc(e.name)}</b><span class="soon-when">${esc(r.rel)}${r.w && r.rel !== "today" ? ` · ${esc(relWhen(r))}` : ""}</span>
           ${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`).join("")}</div>`;
     }
     h += `<div class="section-title">${I("book")} My courses <span class="dim sm">${courses.length}</span></div>
@@ -705,12 +714,15 @@
   }
   St.mocks.course_detail = (cid) => {
     const c = S.courses.find((x) => x.id === cid) || {};
+    const wds = new Set((c.days || []).map((dd) => day(dd.date).getDay()));        // the weekdays it meets on
     const weeks = mockWeeks.map(([en, tr, start], i) => {
       const end = new Date(Date.parse(start + "T00:00:00Z") + 6 * 864e5).toISOString().slice(0, 10);
+      const classes = [0, 1, 2, 3, 4, 5, 6].map((k) => new Date(Date.parse(start + "T00:00:00Z") + k * 864e5).toISOString().slice(0, 10))
+        .filter((x) => wds.has(day(x).getDay())).map((x) => ({ date: x, end: "11:20" }));
       const mats = i === 7 ? [] : [{ id: `m${cid}${i}`, title: `Week${String(i + 1).padStart(2, "0")}_Student`, file_name: `Week${i + 1}.pdf`, ext: "pdf", kind: "pdf", size: 460000, downloaded: i < 2, outdated: false, is_new: i === 4, pages: i < 2 ? 15 : 0, text: "", gone: false }];
       if (i === 2) mats.push({ id: `p${cid}${i}`, title: "Bayes worked examples", file_name: "bayes.pptx", ext: "pptx", kind: "presentation", size: 2300000, downloaded: false, outdated: false, is_new: false, pages: 0, text: "", gone: false });
       return { no: i + 1, start, end, topic_en: en, topic_tr: tr, readings: i === 7 ? "" : `Montgomery & Runger, Sections 2.${i + 1}`, exam: i === 7,
-        units: [{ id: `u${i}`, title: tr, readings: "", materials: mats }], current: start <= today && today <= end, past: end < today,
+        units: [{ id: `u${i}`, title: tr, readings: "", materials: mats }], current: start <= today && today <= end, past: end < today, classes,
         days: (c.days || []).filter((dd) => dd.date >= start && dd.date <= end).map((dd) => ({ day_key: dd.day_key, date: dd.date, label: dd.label, kind_label: dd.kind_label, parts: dd.parts, transcribed: dd.transcribed, any_done: dd.any_done, is_new: dd.is_new, mine: dd.mine, duration_s: dd.duration_s })) };
     });
     return { ok: true, course: { id: cid, code: c.code, name: c.name, display_name: c.display_name, instructor: c.instructor, term: c.term, section: c.section, has_panopto: c.has_panopto, counts: c.counts, my_section: c.my_section, cover: c.cover || "", lms_progress: c.lms_progress,

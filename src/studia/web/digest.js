@@ -23,7 +23,7 @@
         ${l.stressed.length ? `<ul class="dg-stars">${l.stressed.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}</div></div>`).join("");
     return `<div class="card dg-course"><div class="dg-head" data-act="go" data-view="course" data-id="${esc(c.id)}">
         <span class="dg-code">${esc(c.code)}</span><div class="grow"><b>${esc(c.name)}</b>${c.week ? `<div class="dim">Week ${c.week.no} · ${esc(c.week.topic)}</div>` : ""}</div>${I("chevron-right", "sm")}</div>
-      ${c.coming.length ? `<div class="dg-coming">${c.coming.map((e) => `<span class="plan-pill ${e.this_week ? "now" : ""}"><b>${esc(e.name)}</b><span>${e.this_week ? "this week" : `week ${e.week}`}</span>${e.los.length ? `<span class="lo">LO${e.los.join(", LO")}</span>` : ""}</span>`).join("")}</div>` : ""}
+      ${c.coming.length ? `<div class="dg-coming">${c.coming.map((e) => `<span class="plan-pill ${e.this_week && !e.done ? "now" : ""} ${e.done ? "done" : ""}"><b>${esc(e.name)}</b><span>${e.done ? "done" : e.this_week ? "this week" : `week ${e.week}`}</span>${e.los.length ? `<span class="lo">LO${e.los.join(", LO")}</span>` : ""}</span>`).join("")}</div>` : ""}
       ${lec ? `<div class="dg-sec">${lec}</div>` : ""}
       ${c.said.length ? `<div class="dg-sec"><div class="dg-lbl">${I("alert", "sm")} The lecturer said</div>${c.said.map((s) => `<div class="dg-said"><span class="cat-chip cat-${esc(s.category)}">${esc(CAT[s.category] || s.category)}</span><span>${esc(s.text)}</span></div>`).join("")}</div>` : ""}
       ${c.new_files.length || c.announcements.length ? `<div class="dg-sec dg-misc">
