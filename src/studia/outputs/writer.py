@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -42,10 +44,23 @@ def day_file_name(course: Course, date: dt.date, kind: str) -> str:
 
 
 def atomic_write(path: Path, text: str) -> None:
+    """Write to a temporary file, then swap it in. A sync client, an antivirus or an editor can hold the old file
+    open for a moment: the swap is tried again for about two seconds."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+    for attempt in range(8):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 7:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                raise
+            time.sleep(0.25)
 
 
 def course_dir(output_root: Path, course: Course, all_courses: Sequence[Course]) -> Path:
@@ -95,8 +110,17 @@ def write_local(output_root: Path, name: str, transcript: Any) -> Path:
     from .paragraphs import build_paragraphs
     from .common import format_ts, lang_tag, md_escape
 
-    path = Path(output_root) / "Local files" / (safe_name(Path(name).stem) + ".md")
-    lines = [f"# {md_escape(Path(name).stem)}", "", f"Transcribed {dt.date.today().isoformat()} with IEUStudia.", ""]
+    folder = Path(output_root) / "Local files"
+    path = folder / (safe_name(Path(name).stem) + ".md")
+    source = f"Source: `{Path(name)}`"
+    if path.exists() and source not in path.read_text(encoding="utf-8", errors="replace"):
+        # another file of the same name (from another folder): keep both
+        tag = hashlib.sha1(str(Path(name)).lower().encode("utf-8")).hexdigest()[:6]
+        path = folder / (safe_name(f"{Path(name).stem} ({Path(name).parent.name or tag})", 140) + ".md")
+        if path.exists() and source not in path.read_text(encoding="utf-8", errors="replace"):
+            path = folder / (safe_name(f"{Path(name).stem} ({tag})", 140) + ".md")
+    lines = [f"# {md_escape(Path(name).stem)}", "", f"Transcribed {dt.date.today().isoformat()} with IEUStudia.",
+             "", source, ""]
     for para in build_paragraphs(transcript.segments):
         tag = lang_tag(para.lang)
         lines.append(f"**[{format_ts(para.start)}]** {('**[' + tag + ']** ') if tag else ''}{md_escape(para.text)}")

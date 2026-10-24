@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import errno
 import html
 import logging
+import os
 import time
 from html.parser import HTMLParser
 from typing import Any, Optional
@@ -24,11 +26,44 @@ class NetworkError(requests.ConnectionError):
     """A connection problem, with a message that can be shown to the user."""
 
 
+def _host(exc: BaseException, url: str = "") -> str:
+    req = getattr(exc, "request", None)
+    return urlparse(url or getattr(req, "url", "") or "").hostname or "the server"
+
+
+def plain_error(exc: BaseException, url: str = "") -> str:
+    """What went wrong, in words for anyone: the connection, a full disk, memory, a file Windows would not let us
+    write. Other errors keep their own message (most are already written for people)."""
+    if isinstance(exc, NetworkError):
+        return str(exc)
+    if isinstance(exc, requests.exceptions.SSLError):          # before ConnectionError: it is one
+        return (f"A secure connection to {_host(exc, url)} was blocked. Antivirus web or HTTPS scanning, or a Wi-Fi "
+                "sign-in page, can do this: open any website in your browser, then try again.")
+    if isinstance(exc, requests.Timeout):
+        return f"{_host(exc, url)} took too long to answer. Check your internet connection and try again."
+    if isinstance(exc, requests.ConnectionError):
+        return (f"Can't reach {_host(exc, url)}. Check your internet connection (on campus Wi-Fi, make sure you are "
+                "signed in to it), then try again.")
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return f"{_host(exc, url)} answered with an error ({exc.response.status_code}). Try again in a while."
+    if isinstance(exc, MemoryError):
+        return "Not enough memory. Close other programs and try again."
+    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+        return "Your disk is full. Free up some space, then try again."
+    if isinstance(exc, PermissionError):
+        name = os.path.basename(str(exc.filename or "")) or "a file"
+        return (f"Windows did not let IEUStudia write {name}: it may be open in another program (or syncing), or "
+                "your antivirus blocked it.")
+    return str(exc) or exc.__class__.__name__
+
+
 class _TimeoutSession(requests.Session):
     def request(self, method, url, **kwargs):  # type: ignore[override]
         kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
         try:
             return super().request(method, url, **kwargs)
+        except requests.exceptions.SSLError as exc:
+            raise NetworkError(plain_error(exc, url)) from exc
         except (requests.ConnectionError, requests.Timeout) as exc:
             host = urlparse(url).hostname or url
             raise NetworkError(f"Can't reach {host}. Check your internet connection.") from exc

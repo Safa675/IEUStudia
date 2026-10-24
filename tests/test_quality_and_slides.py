@@ -64,3 +64,43 @@ def test_first_sample_range_from_moof():
     head = styp + moof + b"\0" * 64
     off, size = first_sample_range(head)
     assert size == 5000 and off == len(styp) + 120
+
+
+def test_slides_are_fetched_a_few_frames_ahead_and_let_go(tmp_path, monkeypatch):
+    """A 1080p screen frame is ~3 MB: all of a lecture's frames must never be in memory at once."""
+    import threading
+    import types
+
+    from studia import slides
+    from studia.cancel import Cancelled
+    from studia.hls import Segment
+
+    alive, peak, lock = set(), [0], threading.Lock()
+
+    class Frame:
+        def __init__(self, n):
+            self.n = n
+            with lock:
+                alive.add(n)
+                peak[0] = max(peak[0], len(alive))
+
+        def __del__(self):
+            with lock:
+                alive.discard(self.n)
+
+    segs = [Segment(i * 9.0, 9.0, f"u{i}", 0, 10) for i in range(300)]
+    monkeypatch.setattr(slides, "media_playlist", lambda s, u, prefer: types.SimpleNamespace(text="", url=u))
+    monkeypatch.setattr(slides, "parse_playlist", lambda text, url: (("init", 0, 0), segs))
+    monkeypatch.setattr(slides, "find_avcc", lambda b: b"avcc")
+    monkeypatch.setattr(slides, "_fetch_keyframe", lambda session, seg, avcc: Frame(int(seg.t // 9)))
+    monkeypatch.setattr(slides, "thumb", lambda f: np.full((4, 4), f.n // 50, dtype=np.float32))
+    monkeypatch.setattr(slides, "changed_fraction", lambda a, b: float(abs(a - b).mean() > 0))
+    monkeypatch.setattr(slides, "is_blank", lambda t: False)
+    monkeypatch.setattr(slides, "save_jpeg", lambda frame, path, max_width=1600: path.write_bytes(b"jpg"))
+    session = types.SimpleNamespace(get=lambda url: types.SimpleNamespace(content=b""))
+    out = slides.extract_slides(session, "m3u8", tmp_path, "slides/x", "s")
+    assert len({s.index for s in out}) == 6 and peak[0] <= slides.FETCH_AHEAD + 3
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(Cancelled):
+        slides.extract_slides(session, "m3u8", tmp_path, "slides/x", "s", cancel=stop)

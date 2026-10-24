@@ -310,3 +310,58 @@ def reveal(path: str | Path) -> None:
         subprocess.Popen(["explorer", "/select,", str(p)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     else:
         os.startfile(str(p))  # type: ignore[attr-defined]
+
+
+def work_area() -> tuple[float, float]:
+    """The primary screen's usable size (without the taskbar) in 96-dpi pixels, the unit pywebview sizes windows in;
+    (0, 0) if unknown."""
+    user32 = ctypes.windll.user32
+    r = wt.RECT()
+    if not user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0):      # SPI_GETWORKAREA
+        return 0.0, 0.0
+    scale = 1.0
+    try:                                     # a DPI-aware process gets physical pixels
+        if user32.IsProcessDPIAware():
+            scale = (user32.GetDpiForSystem() or 96) / 96
+    except (AttributeError, OSError):
+        pass
+    return (r.right - r.left) / scale, (r.bottom - r.top) / scale
+
+
+class _ReasonContext(ctypes.Structure):
+    _fields_ = [("Version", wt.ULONG), ("Flags", wt.DWORD), ("SimpleReasonString", wt.LPWSTR),
+                ("_rest", ctypes.c_byte * 16)]           # the union's detailed form is larger
+
+
+class KeepAwake:
+    """While on, Windows' idle timer does not put the PC to sleep (the screen may still turn off; closing a laptop's
+    lid still sleeps it). Listed by ``powercfg /requests`` with the reason. On and off from any thread."""
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+        self._handle = None
+        self._on = False
+
+    def on(self) -> None:
+        self._set(True)
+
+    def off(self) -> None:
+        self._set(False)
+
+    def _set(self, on: bool) -> None:
+        if on == self._on:
+            return
+        try:
+            k32 = ctypes.windll.kernel32
+            if self._handle is None:
+                k32.PowerCreateRequest.restype = wt.HANDLE
+                ctx = _ReasonContext(0, 0x1, self._reason)     # POWER_REQUEST_CONTEXT_VERSION, SIMPLE_STRING
+                handle = k32.PowerCreateRequest(ctypes.byref(ctx))
+                if not handle or handle == wt.HANDLE(-1).value:
+                    return
+                self._handle = handle
+            fn = k32.PowerSetRequest if on else k32.PowerClearRequest
+            if fn(wt.HANDLE(self._handle), 1):                # PowerRequestSystemRequired
+                self._on = on
+        except (AttributeError, OSError):
+            pass

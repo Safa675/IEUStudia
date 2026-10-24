@@ -70,3 +70,45 @@ def test_writer_names_and_files(tmp_path):
     assert paths["md"].name == "MATH 240 - 2026-10-14 Wed - Lecture.md" and paths["md"].exists()
     assert paths["pack"].exists() and (tmp_path / "PROMPTS.md").exists()
     assert (paths["folder"] / "subtitles" / "MATH 240 - 2026-10-14 Wed - Lecture - Part 1.srt").exists()
+
+
+def test_a_file_held_open_for_a_moment_is_still_replaced(tmp_path, monkeypatch):
+    import os
+
+    import pytest
+
+    from studia.outputs import writer
+
+    target = tmp_path / "a.md"
+    target.write_text("old", encoding="utf-8")
+    real, tries = os.replace, []
+
+    def busy_twice(a, b):
+        tries.append(1)
+        if len(tries) < 3:
+            raise PermissionError(13, "Access is denied")       # e.g. OneDrive or an antivirus has it open
+        return real(a, b)
+
+    monkeypatch.setattr(writer.time, "sleep", lambda s: None)
+    monkeypatch.setattr(writer.os, "replace", busy_twice)
+    writer.atomic_write(target, "new")
+    assert target.read_text(encoding="utf-8") == "new" and len(tries) == 3
+
+    def always(a, b):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(writer.os, "replace", always)
+    with pytest.raises(PermissionError):
+        writer.atomic_write(target, "newer")
+    assert target.read_text(encoding="utf-8") == "new" and not (tmp_path / "a.md.tmp").exists()
+
+
+def test_two_local_files_of_the_same_name_keep_both_transcripts(tmp_path):
+    from studia.outputs.writer import write_local
+
+    t = Transcript(delivery_id="local-x", segments=[Segment(0, 2, "Hello.", "en", 0.9)], duration_s=2, speech_s=2,
+                   language_seconds={"en": 2}, model="m", device="cpu", engine_version="t", created_at="x")
+    a = write_local(tmp_path, r"C:\Videos\EEE\Lecture.mp4", t)
+    b = write_local(tmp_path, r"C:\Videos\MATH\Lecture.mp4", t)
+    assert (a.name, b.name) == ("Lecture.md", "Lecture (MATH).md")
+    assert write_local(tmp_path, r"C:\Videos\EEE\Lecture.mp4", t) == a        # the same file again: same transcript

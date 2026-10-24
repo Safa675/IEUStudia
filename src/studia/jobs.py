@@ -7,9 +7,12 @@ Pipeline per recording:  Panopto details → audio download → decode (CPU) ─
 from __future__ import annotations
 
 import dataclasses as dc
+import errno
 import hashlib
+import json
 import logging
 import queue
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -22,9 +25,11 @@ from . import hls, store
 from .cancel import Cancelled
 from .config import Settings
 from .library import Library
+from .net import plain_error
 from .panopto import NeedPanoptoAuth, NotReady, Panopto
 from .paths import audio_cache_dir
 from .quality import SILENT_DBFS, NoSpeech, is_silent
+from .winutil import KeepAwake
 
 if TYPE_CHECKING:
     import numpy as np
@@ -39,6 +44,9 @@ def decode_audio(path: Path, cancel: Optional[threading.Event] = None) -> np.nda
     return _decode(path, cancel)
 Emit = Callable[[dict[str, Any]], None]
 IDLE_UNLOAD_S = 600   # free the GPU memory 10 minutes after the last job
+DECODED_MAX = 2       # decoded lectures in memory at once (~345 MB each for 90 minutes): one transcribing, one next
+PENDING_KEY = "outputs_pending"     # library meta: recordings whose files in the output folder could not be written
+_ETA = re.compile(r"\s*·\s*~(\d+)s left")
 
 _STATUS = {"queued": "queued", "downloading": "downloading", "transcribing": "transcribing",
            "writing": "transcribing", "done": "done", "failed": "failed", "processing": "processing"}
@@ -61,20 +69,19 @@ class Job:
     info: Optional[dict] = None
     slides: Optional[Future] = None
     attempts: int = 0
+    holds_audio: bool = False        # one of the DECODED_MAX places for decoded audio
     prev_status: str = "available"
     started: float = dc.field(default_factory=time.monotonic)
     finished: bool = False
     duration_s: float = 0.0          # the recording's length (for the batch's time left)
 
     def view(self) -> dict[str, Any]:
-        eta = None
-        if "~" in self.detail and "s left" in self.detail:
-            try:
-                eta = int(self.detail.split("~")[1].split("s left")[0])
-            except ValueError:
-                eta = None
+        detail, eta = self.detail, None
+        m = _ETA.search(detail)              # the engine's "… · ~120s left": the page shows it as "about 2 min left"
+        if m:
+            detail, eta = (detail[:m.start()] + detail[m.end():]).strip(), int(m.group(1))
         return {"id": self.id, "title": self.title, "course_code": self.course_code, "course_id": self.course_id,
-                "stage": self.stage, "progress": round(self.progress, 3), "detail": self.detail, "eta_s": eta,
+                "stage": self.stage, "progress": round(self.progress, 3), "detail": detail, "eta_s": eta,
                 "error": self.error, "local": self.local_path is not None}
 
 
@@ -94,7 +101,9 @@ class JobManager:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.RLock()
         self._dl_q: "queue.Queue[Optional[Job]]" = queue.Queue()
-        self._gpu_q: "queue.Queue[Optional[Job]]" = queue.Queue(maxsize=2)   # bounds decoded audio in memory
+        self._gpu_q: "queue.Queue[Optional[Job]]" = queue.Queue()
+        self._audio_places = threading.Semaphore(DECODED_MAX)    # downloads still run ahead, as files on disk
+        self._awake = KeepAwake("IEUStudia is transcribing lectures")
         self._started = False
         self._engine = None
         self._engine_key: Optional[tuple] = None
@@ -133,6 +142,8 @@ class JobManager:
                 self._dl_q.put(job)
                 self._update(job, "queued", 0.0, "Waiting", force=True)
                 n += 1
+            if self._jobs:
+                self._awake.on()         # Windows' idle timer must not put the PC to sleep mid-batch
         self._emit_queue()
         return n
 
@@ -147,6 +158,7 @@ class JobManager:
                 self._jobs[did] = job
                 self._dl_q.put(job)
                 self._update(job, "queued", 0.0, "Waiting", force=True)
+            self._awake.on()
         self._emit_queue()
         return did
 
@@ -194,6 +206,20 @@ class JobManager:
         with self._lock:
             return bool(self._jobs)
 
+    def note_unwritten(self, delivery_id: str, pending: bool) -> None:
+        """Remember (or forget) a transcript whose files in the output folder are missing."""
+        with self._lock:
+            ids = set(self.unwritten())
+            ids = ids | {delivery_id} if pending else ids - {delivery_id}
+            self.lib.set_meta(PENDING_KEY, json.dumps(sorted(ids)))
+
+    def unwritten(self) -> list[str]:
+        try:
+            ids = json.loads(self.lib.get_meta(PENDING_KEY) or "[]")
+        except ValueError:
+            return []
+        return [str(i) for i in ids] if isinstance(ids, list) else []
+
     def engine_loaded(self) -> bool:
         return self._engine is not None and getattr(self._engine, "loaded", False)
 
@@ -235,6 +261,25 @@ class JobManager:
         if changed:
             self._emit_queue()
 
+    def _take_audio_place(self, job: Job) -> None:
+        """Wait until fewer than DECODED_MAX decoded lectures are in memory (a slow processor may take an hour per
+        lecture while the downloads are long done). Cancel works while waiting."""
+        if job.holds_audio:
+            return
+        if not self._audio_places.acquire(blocking=False):
+            self._update(job, "queued", 0.0, "Downloaded — waiting for its turn", force=True)
+            while not self._audio_places.acquire(timeout=0.5):
+                if job.cancel.is_set():
+                    raise Cancelled()
+        job.holds_audio = True
+
+    def _drop_audio(self, job: Job) -> None:
+        job.audio = None
+        with self._lock:
+            held, job.holds_audio = job.holds_audio, False
+        if held:
+            self._audio_places.release()
+
     def _finish(self, job: Job, stage: str, error: str = "") -> None:
         with self._lock:
             if job.finished:          # e.g. cancelled while queued, then picked up by a worker
@@ -242,7 +287,7 @@ class JobManager:
             job.finished = True
             current = self._jobs.get(job.id) is job
         job.error = error
-        job.audio = None
+        self._drop_audio(job)
         with self._lock:
             b = getattr(self, "_batch", None)
             if b is not None and current:
@@ -250,11 +295,17 @@ class JobManager:
                 if stage == "done":
                     b["done"] += 1
                     b["audio_done"] += job.duration_s
+        status = ""
         if job.local_path is None and current:
             if stage == "cancelled":
-                self.lib.set_status(job.id, job.prev_status if job.prev_status in ("done", "available") else "available")
+                status = job.prev_status if job.prev_status in ("done", "available") else "available"
+                self.lib.set_status(job.id, status)
+            elif stage == "failed" and job.prev_status == "done":
+                status = "done"               # transcribing it again failed: the earlier transcript is still there
+                self.lib.set_status(job.id, status)
             elif stage in _STATUS:
-                self.lib.set_status(job.id, _STATUS[stage], error)
+                status = _STATUS[stage]
+                self.lib.set_status(job.id, status, error)
         job.stage = stage
         if not current:   # a newer job for the same recording owns the UI row and the status
             return
@@ -263,7 +314,9 @@ class JobManager:
                 self._jobs.pop(job.id, None)
                 self._last_emit.pop(job.id, None)
             idle = not self._jobs
-        self.emit({"type": "job", **job.view(), "final": True, "batch_done": idle})
+            if idle:
+                self._awake.off()
+        self.emit({"type": "job", **job.view(), "final": True, "batch_done": idle, "status": status})
         self._emit_queue()
         if idle and self._engine is not None:
             self._schedule_idle_unload()
@@ -279,22 +332,34 @@ class JobManager:
                 continue
             try:
                 self._prepare(job)
+                if job.cancel.is_set():
+                    raise Cancelled()
+                self._update(job, "queued", 0.0, "Downloaded — waiting for its turn")    # Cancel ends it at once
                 self._gpu_q.put(job)
-            except Cancelled:
+                continue
+            except BaseException as exc:  # noqa: BLE001 - every way out gives back the place for its audio
+                self._drop_audio(job)
+                error = exc
+            if isinstance(error, Cancelled):
                 self._finish(job, "cancelled")
-            except NotReady as exc:
-                self._finish(job, "processing", str(exc))
-            except (requests.RequestException, OSError) as exc:
+            elif isinstance(error, NotReady):
+                self._finish(job, "processing", str(error))
+            elif isinstance(error, (requests.RequestException, OSError)):
+                lasting = isinstance(error, PermissionError) or getattr(error, "errno", None) == errno.ENOSPC
                 job.attempts += 1
-                if job.attempts <= 2 and not job.cancel.is_set():
-                    self.log.info("Download problem for %s (%s); retrying", job.id, exc)
+                if job.attempts <= 2 and not lasting and not job.cancel.is_set():
+                    self.log.info("Download problem for %s (%s); retrying", job.id, error)
                     self._update(job, "queued", 0.0, "Connection problem — retrying shortly", force=True)
                     threading.Timer(4.0 * job.attempts, self._dl_q.put, args=(job,)).start()
                 else:
-                    self._finish(job, "failed", f"Download failed: {exc}")
-            except Exception as exc:  # noqa: BLE001
-                self.log.exception("Preparing %s failed", job.id)
-                self._finish(job, "failed", str(exc) or exc.__class__.__name__)
+                    self.log.warning("Download of %s failed: %s", job.id, error)
+                    self._finish(job, "failed", plain_error(error) if lasting else
+                                 f"The download failed. {plain_error(error)}")
+            elif isinstance(error, Exception):
+                self.log.error("Preparing %s failed", job.id, exc_info=error)
+                self._finish(job, "failed", plain_error(error))
+            else:
+                raise error
 
     def _panopto(self, job: Job) -> tuple[Panopto, requests.Session, dict]:
         s = self.sync.worker_session()
@@ -309,6 +374,7 @@ class JobManager:
 
     def _prepare(self, job: Job) -> None:
         if job.local_path is not None:
+            self._take_audio_place(job)
             self._update(job, "downloading", 0.5, "Reading the file")
             job.audio = decode_audio(job.local_path, job.cancel)
             return
@@ -352,6 +418,7 @@ class JobManager:
                 last_exc = exc
                 continue
             job.audio_path = dest
+            self._take_audio_place(job)
             self._update(job, "downloading", 1.0, "Decoding audio")
             audio = decode_audio(dest, job.cancel)
             if is_silent(audio) and i + 1 < len(sources):
@@ -395,9 +462,9 @@ class JobManager:
                 self._finish(job, "failed", str(exc))
             except Exception as exc:  # noqa: BLE001
                 self.log.exception("Transcribing %s failed", job.id)
-                self._finish(job, "failed", str(exc) or exc.__class__.__name__)
+                self._finish(job, "failed", plain_error(exc))
             finally:
-                job.audio = None
+                self._drop_audio(job)
 
     def _engine_progress(self, job: Job, stage: str, frac: float, detail: str) -> None:
         phase = {"model-download": "download", "model-load": "load"}.get(stage)
@@ -420,13 +487,14 @@ class JobManager:
         if job.local_path is not None:
             meta["source_path"] = str(job.local_path)
         t = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel, meta)
-        job.audio = None
+        self._drop_audio(job)
         t.delivery_id = job.id
         path = store.save_transcript(t)
         quality = (t.meta or {}).get("quality") or {}
+        warnings = quality.get("warnings") or []
         if job.local_path is None:
             self.lib.save_transcript(t, path, quality=quality.get("stats"))
-            self.lib.set_warnings(job.id, quality.get("warnings") or [])
+            self.lib.set_warnings(job.id, warnings)
         if job.slides is not None:
             self._update(job, "writing", 0.97, "Finishing slides", force=True)
             try:
@@ -434,7 +502,16 @@ class JobManager:
             except Exception as exc:  # noqa: BLE001 - slides are optional
                 self.log.warning("Slides for %s failed: %s", job.id, exc)
         self._update(job, "writing", 0.99, "Writing files", force=True)
-        self.write_outputs(job.id)
+        try:
+            self.write_outputs(job.id)
+        except OSError as exc:            # the transcript is saved: its files are written again at the next start
+            self.log.warning("Writing the files of %s failed: %s", job.id, exc)
+            self.note_unwritten(job.id, True)
+            if job.local_path is None:
+                self.lib.set_warnings(job.id, warnings + [{
+                    "code": "not_written", "level": "warning",
+                    "message": f"Transcribed, but its files in your IEUStudia folder could not be written. "
+                               f"{plain_error(exc)} IEUStudia tries again the next time it starts."}])
         if job.audio_path and not settings.keep_audio:
             for p in (job.audio_path,):
                 try:

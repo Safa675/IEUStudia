@@ -13,20 +13,22 @@ from __future__ import annotations
 import dataclasses as dc
 import functools
 import io
+import itertools
 import json
 import logging
 import os
 import re
 import struct
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator, Optional
 from urllib.parse import urljoin
 
 import requests
 
-from .cancel import check
+from .cancel import Cancelled
 
 if TYPE_CHECKING:   # PyAV and NumPy load only when slides are extracted (they take seconds to import)
     import av
@@ -34,6 +36,7 @@ if TYPE_CHECKING:   # PyAV and NumPy load only when slides are extracted (they t
 from .hls import Segment as _Segment, get_range as _get, media_playlist, parse_playlist  # noqa: F401
 
 log = logging.getLogger("studia")
+FETCH_AHEAD = 16          # screen frames fetched ahead of the one being compared
 
 
 @dc.dataclass
@@ -217,9 +220,16 @@ def extract_slides(session: requests.Session, master_url: str, out_dir: Path, re
         slides.append(Slide(idx, cur_start + offset, end_t + offset, f"{rel_prefix}/{name}", str(path)))
 
     with ThreadPoolExecutor(max_workers=8, thread_name_prefix="slides") as pool:
-        futures = [pool.submit(_fetch_keyframe, session, s, avcc) for s in segs]
-        for i, (seg, fut) in enumerate(zip(segs, futures)):
-            check(cancel)
+        pending: deque[Future] = deque()        # a few frames ahead, not all: a decoded 1080p frame is ~3 MB
+        ahead = iter(segs)
+        for i, seg in enumerate(segs):
+            for s in itertools.islice(ahead, max(0, FETCH_AHEAD - len(pending))):
+                pending.append(pool.submit(_fetch_keyframe, session, s, avcc))
+            fut = pending.popleft()
+            if cancel is not None and cancel.is_set():
+                for f in pending:
+                    f.cancel()
+                raise Cancelled()
             try:
                 frame = fut.result()
             except Exception as exc:  # noqa: BLE001 - a missing frame only lowers time precision

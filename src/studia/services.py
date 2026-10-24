@@ -48,6 +48,22 @@ class Services:
         from .plans import PlanRunner
 
         self.plans = PlanRunner(self)
+        self._write_unwritten()
+
+    def _write_unwritten(self) -> None:
+        """Write the files of transcripts whose files could not be written before (a file was open in another
+        program, the folder was blocked or offline)."""
+        for did in self.jobs.unwritten():
+            try:
+                self.write_outputs(did)
+            except OSError as exc:
+                log.info("The files of %s still can't be written: %s", did, exc)
+                continue
+            except Exception:  # noqa: BLE001 - e.g. the recording is gone; never stop the start for it
+                log.exception("Writing the files of %s failed", did)
+            self.jobs.note_unwritten(did, False)
+            if not did.startswith("local-"):
+                self.lib.set_warnings(did, [w for w in self.lib.warnings(did) if w.get("code") != "not_written"])
 
     def shutdown(self) -> None:
         self.plans.shutdown()

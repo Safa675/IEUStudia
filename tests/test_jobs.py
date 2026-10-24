@@ -108,7 +108,8 @@ def env(tmp_path, monkeypatch):
     state = {"engine": FakeEngine()}
 
     def make(**kw):
-        settings = Settings(output_dir=str(tmp_path / "out"), parallel_downloads=1, capture_slides=False, **kw)
+        settings = Settings(**{"output_dir": str(tmp_path / "out"), "parallel_downloads": 1, "capture_slides": False,
+                               **kw})
         return jobs_mod.JobManager(lib, FakeSync(), lambda: settings, lambda s: state["engine"], events.append,
                                    lambda did: written.append(did) or {}, lambda *a: [])
 
@@ -205,3 +206,111 @@ def test_batch_progress_counts_finished_lectures_and_estimates_time_left(env):
     jm.enqueue(["r1"])                            # a new batch starts from zero
     assert jm.batch()["finished"] == 0 and jm.batch()["total"] == 1
     assert wait_for(lambda: not jm.busy())
+
+
+class BlockingEngine(FakeEngine):
+    """A slow processor: each lecture takes until the test lets it go."""
+
+    def __init__(self):
+        super().__init__()
+        self.go = threading.Event()
+
+    def transcribe(self, audio, progress, cancel, meta):
+        while not self.go.wait(0.05):
+            if cancel.is_set():
+                from studia.cancel import Cancelled
+                raise Cancelled()
+        return super().transcribe(audio, progress, cancel, meta)
+
+
+def test_downloads_run_ahead_but_few_lectures_wait_decoded_and_cancel_ends_a_waiting_one(env):
+    ids = [f"r{i}" for i in range(1, 7)]
+    env["lib"].merge_recordings("c", [Recording(delivery_id=d, course_id="c", folder_id="f", folder_path="", name=d,
+                                                start=dt.datetime(2026, 10, 14, 9, i), duration_s=2400, viewer_url="u")
+                                      for i, d in enumerate(ids[2:])], first_sync=False)
+    env["state"]["engine"] = engine = BlockingEngine()
+    awake = []
+    env["mp"].setattr(jobs_mod, "KeepAwake", lambda reason: type("K", (), {"on": lambda s: awake.append(True),
+                                                                            "off": lambda s: awake.append(False)})())
+    jm = env["make"](parallel_downloads=3)
+    jm.enqueue(ids)
+    assert awake == [True]
+    assert wait_for(lambda: sum(1 for i in ids if (jm.job(i) and jm.job(i).detail.startswith("Downloaded"))) >= 2)
+    time.sleep(0.3)
+    holding = [i for i in ids if jm.job(i) is not None and jm.job(i).audio is not None]
+    assert len(holding) <= jobs_mod.DECODED_MAX                     # one transcribing, one ready
+    waiting = next(i for i in ids if jm.job(i) and jm.job(i).stage == "queued" and jm.job(i).detail.startswith("Downloaded"))
+    jm.cancel(waiting)
+    assert jm.job(waiting) is None and env["lib"].get_recording(waiting).status == "available"   # at once
+    engine.go.set()
+    assert wait_for(lambda: not jm.busy(), timeout=20)
+    assert {e["stage"] for i in ids if i != waiting for e in finals(env["events"], i)} == {"done"}
+    assert awake[-1] is False                                       # the PC may sleep again
+
+
+def test_a_transcript_whose_files_cannot_be_written_is_still_done(env):
+    def locked(did):
+        raise PermissionError(13, "Access is denied", r"C:\Users\x\OneDrive\EEE 215 - Study pack.md")
+
+    lib = env["lib"]
+    jm = jobs_mod.JobManager(lib, FakeSync(), lambda: Settings(parallel_downloads=1, capture_slides=False),
+                             lambda s: env["state"]["engine"], env["events"].append, locked, lambda *a: [])
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    assert finals(env["events"], "r1")[0]["stage"] == "done" and lib.get_recording("r1").status == "done"
+    (w,) = lib.warnings("r1")
+    assert w["code"] == "not_written" and "Study pack.md" in w["message"] and "tries again" in w["message"]
+    assert jm.unwritten() == ["r1"]
+
+
+def test_transcribing_again_that_fails_keeps_the_earlier_transcript(env):
+    env["lib"].set_status("r1", "done")
+    env["state"]["engine"] = FakeEngine(fail=RuntimeError("boom"))
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    f = finals(env["events"], "r1")[0]
+    assert f["stage"] == "failed" and f["status"] == "done" and env["lib"].get_recording("r1").status == "done"
+
+
+def test_a_full_disk_is_said_plainly_and_not_retried_as_a_connection_problem(env):
+    def full(src, dest, progress, cancel=None, prefer="audio"):
+        raise OSError(28, "No space left on device")
+
+    env["mp"].setattr(FakePanopto, "download", lambda self, *a, **k: full(*a, **k))
+    FakePanopto.sources = [MediaSource("audio_podcast", "https://x/loud")]
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    rec = env["lib"].get_recording("r1")
+    assert rec.status == "failed" and rec.error.startswith("Your disk is full")
+    assert not any("retrying" in (e.get("detail") or "") for e in env["events"] if e.get("id") == "r1")
+
+
+def test_the_time_left_is_given_apart_from_the_detail():
+    j = jobs_mod.Job(id="x", title="t", detail="Transcribing passage 40 of 600 · ~1500s left")
+    v = j.view()
+    assert v["detail"] == "Transcribing passage 40 of 600" and v["eta_s"] == 1500
+
+
+def test_files_that_could_not_be_written_are_written_at_the_next_start(env):
+    import types
+
+    from studia.services import Services
+
+    lib = env["lib"]
+    lib.set_warnings("r1", [{"code": "not_written", "level": "warning", "message": "x"}, {"code": "gaps", "level": "info"}])
+    jm = env["make"]()
+    jm.note_unwritten("r1", True)
+    jm.note_unwritten("r2", True)
+    calls = []
+
+    def write(did):
+        calls.append(did)
+        if did == "r2":
+            raise PermissionError(13, "Access is denied")
+        return {}
+
+    Services._write_unwritten(types.SimpleNamespace(jobs=jm, lib=lib, write_outputs=write))
+    assert calls == ["r1", "r2"] and jm.unwritten() == ["r2"]           # r2 is tried again next time
+    assert [w["code"] for w in lib.warnings("r1")] == ["gaps"]

@@ -27,6 +27,11 @@ __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "mo
 ENGINE_VERSION = "2.0"
 UNCLEAR = "[unclear]"
 Progress = Callable[[str, float, str], None]
+
+
+def _work(u: Unit) -> float:
+    """A passage's share of the transcription time (see _decode_units)."""
+    return 1.0 + u.dur / 12.0
 log = logging.getLogger("studia")
 
 
@@ -242,8 +247,10 @@ class Engine:
         order = sort_by_duration(units, range(n))
         done = 0
         started = time.monotonic()
-        speech_total = sum(u.dur for u in units) or 1.0
-        speech_done = 0.0
+        # what a passage costs: one encoder pass (always 30 s of audio, however short the passage), plus decoding
+        # that grows with its length (measured on a laptop processor: encoding is about 12 s of decoding)
+        work_total = sum(_work(u) for u in units) or 1.0
+        work_done = 0.0
         i = 0
         while i < n:
             check(cancel)
@@ -256,18 +263,18 @@ class Engine:
                     cands[j].append(d)
             i += len(idx)
             done += len(idx)
-            speech_done += sum(u.dur for u in batch)
-            frac = speech_done / speech_total
+            work_done += sum(_work(u) for u in batch)
+            frac = work_done / work_total
             elapsed = time.monotonic() - started
             eta = elapsed / frac * (1 - frac) if frac > 0.05 else None
-            progress("transcribe", 0.05 + 0.9 * frac,
-                     f"Transcribing {done}/{n} passages" + (f" · ~{int(eta)}s left" if eta else ""))
+            progress("transcribe", 0.05 + 0.88 * frac,
+                     f"Transcribing passage {done} of {n}" + (f" · ~{int(eta)}s left" if eta else ""))
 
         dominant = self._dominant(cands, units)
         self._last_dominant = dominant
         chosen: list[Optional[Decoded]] = [choose(c, units[k].dur, dominant) if c else None
                                            for k, c in enumerate(cands)]
-        chosen = self._retry_bad(audio, units, chosen, opts, cancel)
+        chosen = self._retry_bad(audio, units, chosen, opts, cancel, progress)
         best_conf = [max((d.conf for d in c if hallucination_score(d, units[k].dur) < 0.75), default=0.0)
                      for k, c in enumerate(cands)]
         return chosen, best_conf
@@ -286,7 +293,8 @@ class Engine:
         return votes.most_common(1)[0][0] if votes else "en"
 
     def _retry_bad(self, audio: np.ndarray, units: list[Unit], chosen: list[Optional[Decoded]],
-                   opts: DecodeOptions, cancel: Optional[threading.Event]) -> list[Optional[Decoded]]:
+                   opts: DecodeOptions, cancel: Optional[threading.Event],
+                   progress: Progress = lambda *a: None) -> list[Optional[Decoded]]:
         """Re-decode units with repetition loops / very low confidence using temperature fallback."""
         dec = self._decoder
         assert dec is not None
@@ -297,7 +305,8 @@ class Engine:
             return chosen
         self.log.info("Retrying %d low-quality passages", len(bad))
         size = max(1, min(opts.batch_size, self._oom_batch or opts.batch_size))
-        for temp in (0.3, 0.6):
+        first = len(bad)
+        for round_no, temp in enumerate((0.3, 0.6)):
             if not bad:
                 break
             still = []
@@ -305,8 +314,10 @@ class Engine:
             for k in bad:
                 by_lang.setdefault(chosen[k].lang, []).append(k)  # type: ignore[union-attr]
             groups = [ks[i:i + size] for ks in by_lang.values() for i in range(0, len(ks), size)]
-            for idx in groups:
+            for g, idx in enumerate(groups):
                 check(cancel)
+                progress("transcribe", 0.93 + 0.02 * (round_no + g / len(groups)) / 2,
+                         f"Checking {first} unclear passage{'s' if first != 1 else ''} again")
                 batch = [units[k] for k in idx]
                 langs = [chosen[k].lang for k in idx]  # type: ignore[union-attr]
                 retry = self._encode_generate(audio, batch, [langs], DecodeOptions(temperature=temp, best_of=3))[0]

@@ -11,6 +11,8 @@
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const fmtDur = (s) => { const m = Math.round((s || 0) / 60); if (m < 60) return `${m} min`; return `${Math.floor(m / 60)} h ${m % 60} min`; };
   const pct = (p) => `${Math.round((p || 0) * 100)}%`;
+  const leftText = (s) => (s == null ? "" : s < 60 ? "less than a minute left" : `about ${fmtDur(s)} left`);
+  const jobDetail = (j) => [j.detail, leftText(j.eta_s)].filter(Boolean).join(" · ");   // "Transcribing passage 40 of 600 · about 25 min left"
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   function rel(iso) {
     if (!iso) return "never";
@@ -117,13 +119,14 @@
       if (e.final) {
         r.progress = null; r.detail = null;
         if (e.stage === "done") { r.status = "done"; r.is_new = false; toast(`Transcribed: ${e.title}`, "success"); }
+        else if (e.stage === "failed" && e.status === "done") { r.status = "done"; toast(`${e.title} could not be transcribed again: ${e.error || "it failed"}. The earlier transcript is kept.`, "warning"); }
         else if (e.stage === "failed") { r.status = "failed"; r.error = e.error; toast(`${e.title}: ${e.error || "failed"}`, "error"); }
-        else if (e.stage === "processing") { r.status = "processing"; r.error = e.error; toast(e.error || "Still processing on Panopto", "warning"); }
+        else if (e.stage === "processing") { r.status = "processing"; r.error = e.error; toast(e.error || "Not ready on Panopto yet", "warning"); }
         if (S.view.name === "day" && S.day && S.view.dayKey === hit.d.day_key) openDay(S.view.dayKey, true);
       } else {
         const before = r.status;
         r.status = { queued: "queued", downloading: "downloading", transcribing: "transcribing", writing: "transcribing" }[e.stage] || r.status;
-        r.progress = e.progress; r.detail = e.detail;
+        r.progress = e.progress; r.detail = e.detail; r.eta_s = e.eta_s;
         const busy = (s) => ["queued", "downloading", "transcribing"].includes(s);
         if (busy(r.status) !== busy(before)) {   // day buttons depend on it: redraw the whole card once
           const card = document.querySelector(`.day[data-day="${CSS.escape(hit.d.day_key)}"]`);
@@ -315,13 +318,13 @@
     const bar = (indet) => `<div class="bar ${indet ? "indet" : ""}"><i style="width:${pct(prog)}"></i></div>`;
     switch (r.status) {
       case "queued": return `<span class="pill">${I("clock")}Queued</span><span class="detail">${esc(r.detail || "")}</span>`;
-      case "downloading": return `<span class="pill active">${I("download")}Downloading ${prog != null ? pct(prog) : ""}</span>${bar(prog == null)}<span class="detail">${esc(r.detail || "")}</span>`;
-      case "transcribing": return `<span class="pill active">${I("wave")}Transcribing ${prog ? pct(prog) : ""}</span>${bar(!prog)}<span class="detail">${esc(r.detail || "")}</span>`;
+      case "downloading": return `<span class="pill active">${I("download")}Downloading ${prog != null ? pct(prog) : ""}</span>${bar(prog == null)}<span class="detail">${esc(jobDetail(r))}</span>`;
+      case "transcribing": return `<span class="pill active">${I("wave")}Transcribing ${prog ? pct(prog) : ""}</span>${bar(!prog)}<span class="detail">${esc(jobDetail(r))}</span>`;
       case "done": return `<span class="pill done">${I("check")}Transcribed</span>`;
       case "failed":
         if (r.no_sound || /no sound|no speech/i.test(r.error || "")) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}No sound on Panopto</span><span class="detail" title="${esc(r.error || "")}">microphone was off</span>`;
         return `<span class="pill failed" title="${esc(r.error || "")}">${I("alert")}Failed</span><span class="detail" title="${esc(r.error || "")}">${esc(r.error || "")}</span>`;
-      case "processing": return `<span class="pill processing">${I("hourglass")}Processing on Panopto</span>`;
+      case "processing": return `<span class="pill processing" title="Panopto is still preparing this recording. Try again later.">${I("hourglass")}Not ready on Panopto yet</span>`;
     }
     if (r.duplicate) return `<span class="pill">Duplicate</span>`;
     if (r.too_short) return `<span class="pill">Too short</span>`;
@@ -1238,7 +1241,7 @@
     const label = (j) => ({ queued: "Waiting", downloading: "Downloading", transcribing: "Transcribing", writing: "Finishing" }[j.stage] || j.stage);
     const open = el.classList.contains("open");
     let title = cur ? `${label(cur)} · ${esc(cur.title)}` : "Preparing";
-    let detail = cur ? esc(cur.detail || "") : "";
+    let detail = cur ? esc(jobDetail(cur)) : "";
     let p = cur ? cur.progress : 0;
     if (eng) { title = eng.phase === "download" ? "Downloading the speech model (one time)" : "Loading the speech model"; detail = esc(eng.message || ""); p = eng.progress || 0; }
     const more = jobs.length > 1 ? `<button class="btn ghost sm" data-act="queue-toggle">${open ? "Hide" : `+${jobs.length - 1} more`}</button>` : "";
@@ -1751,7 +1754,7 @@
             p += stage === "downloading" ? 0.2 : 0.08;
             if (p >= 1 && stage === "downloading") { stage = "transcribing"; p = 0; }
             if (p >= 1 && stage === "transcribing") { clearInterval(iv); emit({ type: "job", id, title: "MATH 250 · lecture", stage: "done", final: true, progress: 1 }); emit({ type: "queue", jobs: [] }); return; }
-            emit({ type: "job", id, title: "Lecture", stage, progress: p, detail: stage === "downloading" ? `Downloading audio ${Math.round(p * 30)}/30 MB` : `Transcribing ${Math.round(p * 300)}/300 passages · ~${Math.round((1 - p) * 90)}s left` });
+            emit({ type: "job", id, title: "Lecture", stage, progress: p, detail: stage === "downloading" ? `Downloading audio ${Math.round(p * 30)}/30 MB` : `Transcribing passage ${Math.round(p * 300)} of 300`, eta_s: stage === "transcribing" ? Math.round((1 - p) * 900) : null });
             emit({ type: "queue", jobs: ids.map((x) => ({ id: x, title: `MATH 250 · Fri 16 Oct ${x}`, stage: x === id ? stage : "queued", progress: x === id ? p : 0, detail: x === id ? "Transcribing passages" : "Waiting" })) });
           }, 700);
         }, k * 9000);
