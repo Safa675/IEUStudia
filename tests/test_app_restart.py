@@ -64,10 +64,11 @@ def test_switching_profiles_restarts_into_the_other_account(isolated_home, monke
     assert splashes[0][6:8] == ["--python", restarts[0][0]]             # a restart from it uses the app's Python
 
 
-@pytest.mark.parametrize("area,size", [((1440, 852), (1280, 820, False)),           # fits: the usual size
-                                       ((1366, 720), (1280, 704, True)),            # 1366 x 768: maximized
-                                       ((1280, 672), (1264, 656, True)),            # 1920 x 1080 at 150 %
-                                       ((0, 0), (1280, 820, False))])               # unknown
+@pytest.mark.parametrize("area,size", [((0, 0, 1440, 852), (1280, 820, False, 80, 16)),    # fits: centred
+                                       ((0, 0, 1366, 720), (1280, 704, True, 43, 8)),      # 1366 x 768: maximized
+                                       ((0, 0, 1280, 672), (1264, 656, True, 8, 8)),       # 1920 x 1080 at 150 %
+                                       ((0, 40, 1920, 1000), (1280, 820, False, 320, 130)),  # taskbar at the top
+                                       ((0, 0, 0, 0), (1280, 820, False, None, None))])    # unknown
 def test_the_window_fits_the_screen(monkeypatch, area, size):
     from studia import app, winutil
 

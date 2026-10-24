@@ -250,19 +250,21 @@ def _other_instance(name: str) -> bool:
     return acquire_single_instance(name, wait_s=15)
 
 
-def _window_size() -> tuple[int, int, bool]:
-    """1280 x 820, or what fits the screen (a 1366 x 768 laptop, or 1920 x 1080 at 150 %): there the window opens
-    maximized, so the buttons at the bottom of the setup and the queue bar are never under the taskbar."""
+def _window_size() -> tuple[int, int, bool, Optional[int], Optional[int]]:
+    """(width, height, maximized, x, y): 1280 x 820 in the middle of the screen's usable area, or maximized where that
+    doesn't fit (a 1366 x 768 laptop, or 1920 x 1080 at 150 %), so the buttons at the bottom of the setup and the queue
+    bar are never under the taskbar. (Windows would otherwise place it a little further down at every start.)"""
     from .winutil import work_area
 
     try:
-        w, h = work_area()
+        left, top, w, h = work_area()
     except Exception:  # noqa: BLE001
-        w = h = 0.0
+        left = top = w = h = 0.0
     if not (w and h):
-        return 1280, 820, False
+        return 1280, 820, False, None, None
     width, height = int(min(1280, w - 16)), int(min(820, h - 16))
-    return width, height, (width, height) != (1280, 820)
+    return (width, height, (width, height) != (1280, 820),
+            int(left + (w - width) / 2), int(top + (h - height) / 2))
 
 
 def _relaunch(argv: list[str]) -> None:
@@ -333,10 +335,10 @@ def _main(argv: Optional[list[str]] = None) -> None:
     log.info("Modules loaded %.1f s after launch", process_age())
     api = Api()
     api._open_target = target
-    width, height, maximized = _window_size()
+    width, height, maximized, x, y = _window_size()
     # file:// (not pywebview's http server) so the page may show slide images stored on disk
     window = webview.create_window(APP_NAME, url=(WEB / "index.html").as_uri(), js_api=api, width=width, height=height,
-                                   min_size=(min(900, width), min(560, height)), maximized=maximized,
+                                   x=x, y=y, min_size=(min(900, width), min(560, height)), maximized=maximized,
                                    background_color="#0e1016" if dark else "#f5f6fa", text_select=True)
     api._attach(window)
     started: dict[str, Any] = {}

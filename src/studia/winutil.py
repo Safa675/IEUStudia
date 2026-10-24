@@ -312,20 +312,20 @@ def reveal(path: str | Path) -> None:
         os.startfile(str(p))  # type: ignore[attr-defined]
 
 
-def work_area() -> tuple[float, float]:
-    """The primary screen's usable size (without the taskbar) in 96-dpi pixels, the unit pywebview sizes windows in;
-    (0, 0) if unknown."""
+def work_area() -> tuple[float, float, float, float]:
+    """The primary screen's usable area (without the taskbar) as (left, top, width, height) in 96-dpi pixels, the unit
+    pywebview places and sizes windows in; all 0 if unknown."""
     user32 = ctypes.windll.user32
     r = wt.RECT()
     if not user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0):      # SPI_GETWORKAREA
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     scale = 1.0
     try:                                     # a DPI-aware process gets physical pixels
         if user32.IsProcessDPIAware():
             scale = (user32.GetDpiForSystem() or 96) / 96
     except (AttributeError, OSError):
         pass
-    return (r.right - r.left) / scale, (r.bottom - r.top) / scale
+    return r.left / scale, r.top / scale, (r.right - r.left) / scale, (r.bottom - r.top) / scale
 
 
 class _ReasonContext(ctypes.Structure):

@@ -34,7 +34,10 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
-; the helper in the tray is asked to quit first (PrepareToInstall); a window that does not close in time is closed
+; IEUStudia's window: Setup asks you to close it yourself (its single-instance mutex), so a transcription that is
+; running is stopped only if you agree. The helper in the tray is asked to quit (PrepareToInstall); whatever still
+; holds the app's files after that is closed.
+AppMutex=Local\Studia-SingleInstance
 CloseApplications=force
 RestartApplications=no
 LicenseFile=..\LICENSE
