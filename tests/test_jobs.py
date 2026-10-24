@@ -314,3 +314,19 @@ def test_files_that_could_not_be_written_are_written_at_the_next_start(env):
     Services._write_unwritten(types.SimpleNamespace(jobs=jm, lib=lib, write_outputs=write))
     assert calls == ["r1", "r2"] and jm.unwritten() == ["r2"]           # r2 is tried again next time
     assert [w["code"] for w in lib.warnings("r1")] == ["gaps"]
+
+
+def test_a_lecture_cancelled_while_it_waits_stays_cancelled_when_its_turn_comes(env):
+    env["mp"].setattr(jobs_mod, "DECODED_MAX", 1)
+    env["state"]["engine"] = engine = BlockingEngine()
+    jm = env["make"](parallel_downloads=2)
+    jm.enqueue(["r1", "r2"])
+    assert wait_for(lambda: jm.job("r2") is not None and jm.job("r2").detail.startswith("Downloaded"))
+    jm.cancel("r2")
+    cancelled_at = len(env["events"])
+    engine.go.set()                                    # r1 finishes: r2's place comes free, but r2 was cancelled
+    assert wait_for(lambda: not jm.busy())
+    time.sleep(0.3)
+    later = [e for e in env["events"][cancelled_at:] if e.get("type") == "job" and e.get("id") == "r2"]
+    assert not later and env["lib"].get_recording("r2").status == "available"
+    assert jm._audio_places.acquire(blocking=False)    # the place was given back

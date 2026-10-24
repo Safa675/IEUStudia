@@ -249,6 +249,8 @@ class JobManager:
         self.emit({"type": "queue", "jobs": self.snapshot(), "batch": self.batch()})
 
     def _update(self, job: Job, stage: str, progress: float, detail: str, force: bool = False) -> None:
+        if job.finished:                 # e.g. cancelled while its worker was still busy with it: that is final
+            return
         changed = stage != job.stage
         job.stage, job.progress, job.detail = stage, max(0.0, min(1.0, progress)), detail
         now = time.monotonic()
@@ -267,11 +269,15 @@ class JobManager:
         if job.holds_audio:
             return
         if not self._audio_places.acquire(blocking=False):
-            self._update(job, "queued", 0.0, "Downloaded — waiting for its turn", force=True)
+            self._update(job, "queued", 0.0, "Waiting for its turn" if job.local_path else
+                         "Downloaded — waiting for its turn", force=True)
             while not self._audio_places.acquire(timeout=0.5):
                 if job.cancel.is_set():
                     raise Cancelled()
         job.holds_audio = True
+        if job.cancel.is_set():          # cancelled just as its turn came
+            self._drop_audio(job)
+            raise Cancelled()
 
     def _drop_audio(self, job: Job) -> None:
         job.audio = None
@@ -334,7 +340,8 @@ class JobManager:
                 self._prepare(job)
                 if job.cancel.is_set():
                     raise Cancelled()
-                self._update(job, "queued", 0.0, "Downloaded — waiting for its turn")    # Cancel ends it at once
+                self._update(job, "queued", 0.0, "Waiting for its turn" if job.local_path else
+                             "Downloaded — waiting for its turn")                              # Cancel ends it at once
                 self._gpu_q.put(job)
                 continue
             except BaseException as exc:  # noqa: BLE001 - every way out gives back the place for its audio

@@ -313,7 +313,10 @@
 
   // ------------------------------------------------------------------ actions
   Object.assign(A, {
-    "su-accept": (el) => { U.accepted = el.checked; St.render(); },
+    "su-accept": (el) => {     // kept at once: closing the window during the setup does not undo the tick
+      U.accepted = el.checked; St.render();
+      call("app_config", { terms_accepted: el.checked ? new Date().toISOString().slice(0, 10) : "" });
+    },
     "su-next": async (el) => {
       const k = STEPS[U.step][0];
       if (k === "welcome" && !U.accepted) {
