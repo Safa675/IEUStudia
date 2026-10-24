@@ -116,7 +116,7 @@
   }
   function onJob(e) {
     const q = !e.final && (S.queue || []).find((j) => j.id === e.id);
-    if (q) { Object.assign(q, { stage: e.stage, progress: e.progress, detail: e.detail, eta_s: e.eta_s }); renderQueue(); }
+    if (q) { Object.assign(q, { progress: e.progress, detail: e.detail, eta_s: e.eta_s }); updateQueueBar(q); }
     const hit = findRec(e.id);
     if (hit) {
       const r = hit.r;
@@ -1275,6 +1275,7 @@
     if (!jobs.length && !eng) { el.classList.add("hidden"); el.innerHTML = ""; return; }
     el.classList.remove("hidden");
     const cur = jobs.find((j) => ["downloading", "transcribing", "writing"].includes(j.stage)) || jobs[0];
+    S.queueShown = eng ? null : cur && cur.id;
     const label = (j) => ({ queued: "Waiting", downloading: "Downloading", transcribing: "Transcribing", writing: "Finishing" }[j.stage] || j.stage);
     const open = el.classList.contains("open");
     let title = cur ? `${label(cur)} · ${esc(cur.title)}` : "Preparing";
@@ -1287,8 +1288,20 @@
     el.innerHTML = `<div class="q-main"><div class="q-icon">${SPIN()}</div><div class="q-text"><div class="q-title">${title}</div><div class="q-detail">${detail}</div></div>
       ${batch}<div class="bar ${p ? "" : "indet"}"><i style="width:${pct(p)}"></i></div>${more}
       ${cur ? `<button class="btn ghost sm" data-act="cancel-all" title="Cancel everything">${I("stop", "sm")} Cancel</button>` : ""}</div>
-      ${open && jobs.length > 1 ? `<div class="q-list">${jobs.map((j) => `<div class="q-item"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
+      ${open && jobs.length > 1 ? `<div class="q-list">${jobs.map((j) => `<div class="q-item" data-id="${esc(j.id)}"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
         <div class="bar"><i style="width:${pct(j.progress)}"></i></div><button class="btn ghost icon sm" data-act="cancel" data-id="${j.id}">${I("x", "sm")}</button></div>`).join("")}</div>` : ""}`;
+  }
+
+  // A job's progress between stage changes: only the text and the bars change, the buttons stay where they are.
+  function updateQueueBar(j) {
+    const el = $("#queue"); if (!el) return;
+    if (S.queueShown === j.id) {
+      const d = el.querySelector(".q-main .q-detail"), bar = el.querySelector(".q-main > .bar");
+      if (d) d.textContent = jobDetail(j);
+      if (bar) { bar.classList.toggle("indet", !j.progress); bar.firstElementChild.style.width = pct(j.progress); }
+    }
+    const item = el.querySelector(`.q-item[data-id="${CSS.escape(j.id)}"] .bar i`);
+    if (item) item.style.width = pct(j.progress);
   }
 
   // ---- sign-in

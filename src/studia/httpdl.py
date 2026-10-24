@@ -108,14 +108,10 @@ def _join(part_files: list[Path], tmp: Path) -> None:
             with open(pf, "rb") as fh:
                 while buf := fh.read(4 * 1024 * 1024):
                     out.write(buf)
-            for attempt in range(8):             # an antivirus may still hold the part it just scanned
-                try:
-                    pf.unlink()
-                    break
-                except PermissionError:
-                    if attempt == 7:
-                        raise
-                    time.sleep(0.25)
+            try:                                 # already appended: a part an antivirus still holds is only left over
+                pf.unlink()
+            except OSError as exc:
+                log.info("Could not delete %s: %s", pf.name, exc)
 
 
 def _stream_plain(session: requests.Session, url: str, tmp: Path, counter: list[int],
@@ -195,8 +191,11 @@ def download(url: str, dest: Path, *, session: Optional[requests.Session] = None
             pf.unlink(missing_ok=True)
         raise IOError(f"Download size mismatch for {dest.name}; please retry.")
     os.replace(tmp, dest)
-    for pf in part_files:
-        pf.unlink(missing_ok=True)
+    for pf in part_files:                            # the download is complete: leftovers don't matter
+        try:
+            pf.unlink(missing_ok=True)
+        except OSError:
+            pass
     marker.unlink(missing_ok=True)
     if progress:
         size = dest.stat().st_size
