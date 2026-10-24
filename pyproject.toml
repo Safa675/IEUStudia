@@ -11,6 +11,7 @@ dependencies = [
     "pywebview>=5.3",
     "pypdfium2>=4.30",          # PDF text + page images of course materials
     "yt-dlp>=2025.1",           # video study plans: YouTube search, captions and chapters (no API key)
+    "truststore>=0.10",         # HTTPS trusts what Windows trusts (antivirus HTTPS scanning, company proxies)
 ]
 
 [project.urls]

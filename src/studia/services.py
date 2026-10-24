@@ -181,7 +181,10 @@ class Services:
     @property
     def output_root(self) -> Path:
         p = Path(self.settings.output_dir)
-        p.mkdir(parents=True, exist_ok=True)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:     # e.g. Windows' ransomware protection guards Documents: writing a file says so
+            log.warning("The output folder %s can't be created: %s", p, exc)
         return p
 
     def day(self, day_key: str) -> tuple[Course, list[Recording]]:

@@ -33,12 +33,30 @@ class _MemoryStatus(ctypes.Structure):
 
 
 def memory_gb() -> tuple[float, float]:
-    """(total, available) physical memory in GB."""
+    """(total, available) physical memory in GB that Windows can use."""
     st = _MemoryStatus()
     st.dwLength = ctypes.sizeof(_MemoryStatus)
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
         return 0.0, 0.0
     return st.ullTotalPhys / GB, st.ullAvailPhys / GB
+
+
+def installed_memory_gb() -> float:
+    """The memory built into the PC, as its specs say ("8 GB"); 0 if unknown. Windows can use a little less: the
+    firmware and the integrated graphics keep some, so an 8 GB laptop has about 7.7 GB usable."""
+    kb = ctypes.c_ulonglong(0)
+    try:
+        if ctypes.windll.kernel32.GetPhysicallyInstalledSystemMemory(ctypes.byref(kb)):
+            return kb.value / (1024 * 1024)
+    except (AttributeError, OSError):
+        pass
+    return 0.0
+
+
+def eight_gb(facts: dict[str, Any]) -> bool:
+    """An 8 GB PC or more (by what is installed, else by what is usable, which is a few hundred MB less)."""
+    installed = float(facts.get("ram_installed_gb") or 0)
+    return installed >= 7.5 if installed else float(facts.get("ram_gb") or 0) >= 7.0
 
 
 def _reg(root: int, path: str, name: str) -> str:
@@ -127,7 +145,7 @@ def check(data_dir: Optional[Path] = None, output_dir: Optional[Path] = None) ->
         data_dir = app_dir()
     total, avail = memory_gb()
     facts = {"windows": windows_info(), "cpu": cpu_info(), "ram_gb": round(total, 1), "ram_free_gb": round(avail, 1),
-             "gpu": nvidia_gpu(), "webview2": webview2_version(),
+             "ram_installed_gb": round(installed_memory_gb(), 1), "gpu": nvidia_gpu(), "webview2": webview2_version(),
              "disk": {"data_dir": str(data_dir), "data_free_gb": round(disk_free_gb(data_dir), 1)}}
     if output_dir is not None:
         facts["disk"].update(output_dir=str(output_dir), output_free_gb=round(disk_free_gb(output_dir), 1))
@@ -171,7 +189,8 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
                         "lecture takes roughly 20 minutes to an hour, depending on the processor.")
     if not cpu.get("avx2") and cpu.get("avx"):
         warnings.append("This processor has no AVX2: transcription on it will be slow.")
-    if ram and ram < 8:
+    eight = eight_gb(facts)
+    if ram and not eight:
         warnings.append("With less than 8 GB of memory, use the small speech model and close other apps while "
                         "transcribing.")
     vram = int(gpu.get("vram_mb") or 0)
@@ -181,13 +200,15 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
     llm = ""
     if cuda and vram >= 7000:                    # the 4B model needs the GPU; on a processor it is far too slow
         llm = "qwen3-4b"
-    elif ram >= 8:
+    elif eight:
         llm = "qwen3-1.7b"
     models = {}
     for key in MODEL_PRESETS:
         ok = cuda or key in ("small", "medium")
-        models[key] = {"ok": ok and not (key == "medium" and ram < 8),
-                       "why": "" if ok else "needs an NVIDIA GPU (on the processor it would take hours per lecture)"}
+        why = "" if ok else "needs an NVIDIA GPU (on the processor it would take hours per lecture)"
+        if ok and key == "medium" and not eight:
+            ok, why = False, "needs 8 GB of memory"
+        models[key] = {"ok": ok, "why": why}
     return {"ok": not blockers, "blockers": blockers, "warnings": warnings, "gpu": cuda,
             "recommended_model": model, "recommended_llm": llm, "models": models,
             "summary": _summary(facts, cuda)}
@@ -199,8 +220,8 @@ def _summary(facts: dict[str, Any], cuda: bool) -> list[dict[str, str]]:
              "ok": "yes" if w.get("x64") and w["build"] >= MIN_BUILD else "no"},
             {"label": "Processor", "value": f"{cpu['name']} · {cpu['cores']} threads" + ("" if cpu.get("avx2") else " · no AVX2"),
              "ok": "yes" if cpu.get("avx2") else ("warn" if cpu.get("avx") else "no")},
-            {"label": "Memory", "value": f"{facts['ram_gb']:.0f} GB",
-             "ok": "yes" if facts["ram_gb"] >= 8 else ("warn" if facts["ram_gb"] >= MIN_RAM_GB else "no")},
+            {"label": "Memory", "value": f"{facts.get('ram_installed_gb') or facts['ram_gb']:.0f} GB",
+             "ok": "yes" if eight_gb(facts) else ("warn" if facts["ram_gb"] >= MIN_RAM_GB else "no")},
             {"label": "Graphics", "value": (f"{gpu['name']} · {gpu['vram_mb'] / 1024:.0f} GB · driver {gpu['driver']}" if gpu.get("present")
                                             else "No NVIDIA GPU (the processor transcribes)"),
              "ok": "yes" if cuda else "warn"},

@@ -46,6 +46,19 @@ def test_hardware_verdicts():
     assert any("20 minutes to an hour" in w for w in strong_cpu["warnings"])
 
 
+def test_an_8_gb_laptop_counts_as_8_gb():
+    """Windows can use a little less than is built in (firmware, integrated graphics): 7.7 of 8 GB."""
+    no_gpu = {"present": False, "name": "", "vram_mb": 0, "driver": ""}
+    for facts in (_facts(gpu=no_gpu, ram_gb=7.7, ram_installed_gb=8.0), _facts(gpu=no_gpu, ram_gb=7.4)):
+        v = hardware.assess(facts)
+        assert v["recommended_llm"] == "qwen3-1.7b" and v["models"]["medium"]["ok"]
+        assert not any("less than 8 GB" in w for w in v["warnings"])
+        assert next(r for r in v["summary"] if r["label"] == "Memory")["ok"] == "yes"
+    six = hardware.assess(_facts(gpu=no_gpu, ram_gb=5.8, ram_installed_gb=6.0))
+    assert six["recommended_llm"] == "" and six["models"]["medium"] == {"ok": False, "why": "needs 8 GB of memory"}
+    assert next(r for r in six["summary"] if r["label"] == "Memory")["value"] == "6 GB"
+
+
 def test_hardware_check_runs_on_this_pc(tmp_path):
     f = hardware.check(tmp_path)
     assert f["windows"]["build"] > 0 and f["cpu"]["cores"] >= 1 and f["ram_gb"] > 0 and f["disk"]["data_free_gb"] > 0

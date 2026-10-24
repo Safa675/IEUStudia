@@ -266,9 +266,8 @@
   function renderTop() {
     const top = $("#top"); if (!top) return;
     const g = S.system.gpu;
-    const gpu = g == null ? `<span class="chip">${I("cpu", "sm")} Checking GPU…</span>`
-      : g.available ? `<span class="chip ok" title="${esc(g.name)} · ${g.vram_mb} MB"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
-        : `<span class="chip warn" title="Transcription runs on the CPU (slower)"><span class="dot"></span>CPU only</span>`;
+    const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="Lectures are transcribed on your NVIDIA graphics card: ${esc(g.name)} · ${g.vram_mb} MB"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
+      : g.available && !g.libraries ? `<span class="chip" title="Your NVIDIA graphics card could transcribe much faster, but its libraries aren't on this PC yet (Settings → Storage)."><span class="dot"></span>GPU not set up</span>` : "";
     const syncLabel = S.sync.running ? `${SPIN()} ${esc(S.sync.message || "Syncing…")}`
       : S.sync.error ? `${I("alert-circle", "sm")} Sync failed — retry` : `${I("refresh", "sm")} Synced ${rel(S.lastSync)}`;
     top.innerHTML = `<div class="crumbs">${crumbs()}</div>
@@ -864,8 +863,10 @@
   // ---- settings
   function settingsHTML() {
     const s = S.settings, sys = S.system, p = S.profile || {};
+    const slowHere = (id) => sys.gpu && !gpuUsed(sys.gpu) && id !== "small";      // hours per lecture on a processor
     const presets = (sys.presets || []).map((x) => `<button class="preset ${x.id === s.model ? "on" : ""}" data-act="set" data-key="model" data-val="${x.id}">
-      <div class="n">${esc(x.label)} <span class="sz">${(x.size_mb / 1000).toFixed(1)} GB${x.downloaded ? " · ✓" : ""}</span></div><div class="d">${esc(x.description)}</div></button>`).join("");
+      <div class="n">${esc(x.label)} <span class="sz">${(x.size_mb / 1000).toFixed(1)} GB${x.downloaded ? " · ✓" : ""}</span></div><div class="d">${esc(x.description)}</div>
+      ${slowHere(x.id) ? `<div class="d warn-txt">${I("alert", "xs")} Very slow on this PC (no NVIDIA graphics card in use): Small is the one for it.</div>` : ""}</button>`).join("");
     const g = sys.gpu;
     const row = (t, d, ctl) => `<div class="set-row"><div class="txt"><div class="t">${t}</div><div class="d">${d}</div></div>${ctl}</div>`;
     const sw = (key) => `<input type="checkbox" class="switch" data-act="set-bool" data-key="${key}" ${s[key] ? "checked" : ""}>`;
@@ -881,8 +882,10 @@
           `<button class="btn sm" data-act="profile-add">${I("plus", "sm")} Add account</button>`)}</div>
       <div class="card set-card"><h3>Transcription</h3>
         <div class="presets">${presets || `<div class="skel" style="height:70px"></div>`}</div>
-        ${row("Processor", g ? (g.available ? `GPU: ${esc(g.name)} (${g.vram_mb} MB)` : "No compatible NVIDIA GPU found — the CPU will be used (slower)") : "Checking…",
-          `<select class="input" style="width:150px" data-act="set-sel" data-key="device">${["auto", "cuda", "cpu"].map((v) => `<option value="${v}" ${s.device === v ? "selected" : ""}>${{ auto: "Automatic", cuda: "GPU (CUDA)", cpu: "CPU" }[v]}</option>`).join("")}</select>`)}
+        ${row("Transcribe with", !g ? "Checking…" : gpuUsed(g) ? `Your NVIDIA graphics card: ${esc(g.name)} (${g.vram_mb} MB)`
+            : g.available && !g.libraries ? `Your ${esc(g.name || "NVIDIA graphics card")} needs its libraries (Storage, below) before it can transcribe; until then the processor does it, slower.`
+            : "No NVIDIA graphics card found: the processor transcribes (slower).",
+          `<select class="input" style="width:170px" data-act="set-sel" data-key="device">${["auto", "cuda", "cpu"].map((v) => `<option value="${v}" ${s.device === v ? "selected" : ""}>${{ auto: "Automatic", cuda: "Graphics card", cpu: "Processor only" }[v]}</option>`).join("")}</select>`)}
         ${row("Languages", "English with Turkish passages: each passage is transcribed in the language actually spoken and tagged [TR].", `<span class="chip">English + Turkish</span>`)}
         ${row("Capture slides", "Extract the slides / board from Panopto's screen recording and place them next to the transcript (~1 min extra download per lecture).", sw("capture_slides"))}
         ${row("Hide very short recordings", "False starts shorter than this are greyed out.", `<select class="input" style="width:110px" data-act="set-sel" data-key="min_duration_s">${[30, 60, 120, 300].map((v) => `<option value="${v}" ${+s.min_duration_s === v ? "selected" : ""}>${v < 60 ? v + " s" : v / 60 + " min"}</option>`).join("")}</select>`)}
@@ -932,9 +935,12 @@
   const MODELS = [["haiku", "Haiku", "lightest"], ["sonnet", "Sonnet", "recommended"], ["opus", "Opus", "best, uses the most"]];
   const aiName = () => ((S.system.ai || {}).label || "AI");          // ChatGPT, Claude or Offline model
   const aiPlan = () => ({ chatgpt: "your own ChatGPT plan", claude: "your own Claude plan", codex: "your own ChatGPT plan", local: "the offline model on this PC" }[(S.system.ai || {}).provider] || "the AI you chose");
-  const aiHint = () => "Set up AI in Settings → AI to use this";
+  const aiHint = () => { const ai = S.system.ai || {};   // why an AI button is greyed out
+    return ai.provider === "local" ? "Download the offline model in Settings → AI to use this"
+      : ai.label ? `Connect ${ai.label} in Settings → AI to use this` : "Turn on AI in Settings → AI to use this"; };
   // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons
   const isChatGPT = (ai) => ["chatgpt", "codex"].includes((ai || S.system.ai || {}).provider);
+  const gpuUsed = (g) => !!g && (g.used != null ? g.used : g.available && g.libraries);    // does the graphics card transcribe?
   const REASONING = [["haiku", "Quick", "light reasoning"], ["sonnet", "Standard", "recommended"], ["opus", "Thorough", "slowest, uses the most"]];
   const modelsFor = () => (isChatGPT() ? REASONING : MODELS);
   const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -982,7 +988,13 @@
   }
   function chatMainHTML() {
     const d = S.chat.draft, c = S.chat.data;
-    if (!(S.system.ai || {}).available) return `<div class="chat-scroll">${emptyHTML("chat", "AI is not set up", "Pick Claude (your Claude Pro/Max plan), ChatGPT (your ChatGPT Plus/Pro plan) or the offline model to chat about your lectures. Everything else in IEUStudia works without it.")}<div style="text-align:center"><button class="btn primary" data-act="setup-ai">${I("ai", "sm")} Set up AI</button></div></div>`;
+    if (!(S.system.ai || {}).available) {
+      const ai = S.system.ai || {};
+      const [title, text, btn] = ai.provider === "local" ? ["The offline model isn't downloaded yet", "Download it to chat about your lectures on this PC. Everything else in IEUStudia works without it.", "Download it"]
+        : ai.label ? [`${ai.label} isn't connected yet`, `Connect your ${ai.label} plan to chat about your lectures. Everything else in IEUStudia works without it.`, `Connect ${ai.label}`]
+        : ["AI is off", "Pick ChatGPT (your ChatGPT Plus/Pro plan), Claude (your Claude Pro/Max plan) or the offline model to chat about your lectures. Everything else in IEUStudia works without it.", "Turn on AI"];
+      return `<div class="chat-scroll">${emptyHTML("chat", title, text)}<div style="text-align:center"><button class="btn primary" data-act="setup-ai">${I("ai", "sm")} ${btn}</button></div></div>`;
+    }
     if (!d && !S.chat.id) {
       return `<div class="chat-scroll"><div class="chat-empty"><div class="art">${I("chat")}</div><h3>Ask ${esc(aiName())} about your lectures</h3>
         <div class="sub">Pick one lecture or several and ask anything: likely quiz topics, explanations, practice questions… It uses ${esc(aiPlan())}, only when you ask. AI can make mistakes — check important answers.</div>
@@ -1762,8 +1774,8 @@
     }
     return {
       get_bootstrap: () => { setTimeout(() => emit({ type: "system", gpu: { available: true, name: "NVIDIA GeForce RTX 4070 Laptop GPU", vram_mb: 8188 }, ai: { available: true, version: "2.1.287", provider: "claude", label: "Claude", can_plans: true, can_images: true },
-        presets: [{ id: "large-v3-turbo", label: "Fast & accurate", description: "Recommended. Near large-v3 quality at a fraction of the time on a GPU.", size_mb: 1620, downloaded: true },
-          { id: "large-v3", label: "Maximum accuracy", description: "Slowest, best for hard audio and long Turkish passages.", size_mb: 3090, downloaded: true },
+        presets: [{ id: "large-v3-turbo", label: "Fast & accurate", description: "Nearly the best quality, and fast with an NVIDIA graphics card.", size_mb: 1620, downloaded: true },
+          { id: "large-v3", label: "Maximum accuracy", description: "The best quality for hard audio and long Turkish passages; the slowest, even with an NVIDIA graphics card.", size_mb: 3090, downloaded: true },
           { id: "medium", label: "Medium", description: "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture).", size_mb: 1530, downloaded: false },
           { id: "small", label: "Small", description: "The one for PCs without an NVIDIA GPU: fast enough on the processor, a bit less accurate.", size_mb: 484, downloaded: false }] }), 300);
         const signed = !location.hash.includes("signin");

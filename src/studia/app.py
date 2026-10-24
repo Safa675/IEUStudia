@@ -85,6 +85,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         from .splash import main as splash_main
 
         sys.exit(splash_main(args[1:]))
+    from .net import use_windows_certificates
+
+    use_windows_certificates()                   # before any connection is made
     if "--agent" in args:                        # the tray helper (no window)
         from .agent import main as agent_main
 
@@ -247,6 +250,21 @@ def _other_instance(name: str) -> bool:
     return acquire_single_instance(name, wait_s=15)
 
 
+def _window_size() -> tuple[int, int, bool]:
+    """1280 x 820, or what fits the screen (a 1366 x 768 laptop, or 1920 x 1080 at 150 %): there the window opens
+    maximized, so the buttons at the bottom of the setup and the queue bar are never under the taskbar."""
+    from .winutil import work_area
+
+    try:
+        w, h = work_area()
+    except Exception:  # noqa: BLE001
+        w = h = 0.0
+    if not (w and h):
+        return 1280, 820, False
+    width, height = int(min(1280, w - 16)), int(min(820, h - 16))
+    return width, height, (width, height) != (1280, 820)
+
+
 def _relaunch(argv: list[str]) -> None:
     """Start a fresh copy of the app (after switching profiles), windowless like this one. It waits for this
     process to exit (the single-instance lock) before it opens its window."""
@@ -315,10 +333,11 @@ def _main(argv: Optional[list[str]] = None) -> None:
     log.info("Modules loaded %.1f s after launch", process_age())
     api = Api()
     api._open_target = target
+    width, height, maximized = _window_size()
     # file:// (not pywebview's http server) so the page may show slide images stored on disk
-    window = webview.create_window(APP_NAME, url=(WEB / "index.html").as_uri(), js_api=api, width=1280, height=820,
-                                   min_size=(980, 640), background_color="#0e1016" if dark else "#f5f6fa",
-                                   text_select=True)
+    window = webview.create_window(APP_NAME, url=(WEB / "index.html").as_uri(), js_api=api, width=width, height=height,
+                                   min_size=(min(900, width), min(560, height)), maximized=maximized,
+                                   background_color="#0e1016" if dark else "#f5f6fa", text_select=True)
     api._attach(window)
     started: dict[str, Any] = {}
 
@@ -352,6 +371,13 @@ def _main(argv: Optional[list[str]] = None) -> None:
         services = started.get("services")
         if api._restart:          # switching profiles: the user already confirmed
             return True
+        if api._setup_running:
+            if not window.create_confirmation_dialog(
+                    "Download in progress", "IEUStudia is still downloading what it needs. Quit anyway? Next time "
+                    "the download continues where it stopped."):
+                return False
+            if api._setup_cancel is not None:
+                api._setup_cancel.set()
         if services is not None and services.jobs.busy():
             ok = window.create_confirmation_dialog(
                 "Transcription in progress", "A transcription is still running. Quit and cancel it?")

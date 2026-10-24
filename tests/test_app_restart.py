@@ -6,6 +6,8 @@ import sys
 import threading
 import types
 
+import pytest
+
 from studia import accounts
 
 
@@ -60,3 +62,14 @@ def test_switching_profiles_restarts_into_the_other_account(isolated_home, monke
     assert len(restarts) == 1 and restarts[0][3:] == ["--debug", "--restarted"]
     assert len(splashes) == 1 and splashes[0][1:3] == ["-I", "-S"] and splashes[0][5] in ("light", "dark")
     assert splashes[0][6:8] == ["--python", restarts[0][0]]             # a restart from it uses the app's Python
+
+
+@pytest.mark.parametrize("area,size", [((1440, 852), (1280, 820, False)),           # fits: the usual size
+                                       ((1366, 720), (1280, 704, True)),            # 1366 x 768: maximized
+                                       ((1280, 672), (1264, 656, True)),            # 1920 x 1080 at 150 %
+                                       ((0, 0), (1280, 820, False))])               # unknown
+def test_the_window_fits_the_screen(monkeypatch, area, size):
+    from studia import app, winutil
+
+    monkeypatch.setattr(winutil, "work_area", lambda: area)
+    assert app._window_size() == size

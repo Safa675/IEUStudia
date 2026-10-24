@@ -201,7 +201,8 @@ class Api:
                         "downloaded": model_is_downloaded(k)} for k, v in MODEL_PRESETS.items()]
             from .components import cuda_ready
 
-            info = {"gpu": {**gpu, "libraries": cuda_ready()}, "presets": presets, "ai": claude_info(),
+            used = bool(gpu.get("available")) and cuda_ready() and self._s.settings.device != "cpu"
+            info = {"gpu": {**gpu, "libraries": cuda_ready(), "used": used}, "presets": presets, "ai": claude_info(),
                     "engine": {"model": self._s.settings.model, "loaded": self._s.jobs.engine_loaded()}}
             self._s.lib.set_meta("system_info", json.dumps(info))
             self._push({"type": "system", **info})
@@ -240,14 +241,18 @@ class Api:
     def setup_download(self, ids: list[str]) -> dict[str, Any]:
         """Download the components one after another in the background (events: type "setup")."""
         from .components import download
+        from .net import plain_error
+        from .winutil import KeepAwake
 
         if self._setup_running:
             return {"ok": True, "running": True}
         self._setup_running = True
         cancel = self._setup_cancel = threading.Event()
+        awake = KeepAwake("IEUStudia is downloading what it needs")
 
         def run() -> None:
             failed = ""
+            awake.on()
             try:
                 for cid in ids:
                     last = [0.0]
@@ -267,10 +272,11 @@ class Api:
                             self._push({"type": "setup", "id": cid, "state": "cancelled"})
                             return
                         log.exception("Download of %s failed", cid)
-                        failed = str(exc) or "Download failed"
+                        failed = plain_error(exc).rstrip(".") + ". (Downloading again continues where it stopped.)"
                         self._push({"type": "setup", "id": cid, "state": "error", "error": failed})
                         return
             finally:
+                awake.off()
                 self._setup_running = False
                 self._push({"type": "setup", "id": "", "state": "idle", "ok": not failed and not cancel.is_set()})
                 threading.Thread(target=self._system_info, daemon=True).start()
@@ -553,12 +559,18 @@ class Api:
 
     # ------------------------------------------------------------------ full sync / course sync
     def _gpu(self) -> bool:
+        """Will the graphics card transcribe? (An NVIDIA card without its libraries, or one that failed to load the
+        model, leaves it to the processor.)"""
         if self._s.settings.device == "cpu":
             return False
+        engine = self._s.jobs._engine
+        if engine is not None and getattr(engine, "loaded", False):
+            return engine.device_info.get("device") == "cuda"
         try:
-            return bool((json.loads(self._s.lib.get_meta("system_info") or "{}").get("gpu") or {}).get("available"))
+            gpu = json.loads(self._s.lib.get_meta("system_info") or "{}").get("gpu") or {}
         except ValueError:
             return False
+        return bool(gpu.get("available") and gpu.get("libraries"))
 
     @safe
     def catch_up_estimate(self, course_id: Optional[str] = None) -> dict[str, Any]:
@@ -774,6 +786,13 @@ class Api:
 
     @safe
     def open_output(self) -> dict[str, Any]:
+        try:
+            self._s.output_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            from .net import plain_error
+
+            return {"ok": False, "error": f"The output folder can't be created. {plain_error(exc)} You can choose "
+                                          "another folder in Settings → Files."}
         open_path(self._s.output_root)
         return {"ok": True}
 

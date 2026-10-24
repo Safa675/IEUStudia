@@ -89,8 +89,12 @@ to learn.ieu.edu.tr, the same as when you sign in on the website.
 ## Installing
 
 1. Download `IEUStudia-Setup-<version>.exe` from the [latest release](https://github.com/mirzaisi/IEUStudia/releases/latest).
-2. Run it. It installs for your Windows account only, so you don't need admin rights. The installer isn't
-   code-signed yet, so Windows SmartScreen will probably warn you. Click *More info*, then *Run anyway*.
+   The installer isn't code-signed yet, and few people have downloaded it so far, so your browser may say it
+   "isn't commonly downloaded". In Edge, open the download list, click *⋯* next to the file, then *Keep*, *Show
+   more* and *Keep anyway*. In Chrome, click *Keep* (or *Download anyway*).
+2. Run it. It installs for your Windows account only, so you don't need admin rights. Windows SmartScreen will
+   probably warn you as well: click *More info*, then *Run anyway*. If you want to check the file first, each
+   release lists its SHA-256 checksum.
 3. Open IEUStudia. The first start takes you through a few short steps:
    - a notice about what the app does with your data,
    - a check of your PC (if it can't run IEUStudia, it tells you why and stops there),

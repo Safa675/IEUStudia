@@ -27,25 +27,25 @@ MODEL_PRESETS: dict[str, dict[str, Any]] = {
     "large-v3-turbo": {
         "repo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
         "label": "Fast & accurate",
-        "description": "Recommended. Near large-v3 quality at a fraction of the time on a GPU.",
+        "description": "Nearly the best quality, and fast with an NVIDIA graphics card.",
         "size_mb": 1620,
     },
     "large-v3": {
         "repo": "Systran/faster-whisper-large-v3",
         "label": "Maximum accuracy",
-        "description": "Slowest, best for hard audio and long Turkish passages.",
+        "description": "The best quality for hard audio and long Turkish passages; the slowest, even with an NVIDIA graphics card.",
         "size_mb": 3090,
     },
     "medium": {
         "repo": "Systran/faster-whisper-medium",
         "label": "Medium",
-        "description": "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture).",
+        "description": "More accurate than Small, but very slow without an NVIDIA graphics card (hours per lecture).",
         "size_mb": 1530,
     },
     "small": {
         "repo": "Systran/faster-whisper-small",
         "label": "Small",
-        "description": "The one for PCs without an NVIDIA GPU: fast enough on the processor, a bit less accurate.",
+        "description": "The one for PCs without an NVIDIA graphics card: fast enough on the processor, a bit less accurate.",
         "size_mb": 484,
     },
 }
@@ -241,5 +241,18 @@ def resolve_device(preference: str) -> tuple[str, str]:
     libraries (cuBLAS) are on this PC: without them CTranslate2 loads the model and then fails mid-way."""
     pref = (preference or "auto").lower()
     if pref != "cpu" and cublas_available() and detect_gpu()["available"]:
-        return "cuda", "float16"
+        return "cuda", cuda_compute_type()
     return "cpu", "int8"
+
+
+@functools.lru_cache(maxsize=4)
+def cuda_compute_type(prefer: tuple[str, ...] = ("float16", "int8_float16", "int8_float32", "int8")) -> str:
+    """The first of ``prefer`` this graphics card computes well: float16 needs a GeForce 20 series or newer;
+    older cards (GTX 10 series) get an int8 type instead of failing and falling back to the processor."""
+    try:
+        import ctranslate2
+
+        supported = set(ctranslate2.get_supported_compute_types("cuda"))
+    except Exception:  # noqa: BLE001
+        return prefer[0]
+    return next((t for t in prefer if t in supported), "float32")

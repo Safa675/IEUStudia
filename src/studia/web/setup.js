@@ -130,9 +130,9 @@
       <div class="set-row"><div class="txt"><div class="t">Save transcripts and notes in</div><div class="d"><span class="path">${esc(S.settings.output_dir || U.st.output_dir)}</span></div></div>
         <button class="btn sm" data-act="pick-folder">Change…</button></div>`;
   }
-  function aiCard(id, title, sub, body) {
-    return `<div class="su-ai ${U.ch.ai === id ? "on" : ""}"><button class="su-ai-head" data-act="su-ai" data-id="${id}"><span class="su-radio"></span><div><b>${title}</b><div class="d">${sub}</div></div></button>
-      ${U.ch.ai === id && body ? `<div class="su-ai-body">${body}</div>` : ""}</div>`;
+  function aiCard(id, title, sub, body, off = "") {     // off: why this choice can't be used on this PC
+    return `<div class="su-ai ${U.ch.ai === id ? "on" : ""} ${off ? "off" : ""}"><button class="su-ai-head" data-act="su-ai" data-id="${id}" ${off ? "disabled" : ""}><span class="su-radio"></span><div><b>${title}</b><div class="d">${off || sub}</div></div></button>
+      ${U.ch.ai === id && body && !off ? `<div class="su-ai-body">${body}</div>` : ""}</div>`;
   }
   // ------------------------------------------------------------------ connecting ChatGPT or Claude, one step at a time
   const VENDOR = {
@@ -240,7 +240,8 @@
       ${aiCard("chatgpt", "ChatGPT", "Needs a ChatGPT Plus or Pro subscription.", connectHTML("chatgpt"))}
       ${aiCard("claude", "Claude", "Needs a Claude Pro or Max subscription.", connectHTML("claude"))}
       ${aiCard("codex", "ChatGPT through the Codex CLI", "If you already use OpenAI's Codex CLI. Needs ChatGPT Plus or Pro.", connectHTML("codex"))}
-      ${aiCard("local", "Offline model", "No subscription: a small model on this PC — basic notes and questions.", llmBody)}
+      ${aiCard("local", "Offline model", "No subscription: a small model on this PC — basic notes and questions.", llmBody,
+        rec ? "" : "Not on this PC: it needs 8 GB of memory.")}
       ${aiCard("none", "No AI", "Transcripts, heads-ups, search, calendar and everything else still work.", "")}
       <div class="callout info su-ai-note">${I("info")}<div><b>AI can make mistakes.</b> Answers are generated from your lectures, but check anything important against the lecture and your materials. Nothing is sent anywhere unless you use an AI feature.</div></div>`;
   }
@@ -279,14 +280,15 @@
   function stepSignin() {
     return `<h2>Almost done</h2><p class="lead">${S.boot && S.boot.signed_in ? `You are signed in as ${esc((S.profile || {}).name || "")}. Finish to open IEUStudia.` : "Last step: sign in with your IEULearn (EkoID) account."}</p>
       <div class="card su-summary">${[["Transcription", (U.st.catalog.speech.find((m) => m.id === U.ch.speech) || {}).label || U.ch.speech],
-        ["AI", { chatgpt: "ChatGPT", claude: "Claude", codex: "ChatGPT (Codex CLI)", local: "Offline model", none: "No AI", "": "No AI" }[U.ch.ai]],
+        ["AI", { chatgpt: "ChatGPT", claude: "Claude", codex: "ChatGPT (Codex CLI)", local: "Offline model", none: "No AI", "": "No AI" }[U.ch.ai]
+          + (VENDOR[U.ch.ai] && !(U.ai && U.ai[U.ch.ai] && aiReady(U.ch.ai, U.ai[U.ch.ai])) ? " — not connected yet (Settings → AI)" : "")],
         ["Background helper", U.ch.tray ? `On${U.ch.startup ? ", starts with Windows" : ""}` : "Off"]].map(([k, v]) => `<div class="su-row"><span class="grow">${k}</span><b>${esc(v)}</b></div>`).join("")}</div>`;
   }
 
   // ------------------------------------------------------------------ frame
   function canNext() {
     const k = STEPS[U.step][0];
-    if (k === "welcome") return U.accepted;
+    if (k === "welcome") return true;            // pressing it without the tick points at the tick
     if (k === "pc") return U.st && !U.st.verdict.blockers.length;
     if (k === "speech") return !!U.ch.speech;
     if (k === "ai") return true;
@@ -298,7 +300,8 @@
     const body = !U.st && k !== "welcome" ? stepPc() : { welcome: stepWelcome, pc: stepPc, speech: stepSpeech, ai: stepAi, background: stepBackground, download: stepDownload, signin: stepSignin }[k]();
     const dl = k === "download" && U.plan && U.plan.items.length && !U.done;
     const next = k === "signin" ? `<button class="btn primary" data-act="su-finish">${S.boot && S.boot.signed_in ? "Open IEUStudia" : "Continue to sign in"} ${I("arrow-right", "sm")}</button>`
-      : dl ? `<button class="btn primary" data-act="su-download" ${U.running || (U.plan.blockers || []).length ? "disabled" : ""}>${U.running ? `${SPIN()} Downloading…` : `${I("download", "sm")} Download ${gb(U.plan.total_mb)}`}</button>`
+      : dl ? `<button class="btn primary" data-act="su-download" ${U.running || (U.plan.blockers || []).length ? "disabled" : ""}>${U.running ? `${SPIN()} Downloading…`
+        : Object.values(U.dl).some((d) => d.state === "error") ? `${I("retry", "sm")} Try again` : `${I("download", "sm")} Download ${gb(U.plan.total_mb)}`}</button>`
         : `<button class="btn primary" data-act="su-next" ${canNext() ? "" : "disabled"}>Continue ${I("arrow-right", "sm")}</button>`;
     return `<div class="setup"><aside class="su-rail"><div class="brand"><img class="logo-img" src="../assets/logo.svg" alt="">IEUStudia</div>
         <ol>${STEPS.map(([key, label], i) => `<li class="${i === U.step ? "on" : i < U.step ? "done" : ""}"><span>${i < U.step ? I("check", "xs") : i + 1}</span>${label}</li>`).join("")}</ol>
@@ -311,8 +314,22 @@
   // ------------------------------------------------------------------ actions
   Object.assign(A, {
     "su-accept": (el) => { U.accepted = el.checked; St.render(); },
-    "su-next": async () => {
+    "su-next": async (el) => {
       const k = STEPS[U.step][0];
+      if (k === "welcome" && !U.accepted) {
+        const box = $(".su-accept");
+        if (box) { box.classList.remove("attention"); void box.offsetWidth; box.classList.add("attention"); box.scrollIntoView({ block: "center", behavior: "smooth" }); }
+        toast("Tick “I have read this and want to continue” first.", "info");
+        return;
+      }
+      if (k === "ai" && VENDOR[U.ch.ai] && !(el && el.dataset.anyway) && !(U.ai && U.ai[U.ch.ai] && aiReady(U.ch.ai, U.ai[U.ch.ai]))) {
+        const v = VENDOR[U.ch.ai];
+        St.modal(`<h2>${esc(v.name)} isn't connected yet</h2>
+          <p class="lead">Until it is, the AI buttons (Ask, study notes, plans) stay greyed out. Everything else works. You can connect it later in Settings → AI.</p>
+          <div class="actions"><button class="btn" data-act="modal-close">Connect it now</button><button class="btn primary" data-act="su-next" data-anyway="1">Continue without it ${I("arrow-right", "sm")}</button></div>`);
+        return;
+      }
+      if (el && el.dataset.anyway) St.closeModal();
       if (k === "speech") { await call("update_settings", { model: U.ch.speech }); S.settings.model = U.ch.speech; }
       if (k === "ai") {
         const r = await call("app_config", { ai_provider: U.ch.ai || "none", local_model: U.ch.llm });
@@ -402,7 +419,7 @@
     if (e.state === "idle") {
       U.running = false;
       U.done = !!e.ok && U.plan && U.plan.items.every((it) => (U.dl[it.id] || {}).state === "done");
-      if (!e.ok && Object.values(U.dl).some((d) => d.state === "error")) toast("A download failed — check your connection and try again.", "error");
+      if (!e.ok && Object.values(U.dl).some((d) => d.state === "error")) toast("A download stopped — see the reason above the button, then try again.", "error");
     }
     if (S.mode === "setup") St.render();
     else if (S.view.name === "settings") St.renderView();
@@ -418,7 +435,7 @@
     const status = p === "chatgpt" ? (x.signed_in && x.plan_allowed ? `Signed in with ChatGPT${x.email ? ` as ${x.email}` : ""}.` : "Not connected yet.")
       : p === "claude" ? (x.logged_in ? `Claude Code ${x.version} · signed in${x.plan ? ` (${x.plan})` : ""}` : x.available ? "Claude Code is installed but not signed in." : "Claude Code is not installed.")
       : p === "codex" ? (x.logged_in ? `Codex CLI ${x.version} · signed in with ChatGPT` : x.available ? "The Codex CLI is installed but not signed in." : "The Codex CLI is not installed.")
-      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? `${app.local_model} is on this PC.` : "The offline model is not downloaded yet." : "AI features are hidden.";
+      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? "The offline model is on this PC." : "The offline model is not downloaded yet." : "AI is off: the AI buttons stay greyed out. Pick one above to use Ask, study notes and plans.";
     const needs = a && a.local && p === "local" && !(a.local.models.find((m) => m.id === app.local_model) || {}).ready;
     const steps = VENDOR[p] && a && a[p];
     if (steps && !U.timer) pollAi(true);
@@ -493,7 +510,7 @@
       models: { "large-v3-turbo": { ok: true }, "large-v3": { ok: true }, medium: { ok: true }, small: { ok: true } },
       summary: [{ label: "Windows", value: "Windows 11 24H2 (build 26100)", ok: "yes" }, { label: "Processor", value: "Intel Core i7-13700H · 20 threads", ok: "yes" },
         { label: "Memory", value: "32 GB", ok: "yes" }, { label: "Graphics", value: "NVIDIA GeForce RTX 4070 Laptop GPU · 8 GB · driver 566.14", ok: "yes" }, { label: "Free disk space", value: "182 GB on C:\\", ok: "yes" }] },
-    catalog: { speech: [{ id: "large-v3-turbo", label: "Fast & accurate", description: "Recommended. Near large-v3 quality at a fraction of the time on a GPU.", size_mb: 1620, ready: false },
+    catalog: { speech: [{ id: "large-v3-turbo", label: "Fast & accurate", description: "Nearly the best quality, and fast with an NVIDIA graphics card.", size_mb: 1620, ready: false },
       { id: "large-v3", label: "Maximum accuracy", description: "Slowest, best for hard audio and long Turkish passages.", size_mb: 3090, ready: false },
       { id: "medium", label: "Medium", description: "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture).", size_mb: 1530, ready: false },
       { id: "small", label: "Small", description: "The one for PCs without an NVIDIA GPU: fast enough on the processor, a bit less accurate.", size_mb: 484, ready: false }],
@@ -514,8 +531,8 @@
         models: M.login.codex ? ["gpt-6.1-sol", "gpt-6-sol-mini"] : [], needs: "ChatGPT Plus or Pro subscription",
         plan_status: M.login.codex ? { ok: null, label: "ChatGPT", note: "Codex does not show your plan; the test message below shows whether it works." } : { ok: null, label: "", note: "" },
         job: mockJob("codex"), test: M.test.codex || {} },
-      local: { model: "qwen3-1.7b", models: [{ id: "qwen3-1.7b", label: "Basic", description: "Qwen3 1.7B: short notes and simple questions; runs on most PCs (8 GB memory).", size_mb: 1745, ready: false },
-        { id: "qwen3-4b", label: "Better", description: "Qwen3 4B Instruct: clearly better notes and answers; needs a GPU with 8 GB or 16 GB of memory.", size_mb: 4045, ready: false }] } };
+      local: { model: "qwen3-1.7b", models: [{ id: "qwen3-1.7b", label: "Basic", description: "Short notes and simple questions; runs on most PCs with 8 GB of memory (Qwen3 1.7B).", size_mb: 1745, ready: false },
+        { id: "qwen3-4b", label: "Better", description: "Clearly better notes and answers; needs an NVIDIA graphics card with 8 GB of memory (Qwen3 4B).", size_mb: 4045, ready: false }] } };
     return which ? { ok: true, provider: all.provider, chosen: all.chosen, [which]: all[which] } : all;
   };
   St.mocks.ai_install = (which) => {

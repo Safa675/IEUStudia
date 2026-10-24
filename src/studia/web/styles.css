@@ -468,6 +468,8 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 
 /* ------------------------------------------------------------------ overlays */
 .toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 60; pointer-events: none; }
+body:has(.setup) .toasts { bottom: 86px; }                         /* above the setup's Continue button */
+body:has(.queuebar:not(.hidden)) .toasts { bottom: 78px; }         /* above the queue bar's Cancel */
 .toast { pointer-events: auto; min-width: 260px; max-width: 420px; background: var(--surface); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: var(--shadow-lg); padding: 11px 14px; display: flex; gap: 10px; align-items: flex-start;
   animation: toast-in .18s ease; font-size: 13.5px; }
@@ -482,6 +484,9 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 .modal h2 { margin: 0 0 6px; font: 600 18px var(--font-display); }
 .modal .lead { color: var(--text-2); margin: 0 0 16px; }
 .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+/* a long dialog on a small screen scrolls, but its buttons stay in view */
+.modal > .actions, .modal > form > .actions { position: sticky; bottom: -22px; margin: 18px -24px -22px; padding: 12px 24px 18px;
+  background: var(--surface); border-radius: 0 0 14px 14px; }
 .est { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
 .est div { background: var(--surface-2); border-radius: 9px; padding: 9px 11px; } .est b { display: block; font-size: 16px; }
 .est span { font-size: 12px; color: var(--text-3); }
@@ -1097,6 +1102,10 @@ button.link:hover { text-decoration-color: currentColor; }
 .su-radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border-strong); flex: none; margin-top: 2px; }
 .su-ai.on .su-radio { border-color: var(--blue); background: radial-gradient(circle, var(--blue) 42%, transparent 48%); }
 .su-ai-body { padding: 0 16px 14px 46px; display: flex; flex-direction: column; gap: 4px; }
+.su-ai.off .su-ai-head { cursor: default; opacity: .6; }
+.preset .d.warn-txt { color: var(--warning); margin-top: 4px; }
+.su-accept.attention { animation: attention 1.2s ease; }
+@keyframes attention { 0%, 40%, 80% { box-shadow: 0 0 0 3px var(--blue); } 20%, 60%, 100% { box-shadow: 0 0 0 0 transparent; } }
 .su-ai-body .su-row { padding: 6px 0; }
 .su-ai-body .presets { padding: 2px 0 6px; }
 .su-ai-note { margin-top: 14px; }

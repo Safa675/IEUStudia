@@ -34,10 +34,10 @@ Progress = Callable[[int, int], None]
 # Apache-2.0 models, converted to CTranslate2 int8 (runs with the speech engine already installed).
 LLM_PRESETS: dict[str, dict[str, Any]] = {
     "qwen3-1.7b": {"repo": "jncraton/Qwen3-1.7B-ct2-int8", "label": "Basic", "size_mb": 1745,
-                   "description": "Qwen3 1.7B: short notes and simple questions; runs on most PCs (8 GB memory).",
+                   "description": "Short notes and simple questions; runs on most PCs with 8 GB of memory (Qwen3 1.7B).",
                    "template": "qwen3"},
     "qwen3-4b": {"repo": "jncraton/Qwen3-4B-Instruct-2507-ct2-int8", "label": "Better", "size_mb": 4045,
-                 "description": "Qwen3 4B Instruct: clearly better notes and answers; needs a GPU with 8 GB or 16 GB of memory.",
+                 "description": "Clearly better notes and answers; needs an NVIDIA graphics card with 8 GB of memory (Qwen3 4B).",
                  "template": "qwen3-instruct"},
 }
 LLM_FILES = ["config.json", "generation_config.json", "model.bin", "tokenizer.json", "tokenizer_config.json",
@@ -85,7 +85,7 @@ def cuda_sources() -> list[str]:
     """Folders that already provide cuBLAS for CUDA 12 (ours, the CUDA toolkit, or pip ``nvidia-*`` wheels)."""
     found = []
     ours = cuda_dir()
-    if all((ours / d).is_file() for d in CUDA_DLLS):
+    if (ours / ".complete").is_file() and all((ours / d).is_file() for d in CUDA_DLLS):   # not a download cut short
         found.append(str(ours))
     for key, val in os.environ.items():
         if key.upper().startswith("CUDA_PATH") and val:
@@ -160,8 +160,10 @@ def download_cuda(progress: Progress, cancel: Optional[threading.Event] = None) 
             for info in z.infolist():
                 if info.filename.startswith(member) and info.filename.lower().endswith(".dll"):
                     out = target / Path(info.filename).name
-                    with z.open(info) as src, open(out, "wb") as dst:
+                    part = out.with_name(out.name + ".part")
+                    with z.open(info) as src, open(part, "wb") as dst:
                         shutil.copyfileobj(src, dst, 4 * MB)
+                    os.replace(part, out)             # never a half-written DLL under its real name
         dest.unlink(missing_ok=True)
         done += w["size"]
         progress(done, total)

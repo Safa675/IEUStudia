@@ -163,8 +163,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     from . import appconfig
     from .accounts import activate
+    from .net import use_windows_certificates
     from .paths import migrate_legacy_data
 
+    use_windows_certificates()
     migrate_legacy_data()            # the data folder of the app's earlier name (Studia, LectureScribe)
     appconfig.migrate()
     ap = argparse.ArgumentParser(prog="studia", description="Sync and transcribe IEULearn/Panopto lectures.")

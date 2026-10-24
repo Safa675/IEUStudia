@@ -34,7 +34,8 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
-CloseApplications=yes
+; the helper in the tray is asked to quit first (PrepareToInstall); a window that does not close in time is closed
+CloseApplications=force
 RestartApplications=no
 LicenseFile=..\LICENSE
 
@@ -78,6 +79,29 @@ begin
               'It is free and comes with Windows 11 and current Windows 10. Open the download page now? ' +
               '(You can continue the installation either way.)', mbConfirmation, MB_YESNO) = IDYES then
       ShellExec('open', 'https://developer.microsoft.com/microsoft-edge/webview2/#download', '', '', SW_SHOWNORMAL, ewNoWait, code);
+end;
+
+{ Before files are replaced: the background helper (the tray icon) keeps IEUStudia's files open, and Windows'
+  Restart Manager cannot always close it. Ask it to quit, as its menu's Quit does; it removes its icon. }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  wnd: HWND;
+  i: Integer;
+  asked: Boolean;
+begin
+  Result := '';
+  asked := False;
+  for i := 1 to 20 do
+  begin
+    wnd := FindWindowByClassName('IEUStudiaTray');
+    if wnd = 0 then
+      Break;
+    PostMessage(wnd, 16, 0, 0);      { WM_CLOSE }
+    asked := True;
+    Sleep(250);
+  end;
+  if asked then
+    Sleep(1000);                     { let it finish what it was doing and exit }
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

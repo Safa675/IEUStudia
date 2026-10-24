@@ -926,6 +926,7 @@ dependencies = [
     { name = "pypdfium2" },
     { name = "pywebview" },
     { name = "requests" },
+    { name = "truststore" },
     { name = "yt-dlp" },
 ]
 
@@ -951,6 +952,7 @@ requires-dist = [
     { name = "pypdfium2", specifier = ">=4.30" },
     { name = "pywebview", specifier = ">=5.3" },
     { name = "requests", specifier = ">=2.32" },
+    { name = "truststore", specifier = ">=0.10" },
     { name = "yt-dlp", specifier = ">=2025.1" },
 ]
 provides-extras = ["gpu"]

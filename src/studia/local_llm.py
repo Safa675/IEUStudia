@@ -32,7 +32,7 @@ def _preset(key: str) -> dict[str, Any]:
 
 def _load(key: str) -> dict[str, Any]:
     from .components import llm_dir, llm_ready
-    from .engine.models import resolve_device, setup_cuda_dlls
+    from .engine.models import cuda_compute_type, resolve_device, setup_cuda_dlls
 
     with _lock:
         hit = _loaded.get(key)
@@ -46,7 +46,7 @@ def _load(key: str) -> dict[str, Any]:
         from tokenizers import Tokenizer
 
         device, _ = resolve_device("auto")
-        ctype = "int8_float16" if device == "cuda" else "int8"
+        ctype = cuda_compute_type(("int8_float16", "int8_float32", "int8")) if device == "cuda" else "int8"
         threads = max(1, (os.cpu_count() or 4) // 2)
         started = time.monotonic()
         gen = ctranslate2.Generator(str(llm_dir(key)), device=device, compute_type=ctype,

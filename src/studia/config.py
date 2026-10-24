@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
-from .paths import default_output_dir, settings_path
+from .paths import default_output_path, settings_path
 
 log = logging.getLogger("studia")
 
@@ -76,8 +76,8 @@ def _from_dict(raw: dict[str, Any]) -> Settings:
         for cid, p in prefs.items():
             if isinstance(p, dict):
                 s.course_prefs[str(cid)] = CoursePrefs(**{k: v for k, v in p.items() if k in pk})
-    if not s.output_dir:
-        s.output_dir = str(default_output_dir())
+    if not s.output_dir:                # created when the first file is written (Documents may be write-protected)
+        s.output_dir = str(default_output_path())
     if s.theme not in ("system", "light", "dark"):
         s.theme = "system"
     if s.device not in ("auto", "cuda", "cpu"):

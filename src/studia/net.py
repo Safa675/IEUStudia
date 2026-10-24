@@ -26,6 +26,17 @@ class NetworkError(requests.ConnectionError):
     """A connection problem, with a message that can be shown to the user."""
 
 
+def use_windows_certificates() -> None:
+    """HTTPS trusts the certificates Windows trusts, as the browser does. An antivirus that scans HTTPS, or a company
+    proxy, adds its own to Windows; Python's built-in list doesn't have them, so every connection would fail."""
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except Exception:  # noqa: BLE001 - the built-in list still works everywhere else
+        log.debug("Windows certificates not used", exc_info=True)
+
+
 def _host(exc: BaseException, url: str = "") -> str:
     req = getattr(exc, "request", None)
     return urlparse(url or getattr(req, "url", "") or "").hostname or "the server"
@@ -53,7 +64,8 @@ def plain_error(exc: BaseException, url: str = "") -> str:
     if isinstance(exc, PermissionError):
         name = os.path.basename(str(exc.filename or "")) or "a file"
         return (f"Windows did not let IEUStudia write {name}: it may be open in another program (or syncing), or "
-                "your antivirus blocked it.")
+                "your antivirus or Windows' ransomware protection blocked it. You can also choose another output folder "
+                "in Settings → Files.")
     return str(exc) or exc.__class__.__name__
 
 

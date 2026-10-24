@@ -5,6 +5,7 @@ Used for Whisper model files. (Panopto media uses the same ideas in ``panopto.py
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -24,21 +25,32 @@ CHUNK = 256 * 1024
 MIN_PART = 8 * 1024 * 1024
 
 
-def _probe(session: requests.Session, url: str) -> tuple[str, int, bool]:
-    """Follow redirects with a 1-byte range request; return (final_url, total_size, ranges_ok)."""
-    with session.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=(15, 45), allow_redirects=True) as r:
-        r.raise_for_status()
-        final = r.url
-        if r.status_code == 206 and "/" in r.headers.get("Content-Range", ""):
-            total = int(r.headers["Content-Range"].rsplit("/", 1)[1])
-            return final, total, True
-        return final, int(r.headers.get("Content-Length") or 0), False
+def _probe(session: requests.Session, url: str, attempts: int = 3) -> tuple[str, int, bool, str]:
+    """Follow redirects with a 1-byte range request; return (final_url, total_size, ranges_ok, version), the version
+    being the file's ETag or Last-Modified (to tell a changed file from the one whose parts are on disk)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with session.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=(15, 45),
+                             allow_redirects=True) as r:
+                r.raise_for_status()
+                final = r.url
+                version = r.headers.get("ETag") or r.headers.get("Last-Modified") or ""
+                if r.status_code == 206 and "/" in r.headers.get("Content-Range", ""):
+                    total = int(r.headers["Content-Range"].rsplit("/", 1)[1])
+                    return final, total, True, version
+                return final, int(r.headers.get("Content-Length") or 0), False, version
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == attempts:
+                raise
+            time.sleep(2.0 * attempt)
+    raise IOError("unreachable")
 
 
 def _fetch_range(session: requests.Session, url: str, part: Path, start: int, end: int,
                  counter: list[int], lock: threading.Lock, cancel: Optional[threading.Event],
-                 attempts: int = 4) -> None:
-    """Download bytes [start, end] into ``part``, resuming whatever is already there."""
+                 attempts: int = 8) -> None:
+    """Download bytes [start, end] into ``part``, resuming whatever is already there. A Wi-Fi drop of a minute or
+    so is waited out."""
     want = end - start + 1
     for attempt in range(1, attempts + 1):
         have = part.stat().st_size if part.exists() else 0
@@ -72,8 +84,31 @@ def _fetch_range(session: requests.Session, url: str, part: Path, start: int, en
             if attempt == attempts:
                 raise
             log.info("Download part retry %d/%d (%s)", attempt, attempts, exc)
-            time.sleep(min(8.0, 0.8 * 2 ** attempt))
+            for _ in range(int(min(20.0, 0.8 * 2 ** attempt) / 0.25)):
+                check(cancel)
+                time.sleep(0.25)
     raise IOError("Download did not complete; please retry.")
+
+
+def _join(part_files: list[Path], tmp: Path) -> None:
+    """The parts, in order, as one file: the first part grows and each other one is deleted once appended, so the
+    disk never holds the download twice (a 3 GB model needs about 3 GB, not 6). If that fails (a full disk), all of it
+    is deleted, so the space is free again."""
+    try:
+        os.replace(part_files[0], tmp)
+        with open(tmp, "ab") as out:
+            for pf in part_files[1:]:
+                with open(pf, "rb") as fh:
+                    while buf := fh.read(4 * 1024 * 1024):
+                        out.write(buf)
+                pf.unlink()
+    except OSError:
+        for f in (tmp, *part_files):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
 
 
 def _stream_plain(session: requests.Session, url: str, tmp: Path, counter: list[int],
@@ -96,11 +131,22 @@ def download(url: str, dest: Path, *, session: Optional[requests.Session] = None
     session = session or requests.Session()
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    final_url, total, ranges_ok = _probe(session, url)
+    final_url, total, ranges_ok, version = _probe(session, url)
     if dest.exists() and total and dest.stat().st_size == total:
         if progress:
             progress(total, total)
         return dest
+    stamp = {"total": total, "version": version}
+    marker = dest.with_name(dest.name + ".parts.json")
+    try:
+        before = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        before = None
+    if before is not None and before != stamp:      # the file changed (e.g. re-encoded): its old parts don't fit
+        log.info("%s changed since its partial download; starting again", dest.name)
+        for old in dest.parent.glob(dest.name + ".part*"):
+            old.unlink(missing_ok=True)
+    marker.write_text(json.dumps(stamp), encoding="utf-8")
 
     if not ranges_ok or total < MIN_PART:
         parts = 1
@@ -132,11 +178,7 @@ def download(url: str, dest: Path, *, session: Optional[requests.Session] = None
                            for pf, (s, e) in zip(part_files, bounds)]
                 for f in futures:
                     f.result()
-            with open(tmp, "wb") as out:
-                for pf in part_files:
-                    with open(pf, "rb") as fh:
-                        while buf := fh.read(4 * 1024 * 1024):
-                            out.write(buf)
+            _join(part_files, tmp)
     finally:
         stop.set()
         rep.join(timeout=1)
@@ -148,6 +190,7 @@ def download(url: str, dest: Path, *, session: Optional[requests.Session] = None
     os.replace(tmp, dest)
     for pf in part_files:
         pf.unlink(missing_ok=True)
+    marker.unlink(missing_ok=True)
     if progress:
         size = dest.stat().st_size
         progress(size, total or size)
