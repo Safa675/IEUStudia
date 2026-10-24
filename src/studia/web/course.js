@@ -463,7 +463,9 @@
   function coveredWeeks(d, e) {     // as the study-plan dialog: a quiz covers the weeks since the previous assessment
     const plan = ((d.alerts || {}).plan || []).filter((x) => x.week).sort((a, b) => a.week - b.week);
     const i = plan.findIndex((x) => x.name === e.name);
-    const start = ["midterm", "final"].includes(e.kind) ? 1 : (i > 0 ? plan[i - 1].week : 0) + 1;
+    const midBefore = plan.slice(0, Math.max(0, i)).filter((x) => x.kind === "midterm").pop();   // Midterm 2: since Midterm 1
+    const start = e.kind === "final" ? 1 : e.kind === "midterm" ? (e.no >= 2 && midBefore ? midBefore.week + 1 : 1)
+      : (i > 0 ? plan[i - 1].week : 0) + 1;
     const out = [];
     for (let n = Math.min(start, e.week); n <= e.week; n++) out.push(n);
     return out;

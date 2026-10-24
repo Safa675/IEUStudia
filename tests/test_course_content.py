@@ -14,9 +14,8 @@ from studia.domain import Course, Recording, Segment, Transcript
 from studia.ieulearn import parse_dashboard
 from studia.library import Library
 from studia.materials import unit_week
-from studia.outputs.highlights import _tr_lower
 from studia.syllabus import parse_syllabus
-from studia.views import EXAM_TOPIC, _cover_uri, class_times, classes_over, course_detail, week_classes
+from studia.views import _cover_uri, class_times, classes_over, course_detail, exam_topic, week_classes
 
 # ------------------------------------------------------------------ IEULearn pages
 UNIT_PLAN = """
@@ -154,6 +153,28 @@ def test_assessment_plan_from_prose():
     assert [(e["name"], e["week"]) for e in assessment_plan([PROSE])] == [("Quiz 1", 3), ("Quiz 2", 5), ("Quiz 3", 10), ("Quiz 4", 12)]
 
 
+def _ann(i, title, body, posted="2026-09-22T09:00"):
+    return {"id": i, "title": title, "posted_at": posted, "first_seen": "", "body": body}
+
+
+def test_numbered_midterms_capitals_and_quizzes_named_with_their_weeks():
+    two = _ann("m", "Exam schedule", "Midterm 1 — Week 7 — LO1–LO3\nMidterm 2 — Week 12 — LO4–LO6")
+    assert {e["name"]: (e["week"], e["los"]) for e in assessment_plan([two])} == \
+        {"Midterm 1": (7, [1, 2, 3]), "Midterm 2": (12, [4, 5, 6])}
+    vize = _ann("v", "Sınav takvimi", "1. Vize\n7. hafta\n2. Vize\n12. hafta")
+    assert [(e["name"], e["week"]) for e in assessment_plan([vize])] == [("Midterm 1", 7), ("Midterm 2", 12)]
+    caps = _ann("c", "QUIZ 1 AND MIDTERM", "QUIZ 1\nWEEK 4\nMIDTERM\nWEEK 8")
+    assert [(e["name"], e["week"]) for e in assessment_plan([caps])] == [("Quiz 1", 4), ("Midterm", 8)]
+    table = _ann("t", "Quizzes", "Quiz 1\nWeek 3\nQuiz 2\nWeek 5")
+    later = _ann("l", "Update", "Quiz 3 and Quiz 4 will be held in weeks 10 and 12.", "2026-10-20T09:00")
+    assert [(e["name"], e["week"]) for e in assessment_plan([table, later])] == \
+        [("Quiz 1", 3), ("Quiz 2", 5), ("Quiz 3", 10), ("Quiz 4", 12)]
+    one = _ann("x", "Plan", "Midterm\nWeek 8")                  # "Midterm" and "Midterm 1" of one course: one exam
+    note = _ann("n", "About Midterm 1", "It covers LO1 and LO2.", "2026-10-01T09:00")
+    assert [(e["name"], e["week"], e["los"]) for e in assessment_plan([one, note])] == [("Midterm 1", 8, [1, 2])]
+    assert [e["name"] for e in assessment_plan([_ann("w", "Plan", "Midterm 2. hafta")])] == ["Midterm"]   # week 2
+
+
 def _course_with_lecture(tmp_path):
     lib = Library(tmp_path / "lib.db")
     lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="P", term="T")])
@@ -261,11 +282,18 @@ def test_class_times_follow_your_section_and_skip_extra_recordings():
     assert week_classes("", "", times) == [] and week_classes("2026-10-19", "2026-10-25", {}) == []
 
 
-@pytest.mark.parametrize("topic,exam", [("Midterm Exam", True), ("Ara Sınav", True), ("ARA SINAV", True), ("Vize", True),
-                                        ("Final", True), ("Final exam", True), ("Project analysis; final report", False),
-                                        ("Review for the final", False)])
+def test_a_one_off_make_up_class_is_not_a_class_day():
+    rec = {"end_time": "10:50", "duplicate": False, "hidden": False, "too_short": False}
+    days = [{"date": d, "mine": None, "recordings": [rec]} for d in ("2026-10-07", "2026-10-14", "2026-10-21",
+                                                                     "2026-10-17")]   # Wednesdays, one Saturday
+    assert class_times(days, dt.date(2026, 10, 23)) == {2: "10:50"}
+
+
+@pytest.mark.parametrize("topic,exam", [("Midterm Exam", True), ("MIDTERM", True), ("Ara Sınav", True), ("ARA SINAV", True),
+                                        ("Vize", True), ("Final", True), ("FINAL EXAM", True), ("Final exam", True),
+                                        ("Project analysis; final report", False), ("Review for the final", False)])
 def test_exam_week_topics(topic, exam):
-    assert bool(EXAM_TOPIC.search(_tr_lower(topic))) == exam
+    assert exam_topic(topic) == exam
 
 
 def test_old_library_gets_the_new_course_columns(tmp_path):

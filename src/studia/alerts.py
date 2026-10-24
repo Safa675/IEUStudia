@@ -134,7 +134,8 @@ def _signature(lib: Any, course_id: str, recs: list[Any], done: set[str]) -> tup
                 files.append((r.delivery_id, 0))
     flags = tuple(sorted((r.delivery_id, bool(r.hidden), bool(r.duplicate_of)) for r in recs))
     anns = lib.announcements(course_id)
-    return (tuple(sorted(files)), flags, tuple((a["id"], a["posted_at"]) for a in anns)), anns
+    return (tuple(sorted(files)), flags,
+            tuple((a["id"], a["posted_at"], bool(a["is_new"]), a["title"], a["body"]) for a in anns)), anns
 
 
 def course_alerts(lib: Any, course_id: str, recordings: Optional[Iterable[Any]] = None) -> dict[str, Any]:
@@ -198,12 +199,20 @@ def course_alerts(lib: Any, course_id: str, recordings: Optional[Iterable[Any]] 
 # ------------------------------------------------------------------ the assessment plan: which week, which LOs
 # Lecturers post it as a table (cells become lines: "Quiz 1" / "5. hafta" / "LO1–LO2"), as list items, as prose
 # ("quizzes … in weeks 3, 5, 10 and 12") or in a note about one quiz ("About Quiz 1": "… Learning Outcome 2 …").
-_A_NAME = re.compile(r"^(?:(quiz|kısa sınav|küçük sınav)\s*#?\s*(\d{1,2})\b|(ara sınav|midterm|vize)|(final)\b)")
-_A_ANY = re.compile(r"\b(?:(quiz)\s*#?\s*(\d{1,2})\b|(ara sınav|midterm|vize)|(final)(?= exam| sınav))")
-_WEEK = re.compile(r"\b(\d{1,2})\s*\.\s*hafta|\bweek\s*(\d{1,2})\b|\bhafta\s*(\d{1,2})\b")
+# The text is folded first (_fold), so the patterns spell ı as i.
+_MID = r"(?:([1-3])\s*\.\s*)?(ara sinav|midterm|vize)(?:\s*#?\s*([1-3])\b(?!\s*\.?\s*(?:hafta|th|st|nd|rd)))?"
+_A_NAME = re.compile(r"^(?:(quiz|kisa sinav|küçük sinav)\s*#?\s*(\d{1,2})\b|" + _MID + r"|(final)\b)")
+_A_ANY = re.compile(r"\b(?:(quiz)\s*#?\s*(\d{1,2})\b|" + _MID + r"|(final)(?= exam| sinav))")
+_WEEK = re.compile(r"\b(\d{1,2})\s*\.\s*hafta|\bweeks?\s*(\d{1,2})\b|\bhafta\s*(\d{1,2})\b")
 _LO_RANGE = re.compile(r"\blo\s*(\d{1,2})\s*[–—-]\s*(?:lo\s*)?(\d{1,2})\b")
-_LO_ONE = re.compile(r"\b(?:los?|learning outcomes?|öğrenme çıktısı)\s*(\d{1,2})\b")
+_LO_ONE = re.compile(r"\b(?:los?|learning outcomes?|öğrenme çiktisi)\s*(\d{1,2})\b")
 _QUIZ_WEEKS = re.compile(r"\bquiz\w*\b[^.]{0,200}?\bweeks?\s+((?:\d{1,2}\s*(?:,|and|&)\s*)+\d{1,2})\b")
+_QUIZ_NOS = re.compile(r"\bquiz(?:zes)?\s*#?\s*(\d{1,2}(?:\s*(?:,|and|&|ve)\s*(?:quiz\s*)?\d{1,2})*)\b")
+
+
+def _fold(text: str) -> str:
+    """Lower case for matching, with the Turkish i's folded to "i": "QUIZ", "Midterm" and "kısa sınav" all match."""
+    return _tr_lower(text).replace("ı", "i")
 
 
 def _los(text: str) -> set[int]:
@@ -223,9 +232,10 @@ def _week(text: str) -> Optional[int]:
 
 
 def _assessment(m: re.Match) -> tuple[str, int]:
-    if m.group(1):
-        return "quiz", int(m.group(2))
-    return ("midterm", 0) if m.group(3) else ("final", 0)
+    quiz, no, before, mid, after, _ = m.groups()
+    if quiz:
+        return "quiz", int(no)
+    return ("midterm", int(before or after or 0)) if mid else ("final", 0)
 
 
 def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -233,14 +243,16 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
     plan: dict[tuple[str, int], dict[str, Any]] = {}
 
     def add(key: tuple[str, int], week: Optional[int], los: set[int], a: dict[str, Any]) -> None:
-        e = plan.setdefault(key, {"week": None, "los": set(), "sources": {}})
-        e["week"] = week or e["week"]
+        e = plan.setdefault(key, {"week": None, "week_at": "", "los": set(), "sources": {}})
+        date = a["posted_at"] or a["first_seen"] or ""
+        if week:
+            e["week"], e["week_at"] = week, date
         e["los"] |= los
         if week or los:
-            e["sources"][a["id"]] = {"id": a["id"], "title": a["title"], "date": a["posted_at"] or a["first_seen"] or ""}
+            e["sources"][a["id"]] = {"id": a["id"], "title": a["title"], "date": date}
 
     for a in sorted(anns, key=lambda x: x["posted_at"] or x["first_seen"] or ""):
-        body = _tr_lower(_tidy(a["body"] or ""))
+        body = _fold(_tidy(a["body"] or ""))
         lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
         for i, ln in enumerate(lines):                 # table rows and short list items
             m = _A_NAME.match(ln)
@@ -253,17 +265,26 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 cells.append(nxt)
             text = " ".join(cells)
             add(_assessment(m), _week(text), _los(text), a)
-        named = list(_A_ANY.finditer(_tr_lower(a["title"])))
+        named = list(_A_ANY.finditer(_fold(a["title"])))
         if len(named) == 1:                            # a note about one assessment
             add(_assessment(named[0]), None, _los(body), a)
         for m in _QUIZ_WEEKS.finditer(body):           # "quizzes … in weeks 3, 5, 10 and 12"
-            for n, w in enumerate((int(x) for x in re.findall(r"\d{1,2}", m.group(1))), start=1):
+            weeks = [int(x) for x in re.findall(r"\d{1,2}", m.group(1))]
+            said = [int(x) for q in _QUIZ_NOS.findall(m.group(0)[:m.start(1) - m.start(0)])
+                    for x in re.findall(r"\d{1,2}", q)]          # "Quiz 3 and 4 … in weeks 10 and 12"
+            for n, w in zip(said if len(said) == len(weeks) else range(1, len(weeks) + 1), weeks):
                 add(("quiz", n), w, set(), a)
+    if ("midterm", 0) in plan and {no for kind, no in plan if kind == "midterm"} == {0, 1}:
+        one, other = plan[("midterm", 1)], plan.pop(("midterm", 0))     # "Midterm" and "Midterm 1": the same exam
+        if other["week"] and other["week_at"] >= one["week_at"]:
+            one["week"], one["week_at"] = other["week"], other["week_at"]
+        one["los"] |= other["los"]
+        one["sources"].update(other["sources"])
     out = []
     for (kind, no), e in plan.items():
         if not e["sources"]:
             continue
-        name = f"Quiz {no}" if kind == "quiz" else kind.title()
+        name = f"Quiz {no}" if kind == "quiz" else kind.title() + (f" {no}" if no else "")
         out.append({"kind": kind, "no": no, "name": name, "week": e["week"], "los": sorted(e["los"]),
                     "sources": sorted(e["sources"].values(), key=lambda s: s["date"], reverse=True)})
     out.sort(key=lambda e: (e["week"] or 99, e["kind"] != "quiz", e["no"]))

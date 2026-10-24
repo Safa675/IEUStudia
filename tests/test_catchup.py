@@ -136,3 +136,7 @@ def test_calendar_events_from_the_assessment_plan(tmp_path, monkeypatch):
     assert [(e["name"], e["start"], e["end"]) for e in evs] == [("Quiz 2", "2026-10-19", "2026-10-25"),
                                                                ("Midterm", "2026-11-09", "2026-11-15")]
     assert "Covers LO2: Bayes" in evs[0]["notes"] and evs[1]["uid"] == "a-syllabus-week8"   # week 9 has no dates
+    detail["weeks"][0]["classes"] = [{"date": "2026-10-20", "end": "10:50"}, {"date": "2026-10-22", "end": "12:50"}]
+    (quiz, _) = calendar_export.assessment_events(lib, Settings(), dt.date(2026, 10, 19))
+    assert (quiz["start"], quiz["end"]) == ("2026-10-20", "2026-10-22")       # the week's class days, not all of it
+    assert "Probably in class on Tue 20 Oct or Thu 22 Oct" in quiz["notes"][-1]

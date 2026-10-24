@@ -142,6 +142,11 @@ def all_course_views(lib: Any, settings: Settings, jobs: Iterable[dict[str, Any]
 EXAM_TOPIC = re.compile(r"\b(?:mid-?terms?|exams?|examination|vize)\b|ara sınav|final sınav|^\s*final\b|\bfinal exam")
 
 
+def exam_topic(text: str) -> bool:
+    """Is this week's topic an exam? Turkish ("ARA SINAV") and English in capitals ("MIDTERM") too."""
+    return bool(text) and bool(EXAM_TOPIC.search(_tr_lower(text)) or EXAM_TOPIC.search(text.lower()))
+
+
 def material_view(m: dict[str, Any]) -> dict[str, Any]:
     downloaded = bool(m.get("local_path")) and Path(m["local_path"]).is_file()
     return {"id": m["resource_id"], "title": m["title"], "file_name": m.get("file_name") or "", "ext": m.get("ext") or "",
@@ -156,12 +161,19 @@ def class_times(days: list[dict[str, Any]], today: dt.date) -> dict[int, str]:
     days of the last five weeks that are not another section's, or from all of them if there are none."""
     own = [d for d in days if d["mine"] is not False and d["date"] <= today.isoformat()]
     since = (today - dt.timedelta(weeks=5)).isoformat()
-    out: dict[int, str] = {}
+    held: list[tuple[dt.date, list[str]]] = []
     for d in [d for d in own if d["date"] >= since] or own:
         ends = [r["end_time"] for r in d["recordings"] if not (r["duplicate"] or r["hidden"] or r["too_short"])]
         if ends:
-            wd = dt.date.fromisoformat(d["date"]).weekday()
-            out[wd] = max(out.get(wd, ""), *ends)
+            held.append((dt.date.fromisoformat(d["date"]), ends))
+    weeks: dict[int, set[tuple[int, int]]] = defaultdict(set)
+    for date, _ in held:
+        weeks[date.weekday()].add(date.isocalendar()[:2])
+    regular = {wd for wd, ws in weeks.items() if len(ws) >= 2}       # not a one-off make-up class
+    out: dict[int, str] = {}
+    for date, ends in held:
+        if not regular or date.weekday() in regular:
+            out[date.weekday()] = max(out.get(date.weekday(), ""), *ends)
     return out
 
 
@@ -215,7 +227,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
             start = first + dt.timedelta(days=7 * (n - 1)) if first else None
             topic_en = (en_weeks.get(n) or {}).get("subject", "")
             topic_tr = tr_topics.get(n, "")
-            exam = next((t for t in (topic_en, topic_tr) if t and EXAM_TOPIC.search(_tr_lower(t))), "")
+            exam = next((t for t in (topic_en, topic_tr) if exam_topic(t)), "")
             weeks[n] = {"no": n, "start": start.isoformat() if start else "",
                         "end": (start + dt.timedelta(days=6)).isoformat() if start else "",
                         "topic_en": topic_en, "topic_tr": topic_tr,

@@ -927,9 +927,13 @@ class Api:
                           "missing": [m["id"] for m in mats if not m["downloaded"]],
                           "lectures": len(own), "lectures_done": sum(1 for x in own if x["any_done"]),
                           "todo_days": [x["day_key"] for x in own if not x["transcribed"]]})
-        assess, prev = [], 0
+        assess, prev, midterm = [], 0, 0
         for e in sorted((e for e in (d.get("alerts") or {}).get("plan") or [] if e.get("week")), key=lambda e: e["week"]):
-            start = 1 if e["kind"] in ("midterm", "final") else prev + 1     # a quiz: since the last assessment
+            if e["kind"] == "midterm":                  # Midterm 2: since Midterm 1
+                start = midterm + 1 if e["no"] >= 2 else 1
+                midterm = e["week"]
+            else:                                       # a quiz: since the last assessment
+                start = 1 if e["kind"] == "final" else prev + 1
             assess.append({**e, "weeks": list(range(min(start, e["week"]), e["week"] + 1))})
             prev = e["week"]
         return {"ok": True, "course": {"id": d["id"], "code": d["code"], "name": d["display_name"]}, "weeks": weeks,

@@ -32,12 +32,15 @@ def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None
             covered.add(w["no"])
             los = [f"LO{n}: {d['outcomes_en'][n - 1]}" if n <= len(d["outcomes_en"]) else f"LO{n}" for n in e["los"]]
             src = e["sources"][0]["title"] if e.get("sources") else ""
+            classes = [x["date"] for x in w.get("classes") or []]        # it is held in one of the week's classes
+            when = (f"Probably in class on {_days(classes)}; the exact day was not announced: check IEULearn."
+                    if classes else "The exact day was not announced: check IEULearn.")
             out.append({"uid": f"{c.id}-{e['kind']}-{e['no']}", "course": d["code"], "name": e["name"],
-                        "start": w["start"], "end": w["end"] or w["start"], "week": w["no"],
+                        "start": classes[0] if classes else w["start"],
+                        "end": classes[-1] if classes else w["end"] or w["start"], "week": w["no"],
                         "notes": [f"Week {w['no']}" + (f" ({w['topic_en'] or w['topic_tr']})" if w["topic_en"] or w["topic_tr"] else ""),
                                   *([f"Covers {', '.join(los)}"] if los else []),
-                                  *([f"As announced in “{src}” on IEULearn."] if src else []),
-                                  "The exact day was not announced: check IEULearn."]})
+                                  *([f"As announced in “{src}” on IEULearn."] if src else []), when]})
         for w in d["weeks"]:
             if w["exam"] and w["start"] and w["no"] not in covered:
                 out.append({"uid": f"{c.id}-syllabus-week{w['no']}", "course": d["code"], "name": w["exam_label"] or "Exam",
@@ -47,6 +50,14 @@ def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None
     out = [e for e in out if e["end"] >= since]
     out.sort(key=lambda e: (e["start"], e["course"]))
     return out
+
+
+def _days(dates: list[str]) -> str:
+    """["2026-10-13", "2026-10-15"] → "Tue 13 Oct or Thu 15 Oct"."""
+    from .outputs.common import MONTHS, WEEKDAYS_SHORT
+
+    ds = [dt.date.fromisoformat(x) for x in dates]
+    return " or ".join(f"{WEEKDAYS_SHORT[d.weekday()]} {d.day} {MONTHS[d.month - 1][:3]}" for d in ds)
 
 
 def _esc(s: str) -> str:
