@@ -321,12 +321,17 @@ def test_a_lecture_cancelled_while_it_waits_stays_cancelled_when_its_turn_comes(
     env["state"]["engine"] = engine = BlockingEngine()
     jm = env["make"](parallel_downloads=2)
     jm.enqueue(["r1", "r2"])
-    assert wait_for(lambda: jm.job("r2") is not None and jm.job("r2").detail.startswith("Downloaded"))
-    jm.cancel("r2")
+
+    def waiting():                                     # whichever download finished second waits for the place
+        return next((i for i in ("r1", "r2") if jm.job(i) and jm.job(i).detail.startswith("Downloaded")), None)
+
+    assert wait_for(lambda: waiting() is not None)
+    cancelled = waiting()
+    jm.cancel(cancelled)
     cancelled_at = len(env["events"])
-    engine.go.set()                                    # r1 finishes: r2's place comes free, but r2 was cancelled
+    engine.go.set()                                    # the other finishes: the place comes free, but this one is cancelled
     assert wait_for(lambda: not jm.busy())
     time.sleep(0.3)
-    later = [e for e in env["events"][cancelled_at:] if e.get("type") == "job" and e.get("id") == "r2"]
-    assert not later and env["lib"].get_recording("r2").status == "available"
+    later = [e for e in env["events"][cancelled_at:] if e.get("type") == "job" and e.get("id") == cancelled]
+    assert not later and env["lib"].get_recording(cancelled).status == "available"
     assert jm._audio_places.acquire(blocking=False)    # the place was given back
