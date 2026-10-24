@@ -390,3 +390,12 @@ def test_early_in_the_term_every_class_day_counts():
     rec = {"end_time": "09:50", "duplicate": False, "hidden": False, "too_short": False}
     days = [{"date": d, "mine": None, "recordings": [rec]} for d in ("2026-09-21", "2026-09-23", "2026-09-28")]
     assert class_times(days, dt.date(2026, 9, 29)) == {0: "09:50", 2: "09:50"}   # Wednesday seen once so far
+
+
+def test_more_ways_of_writing_quiz_and_midterm_numbers():
+    plan = lambda *anns: [(e["name"], e["week"]) for e in assessment_plan(list(anns))]   # noqa: E731
+    table = _ann("t", "Quizzes", "Quiz 1\nWeek 4\nQuiz 2\nWeek 7")
+    hashes = _ann("h", "Update", "Quiz #3 and #4 will be held in weeks 10 and 12.", "2026-10-20T09:00")
+    assert plan(table, hashes) == [("Quiz 1", 4), ("Quiz 2", 7), ("Quiz 3", 10), ("Quiz 4", 12)]
+    assert plan(_ann("p", "Exams", "Midterm I will announce later.\nMidterm\nWeek 8")) == [("Midterm", 8)]
+    assert plan(_ann("x", "Exams", "Midterm 2 hours\nWeek 8")) == [("Midterm", 8)]          # a duration, no number

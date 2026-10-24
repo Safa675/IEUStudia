@@ -210,7 +210,7 @@ def lecture_excerpts(lectures: str, question: str, key: str, max_tokens: int) ->
         # equally good matches: the newest lectures first (they say what is coming next)
         ranked = [i for i in sorted(range(len(blocks)), key=lambda i: (-scores[i], -i)) if scores[i] > 0]
     else:
-        ranked = [i for i, b in enumerate(blocks) if "⭐" in b[2]]
+        ranked = [i for i in reversed(range(len(blocks))) if "⭐" in blocks[i][2]]       # newest first
         ranked += [i for i in range(0, len(blocks), max(1, len(blocks) // 40)) if i not in ranked]
     chosen: set[int] = set()
     used = 0

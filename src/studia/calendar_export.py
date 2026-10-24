@@ -1,7 +1,9 @@
 """The announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or a phone.
 
-Lecturers announce assessments by week ("Quiz 2: week 5"), not by day, so each one becomes an all-day event over its
-week with a reminder two days before. Exam weeks from the syllabus are added when no announcement covers them. The
+Lecturers announce assessments by week ("Quiz 2: week 5"), not by day. A quiz is held in one of the course's classes
+that week, so it becomes an all-day event over those class days; a midterm or final follows the exam schedule and
+spans its week. Each gets a reminder two days before. Exam weeks from the syllabus are added when no announcement
+covers them. The
 event ids are stable, so importing a newer file again updates the events instead of duplicating them (in apps that
 support it, such as Outlook).
 """
@@ -35,7 +37,8 @@ def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None
             # a quiz is held in one of the week's classes; midterms and finals follow the exam schedule
             classes = [x["date"] for x in w.get("classes") or []] if e["kind"] == "quiz" else []
             when = (f"Probably in class on {_days(classes)}; the exact day was not announced: check IEULearn."
-                    if classes else "The exact day was not announced: check IEULearn.")
+                    if classes else "The exact day was not announced: check IEULearn." if e["kind"] == "quiz"
+                    else "The exact day and time come from the exam schedule: check IEULearn.")
             out.append({"uid": f"{c.id}-{e['kind']}-{e['no']}", "course": d["code"], "name": e["name"],
                         "start": classes[0] if classes else w["start"],
                         "end": classes[-1] if classes else w["end"] or w["start"], "week": w["no"],
