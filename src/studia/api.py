@@ -1036,7 +1036,7 @@ class Api:
     def digest_summary(self, offset: int = 0) -> dict[str, Any]:
         """A short written summary of the week by the chosen AI (light model); saved, and written to the output
         folder."""
-        from .ai import ai_name, claude_info, one_shot
+        from .ai import ai_name, claude_info, model_label, one_shot
         from .digest import digest_markdown, digest_prompt, weekly_digest
 
         if not claude_info()["available"]:
@@ -1056,7 +1056,7 @@ class Api:
                                [{"type": "text", "text": digest_prompt(d)}], model, "low", cancel,
                                lambda t: self._push({"type": "digest", "phase": "progress", "offset": offset, "text": t}))
                 text = (res.get("text") or "").strip()
-                saved = {"text": text, "model": model, "at": dt.datetime.now().isoformat(timespec="seconds"),
+                saved = {"text": text, "model": model_label(model), "at": dt.datetime.now().isoformat(timespec="seconds"),
                          "usage": res.get("usage") or {}}
                 folder = self._s.output_root / "Weekly digests"
                 folder.mkdir(parents=True, exist_ok=True)

@@ -70,6 +70,27 @@ def test_weekly_digest(tmp_path):
     assert md.startswith("# Weekly digest") and "A calm week." in md and "## MATH 240" in md
 
 
+def test_the_digest_leaves_out_other_sections_and_parts_too_short_to_count(tmp_path):
+    from studia.config import CoursePrefs
+    from studia.digest import digest_prompt, weekly_digest
+
+    lib, _ = _lib(tmp_path)
+    recs = [Recording(delivery_id=f"s{n}", course_id="c", folder_id="f", folder_path="", name=f"MATH 240 Section {n}",
+                      start=dt.datetime(2026, 9, 28 + n, 9, 0), duration_s=3000, viewer_url=f"v{n}") for n in (1, 2)]
+    recs.append(Recording(delivery_id="short", course_id="c", folder_id="f", folder_path="", name="MATH 240 Section 2",
+                          start=dt.datetime(2026, 10, 2, 9, 0), duration_s=40, viewer_url="v3"))   # under a minute
+    lib.merge_recordings("c", recs, first_sync=False)
+    settings = Settings()
+    settings.course_prefs["c"] = CoursePrefs(my_section="2")
+    d = weekly_digest(lib, settings, today=dt.date(2026, 10, 1))
+    (c,) = d["courses"]
+    assert [lec["date"] for lec in c["lectures"]] == ["2026-09-30"]          # yours; not Tuesday's section 1
+    assert [t["text"] for t in d["todo"] if t["kind"] == "transcribe"] == ["Transcribe the lecture of Wednesday, 30 September 2026"]
+    settings.course_prefs["c"] = CoursePrefs(my_section="2", show_mode="all")
+    assert len(weekly_digest(lib, settings, today=dt.date(2026, 10, 1))["courses"][0]["lectures"]) == 2
+    assert "WEEK:" in digest_prompt(d)
+
+
 def test_a_quiz_is_done_in_the_digest_once_its_class_is_over(tmp_path):
     from studia.digest import digest_prompt, weekly_digest
 

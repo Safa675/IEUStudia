@@ -6,7 +6,7 @@
   const { S, call, esc, I, SPIN, plural, toast, go, renderView, A } = St;
   const CAT = { final: "Final", midterm: "Midterm", quiz: "Quiz", exam: "Exam", project: "Project", homework: "Homework", schedule: "Schedule" };
 
-  S.digest = { offset: 0, data: null, summary: null, running: false, text: "" };
+  S.digest = { offset: 0, data: null, summary: null, running: false, busyOffset: null, text: "" };   // busyOffset: the week being written
 
   async function load() {
     const r = await call("digest", S.digest.offset);
@@ -25,7 +25,7 @@
         <span class="dg-code">${esc(c.code)}</span><div class="grow"><b>${esc(c.name)}</b>${c.week ? `<div class="dim">Week ${c.week.no} · ${esc(c.week.topic)}</div>` : ""}</div>${I("chevron-right", "sm")}</div>
       ${c.coming.length ? `<div class="dg-coming">${c.coming.map((e) => `<span class="plan-pill ${e.this_week && !e.done ? "now" : ""} ${e.done ? "done" : ""}"><b>${esc(e.name)}</b><span>${e.done ? "done" : e.this_week ? "this week" : `week ${e.week}`}</span>${e.los.length ? `<span class="lo">LO${e.los.join(", LO")}</span>` : ""}</span>`).join("")}</div>` : ""}
       ${lec ? `<div class="dg-sec">${lec}</div>` : ""}
-      ${c.said.length ? `<div class="dg-sec"><div class="dg-lbl">${I("alert", "sm")} The lecturer said</div>${c.said.map((s) => `<div class="dg-said"><span class="cat-chip cat-${esc(s.category)}">${esc(CAT[s.category] || s.category)}</span><span>${esc(s.text)}</span></div>`).join("")}</div>` : ""}
+      ${c.said.length ? `<div class="dg-sec"><div class="dg-lbl">${I("alert", "sm")} The lecturer said</div>${c.said.map((s) => `<div class="dg-said"><span class="cat-chip cat-${esc(s.category)}">${esc(CAT[s.category] || s.category)}</span><span>${esc(s.text)}${s.other_section ? ` <span class="dim sm" title="Heard in another section's lecture: dates may differ for yours">· ${esc(s.other_section)}</span>` : ""}</span></div>`).join("")}</div>` : ""}
       ${c.new_files.length || c.announcements.length ? `<div class="dg-sec dg-misc">
         ${c.new_files.length ? `<div>${I("layers", "sm")} New files: ${c.new_files.map((f) => esc(f.title)).join(", ")}</div>` : ""}
         ${c.announcements.length ? `<div>${I("megaphone", "sm")} Announcements: ${c.announcements.map((a) => esc(a.title)).join(" · ")}</div>` : ""}</div>` : ""}
@@ -42,7 +42,8 @@
           : t.kind === "prepare" ? `<button class="btn ghost sm" data-act="plan-new" data-id="${esc(t.course_id)}">${I("youtube", "sm")} Make a plan</button>` : "";
       return `<div class="dg-todo"><span class="dg-code">${esc(t.course)}</span><span class="grow">${esc(t.text)}</span>${act}</div>`;
     }).join("");
-    const sum = g.running ? `<div class="md">${St.mdToHtml(g.text || "")}</div><div class="dim">${SPIN()} ${esc(St.aiName())} is writing…</div>`
+    const writing = g.running && g.busyOffset === d.week.offset;
+    const sum = writing ? `<div class="md">${St.mdToHtml(g.text || "")}</div><div class="dim">${SPIN()} ${esc(St.aiName())} is writing…</div>`
       : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">Written by AI (${esc(g.summary.model || "")}) — can contain mistakes · ${esc((g.summary.at || "").replace("T", " "))}
           ${g.summary.file ? ` · <button class="link" data-act="dg-file" data-path="${esc(g.summary.file)}">open the Markdown file</button>` : ""}</div>` : "";
     return `<div class="view-inner digest">
@@ -50,7 +51,7 @@
         <div class="dg-nav"><button class="btn ghost icon sm" data-act="dg-week" data-d="-1" title="Previous week">${I("chevron-left", "sm")}</button>
           <button class="btn ghost sm" data-act="dg-week" data-d="0" ${d.week.offset === 0 ? "disabled" : ""}>This week</button>
           <button class="btn ghost icon sm" data-act="dg-week" data-d="1" title="Next week">${I("chevron-right", "sm")}</button>
-          <button class="btn primary sm" data-act="dg-summary" ${ai.available && !g.running ? "" : "disabled"} title="${ai.available ? `A short written summary by ${St.aiName()} (light model)` : St.aiHint()}">${I("ai", "sm")} ${g.summary ? "Summarize again" : `Summarize with ${esc(St.aiName())}`}</button></div></div>
+          <button class="btn primary sm" data-act="dg-summary" ${ai.available && !g.running ? "" : "disabled"} title="${!ai.available ? St.aiHint() : g.running && !writing ? "Another week's summary is being written" : `A short written summary by ${St.aiName()}`}">${I("ai", "sm")} ${g.summary ? "Summarize again" : `Summarize with ${esc(St.aiName())}`}</button></div></div>
       ${sum ? `<div class="card dg-summary">${sum}</div>` : ""}
       ${todo ? `<div class="section-title">${I("list-checks")} To do</div><div class="card dg-todos">${todo}</div>` : ""}
       <div class="section-title">${I("book")} Your courses this week</div>
@@ -64,16 +65,16 @@
     `<button class="nav-item ${v.name === "digest" ? "active" : ""}" data-act="go" data-view="digest">${I("calendar")}<span class="label"><span class="code">Weekly digest</span></span></button>`;
   St.crumbs.digest = () => `${I("calendar")} Weekly digest`;
   St.onGo.digest = () => load();
-  St.onEvents.digest = (e) => {
-    if (e.offset !== S.digest.offset) return;
-    if (e.phase === "start" || e.phase === "progress") { S.digest.running = true; S.digest.text = e.text || ""; }
-    else if (e.phase === "done") { S.digest.running = false; S.digest.summary = e; toast("Weekly digest written", "success"); }
-    else if (e.phase === "error") { S.digest.running = false; toast(e.message || "The AI could not finish", "error"); }
+  St.onEvents.digest = (e) => {   // the summary being written may be of a week you have since left
+    const g = S.digest;
+    if (e.phase === "start" || e.phase === "progress") { g.running = true; g.busyOffset = e.offset; g.text = e.text || ""; }
+    else if (e.phase === "done") { g.running = false; g.busyOffset = null; if (e.offset === g.offset) g.summary = e; toast("Weekly digest written", "success"); }
+    else if (e.phase === "error") { g.running = false; g.busyOffset = null; toast(e.message || "The AI could not finish", "error"); }
     if (S.view.name === "digest") renderView();
   };
   Object.assign(A, {
     "dg-week": (el) => { const d = +el.dataset.d; S.digest.offset = d === 0 ? 0 : S.digest.offset + d; S.digest.data = null; renderView(); load(); },
-    "dg-summary": async () => { const r = await call("digest_summary", S.digest.offset); if (!r.ok) toast(r.error, "error"); else { S.digest.running = true; S.digest.text = ""; renderView(); } },
+    "dg-summary": async () => { const r = await call("digest_summary", S.digest.offset); if (!r.ok) toast(r.error, "error"); else { S.digest.running = true; S.digest.busyOffset = S.digest.offset; S.digest.text = ""; renderView(); } },
     "dg-file": (el) => call("open_output_file", el.dataset.path),
   });
 
@@ -85,5 +86,5 @@
       new_files: [{ id: "m1", title: "Week05_Student", downloaded: false }], announcements: [{ id: "a1", title: "Class Rescheduling Announcement" }],
       coming: [{ name: "Quiz 2", week: 5, start: "2026-10-19", end: "2026-10-25", los: [3, 4], this_week: true }, { name: "Midterm", week: 8, start: "2026-11-09", end: "2026-11-15", los: [], this_week: false }],
       said: [{ category: "schedule", text: "Our class on 28 Oct is moved to Saturday 24 Oct, 12:00, M01.", date: "2026-10-19", source: "announcement" }] }] } });
-  St.mocks.digest_summary = () => { setTimeout(() => window.__lsEvent({ type: "digest", phase: "done", offset: 0, text: "**A busy week.** Quiz 2 in MATH 240 covers Bayes' rule (LO3–LO4)…", model: "haiku", at: "2026-10-21T12:00:00" }), 800); return { ok: true }; };
+  St.mocks.digest_summary = () => { setTimeout(() => window.__lsEvent({ type: "digest", phase: "done", offset: 0, text: "**A busy week.** Quiz 2 in MATH 240 covers Bayes' rule (LO3–LO4)…", model: "Claude Haiku", at: "2026-10-21T12:00:00" }), 800); return { ok: true }; };
 })();

@@ -57,10 +57,13 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
         if d is None:
             continue
         week = next((w for w in d["weeks"] if w["start"] and w["start"] <= sun.isoformat() and (w["end"] or w["start"]) >= mon.isoformat()), None)
+        show_all = settings.prefs(c.id).show_mode == "all"
         lectures = []
         for w in d["weeks"]:
             for day in w["days"]:
-                if not _in(day["date"], mon, sun):
+                if not _in(day["date"], mon, sun) or not day["parts"]:     # nothing but too short or duplicate parts
+                    continue
+                if day["mine"] is False and not show_all:                   # another section's lecture
                     continue
                 stressed = []
                 if day["any_done"]:
@@ -94,7 +97,8 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
                                "this_week": first <= sun.isoformat() and last >= mon.isoformat(),
                                "dates": [x["date"] for x in classes],
                                "done": (w["end"] or w["start"]) < today.isoformat() or classes_over(classes, now)})
-        said = [{"category": a["category"], "text": a["text"][:240], "date": a["date"], "source": a["source"]}
+        said = [{"category": a["category"], "text": a["text"][:240], "date": a["date"], "source": a["source"],
+                 "other_section": a.get("other_section", "")}          # heard in another section: its dates may differ
                 for a in (d.get("alerts") or {}).get("items", []) if a["category"] in KEY and _in(a["date"], mon, sun)]
         if not (week or lectures or new_files or anns or coming or said):
             continue
@@ -125,7 +129,8 @@ def digest_prompt(digest: dict[str, Any]) -> str:
                          + (f", class days {', '.join(e['dates'])}" if e["dates"] else "")
                          + (f", LO{', LO'.join(map(str, e['los']))}" if e["los"] else ""))
         for s in c["said"]:
-            lines.append(f"  lecturer said ({s['category']}, {s['date'][:10]}): {s['text']}")
+            lines.append(f"  lecturer said ({s['category']}, {s['date'][:10]}"
+                         + (f", in {s['other_section']}" if s.get("other_section") else "") + f"): {s['text']}")
         if c["new_files"]:
             lines.append("  new files: " + ", ".join(f["title"] for f in c["new_files"]))
         if c["announcements"]:
@@ -152,7 +157,8 @@ def digest_markdown(digest: dict[str, Any], summary: str = "") -> str:
             out.append(f"- {lec['kind']} {lec['label']}" + ("" if lec["any_done"] else " — not transcribed yet"))
             out += [f"  - ⭐ {s}" for s in lec["stressed"]]
         for s in c["said"]:
-            out.append(f"- Lecturer ({s['category']}): {s['text']}")
+            out.append(f"- Lecturer ({s['category']}" + (f", {s['other_section']}" if s.get("other_section") else "")
+                       + f"): {s['text']}")
         if c["new_files"]:
             out.append("- New files: " + ", ".join(f["title"] for f in c["new_files"]))
         out.append("")
