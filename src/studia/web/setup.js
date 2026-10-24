@@ -24,6 +24,7 @@
   St.NOTICE = NOTICE;
 
   // ------------------------------------------------------------------ flow
+  const llmHere = (st, id) => !!((st.catalog.llm || []).find((m) => m.id === id) || {}).ready;   // already downloaded
   St.startSetup = async () => {
     S.mode = "setup"; U.step = 0; U.error = "";
     St.render();
@@ -34,7 +35,7 @@
     const ready = (id) => (r.catalog.speech.find((x) => x.id === id) || {}).ready;
     U.ch = {
       speech: app.onboarded || ready(r.model) ? r.model : v.recommended_model,
-      ai: app.ai_provider === "local" && !v.recommended_llm ? "none" : (app.ai_provider || "chatgpt"),
+      ai: app.ai_provider === "local" && !v.recommended_llm && !llmHere(r, app.local_model) ? "none" : (app.ai_provider || "chatgpt"),
       llm: app.local_model && app.local_model !== "qwen3-1.7b" ? app.local_model : (v.recommended_llm || "qwen3-1.7b"),
       tray: app.onboarded ? app.tray : true, startup: app.onboarded ? r.startup : true,
       notify_recordings: app.notify_recordings, notify_announcements: app.notify_announcements, notify_materials: app.notify_materials,
@@ -243,7 +244,7 @@
       ${aiCard("claude", "Claude", "Needs a Claude Pro or Max subscription.", connectHTML("claude"))}
       ${aiCard("codex", "ChatGPT through the Codex CLI", "If you already use OpenAI's Codex CLI. Needs ChatGPT Plus or Pro.", connectHTML("codex"))}
       ${aiCard("local", "Offline model", "No subscription: a small model on this PC — basic notes and questions.", llmBody,
-        rec ? "" : "Not on this PC: it needs 8 GB of memory.")}
+        rec || llmHere(U.st, U.ch.llm) ? "" : "Not on this PC: it needs 8 GB of memory.")}
       ${aiCard("none", "No AI", "Transcripts, heads-ups, search, calendar and everything else still work.", "")}
       <div class="callout info su-ai-note">${I("info")}<div><b>AI can make mistakes.</b> Answers are generated from your lectures, but check anything important against the lecture and your materials. Nothing is sent anywhere unless you use an AI feature.</div></div>`;
   }

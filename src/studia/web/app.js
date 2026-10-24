@@ -255,8 +255,6 @@
       ${Studia.navExtra ? Studia.navExtra(v) : ""}
       <button class="nav-item ${v.name === "library" ? "active" : ""}" data-act="go" data-view="library">${I("search")}<span class="label"><span class="code">Search</span></span></button></div>`;
     nav.innerHTML = h;
-    const on = nav.querySelector(".nav-item.active[data-view=course]"), study = nav.querySelector(".nav-study");
-    if (on && study) { const over = on.getBoundingClientRect().bottom - study.getBoundingClientRect().top; if (over > 0) nav.scrollTop += over + 8; }
     const p = S.profile || {};
     const others = S.profiles.filter((x) => !x.active).length;
     $("#sfoot").innerHTML = `
@@ -265,6 +263,11 @@
         <div class="who"><div class="name">${esc(p.name || "Signed in")}</div><div class="num">${esc(p.student_number || "")}</div></div>
         ${I("chevrons-up-down", "sm")}</button>
       <button class="btn ghost icon ${v.name === "settings" ? "on" : ""}" data-act="go" data-view="settings" title="Settings">${I("settings")}</button>`;
+  }
+
+  function revealCourse() {   // the course just opened is not left hidden under the sidebar's Study group
+    const nav = $("#nav"), on = nav && nav.querySelector(".nav-item.active[data-view=course]"), study = nav && nav.querySelector(".nav-study");
+    if (on && study) { const over = on.getBoundingClientRect().bottom - study.getBoundingClientRect().top; if (over > 0) nav.scrollTop += over + 8; }
   }
 
   function crumbs() {
@@ -319,6 +322,7 @@
     S.view = view;
     $("#view").scrollTo({ top: 0, behavior: "instant" });   // before rendering (an after-hook may scroll elsewhere); not animated
     renderSidebar(); renderTop(); renderView();
+    revealCourse();
     if (Studia.onGo[view.name]) Studia.onGo[view.name](view);
     if (view.name === "library") loadLibrary();
     if (view.name === "chat") {
