@@ -118,13 +118,14 @@
   const pad2 = (n) => String(n).padStart(2, "0");
   const localToday = () => { const t = new Date(); return `${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`; };
   const monday = (iso) => { const d = day(iso); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; };
-  // An assessment announced for a week is held in one of the course's classes that week (the backend lists them from
-  // the lecture days): it is done once they are all over. Before that, how far away it is counts calendar weeks.
-  function weekRel(d, no) {
+  // A quiz announced for a week is held in one of the course's classes that week (the backend lists them from the
+  // lecture days): it is done once they are all over. Midterms and finals follow the exam schedule, so for them only
+  // the week counts. Before that, how far away it is counts calendar weeks.
+  function weekRel(d, no, kind = "quiz") {
     const w = no && d.weeks.find((x) => x.no === no);
     if (!w || !w.start) return { w, rel: "", past: false };
     const now = new Date(), today = localToday(), hm = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
-    const classes = w.classes || [], left = classes.filter((c) => c.date > today || (c.date === today && c.end > hm));
+    const classes = kind === "quiz" ? w.classes || [] : [], left = classes.filter((c) => c.date > today || (c.date === today && c.end > hm));
     if (w.past || (classes.length && !left.length)) return { w, rel: "done", past: true };
     const next = left.length ? left[0].date : w.start > today ? w.start : today;
     const n = Math.round((monday(next) - monday(today)) / 6048e5);
@@ -142,10 +143,10 @@
     return los.map((n) => [`LO${n}: ${d.outcomes_en[n - 1] || "?"}`, d.outcomes_tr[n - 1] && d.outcomes_tr[n - 1] !== d.outcomes_en[n - 1] ? `   IEULearn LO${n}: ${d.outcomes_tr[n - 1]}` : ""].filter(Boolean).join("\n")).join("\n");
   }
   function upcoming(d) {
-    return ((d && d.alerts && d.alerts.plan) || []).filter((e) => !weekRel(d, e.week).past);
+    return ((d && d.alerts && d.alerts.plan) || []).filter((e) => !weekRel(d, e.week, e.kind).past);
   }
   function planPill(c, d, e) {
-    const r = weekRel(d, e.week);
+    const r = weekRel(d, e.week, e.kind);
     return `<button class="plan-pill ${r.now ? "now" : ""} kind-${e.kind}" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(`Get ready: what to transcribe, download and read${e.los.length ? "\n" + loTitle(d, e.los) : ""}`)}">
       <b>${esc(e.name)}</b>${e.week ? `<span>week ${e.week}${r.rel ? ` · ${r.rel}` : ""}</span>` : ""}${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`;
   }
@@ -154,7 +155,7 @@
     if (!plan.length) return "";
     return `<div class="card plan"><div class="mg-head"><b>${I("cap", "sm")} Assessment plan</b><span class="dim">as announced on IEULearn — hover an outcome for its text</span></div>
       ${plan.map((e) => {
-        const r = weekRel(d, e.week);
+        const r = weekRel(d, e.week, e.kind);
         return `<div class="plan-row ${r.past ? "past" : ""} ${r.now ? "now" : ""}">
           <span class="plan-name kind-${e.kind}">${esc(e.name)}</span>
           <span class="plan-when">${e.week ? `Week ${e.week}${r.w && r.w.start ? ` · ${esc(range(r.w.start, r.w.end))}` : ""}` : `<span class="dim">week not announced</span>`}${r.rel ? ` <span class="plan-rel">${esc(r.rel)}</span>` : ""}</span>
@@ -395,7 +396,7 @@
           ${c.lms_progress != null ? `<span class="cc-bar lms" title="Your progress on IEULearn (İlerleme)"><span>${I("zap", "xs")}IEULearn progress ${c.lms_progress}%</span><i><b style="width:${Math.min(100, c.lms_progress)}%"></b></i></span>` : ""}
         </span>
         <span class="cc-foot">${heads ? `<span class="cc-heads">${I("alert", "xs")}${heads} heads-up</span>` : ""}
-          ${next ? `<span class="exam-chip" title="${esc(next.los.length ? loTitle(d, next.los) : next.sources[0].title)}">${I("cap", "xs")}${esc(next.name)}${next.week ? ` · ${esc(weekRel(d, next.week).rel || `week ${next.week}`)}` : ""}${next.los.length ? ` · ${esc(loLabel(next.los))}` : ""}</span>`
+          ${next ? `<span class="exam-chip" title="${esc(next.los.length ? loTitle(d, next.los) : next.sources[0].title)}">${I("cap", "xs")}${esc(next.name)}${next.week ? ` · ${esc(weekRel(d, next.week, next.kind).rel || `week ${next.week}`)}` : ""}${next.los.length ? ` · ${esc(loLabel(next.los))}` : ""}</span>`
             : exam ? `<span class="exam-chip">${I("cap", "xs")}${esc(exam.exam_label || exam.topic_en || exam.topic_tr || "Exam")} · week ${exam.no}</span>` : ""}
           <span class="spacer"></span><span class="cc-go">${I("arrow-right", "sm")}</span></span>
       </span></button>`;
@@ -415,7 +416,7 @@
     const recs = St.newHTML({ embedded: true });
     const soon = courses.flatMap((c) => {
       const d = S.cd[c.id];
-      return d ? upcoming(d).map((e) => ({ c, d, e, r: weekRel(d, e.week) })).filter((x) => x.r.now || x.r.rel === "next week") : [];
+      return d ? upcoming(d).map((e) => ({ c, d, e, r: weekRel(d, e.week, e.kind) })).filter((x) => x.r.now || x.r.rel === "next week") : [];
     }).sort((x, y) => (y.r.now ? 1 : 0) - (x.r.now ? 1 : 0));
     let h = `<div class="view-inner home">
       <div class="home-hero"><div><h1>${greet}${first ? `, ${esc(first)}` : ""}</h1><div class="dim">${DAYS[now.getDay()]}, ${now.getDate()} ${MON[now.getMonth()]} ${now.getFullYear()}${S.sync.running ? ` · ${SPIN()} ${esc(S.sync.message || "Syncing…")}` : ""}</div>
@@ -501,7 +502,7 @@
     const e = d && ((d.alerts || {}).plan || []).find((x) => x.name === R.name);
     if (!c || !d || !e) return `<h2>${I("cap")} Get ready</h2><p class="lead">This assessment is no longer in the course's plan.</p>
       <div class="actions"><button class="btn" data-act="modal-close">Close</button></div>`;
-    const r = readiness(c, d, e), rel = weekRel(d, e.week);
+    const r = readiness(c, d, e), rel = weekRel(d, e.week, e.kind);
     const plans = (R.plans || []).filter((p) => p.course_id === c.id && (p.scope || {}).focus === e.name);
     const prep = plans.find((p) => (p.scope || {}).kind === "prep"), video = plans.find((p) => (p.scope || {}).kind !== "prep");
     const steps = [

@@ -63,10 +63,14 @@ def plain_error(exc: BaseException, url: str = "") -> str:
         return "Your disk is full. Free up some space, then try again."
     if isinstance(exc, PermissionError):
         name = os.path.basename(str(exc.filename or "")) or "a file"
-        return (f"Windows did not let IEUStudia write {name}: it may be open in another program (or syncing), or "
-                "your antivirus or Windows' ransomware protection blocked it. You can also choose another output folder "
-                "in Settings → Files.")
-    return str(exc) or exc.__class__.__name__
+        return (f"Windows did not let IEUStudia use {name}: it may be open in another program (or syncing), or your "
+                "antivirus or Windows' ransomware protection blocked it.")
+    if isinstance(exc, FileNotFoundError) or getattr(exc, "winerror", None) in (3, 21, 53, 67):
+        where = str(exc.filename or "") if isinstance(exc, OSError) else ""
+        return (f"{where or 'A folder'} can't be reached: is the drive (or the network) connected, and is the folder "
+                "still there?")
+    text = str(exc) or exc.__class__.__name__
+    return text if text.endswith((".", "!", "?")) else text + "."
 
 
 class _TimeoutSession(requests.Session):

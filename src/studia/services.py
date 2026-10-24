@@ -244,7 +244,8 @@ class Services:
         trans_all = store.load_transcripts([r.delivery_id for r in course_recs if r.delivery_id in done_ids])
         ids = [r.delivery_id for r in day_recs]
         slides = {i: store.load_slides(i) for i in ids}
-        warnings = {r.delivery_id: self.lib.warnings(r.delivery_id) for r in course_recs}
+        warnings = {r.delivery_id: [w for w in self.lib.warnings(r.delivery_id) if w.get("code") != "not_written"]
+                    for r in course_recs}           # "could not be written" never goes into the files themselves
         return write_day(self.output_root, course, all_courses, day_recs, {i: trans_all[i] for i in ids if i in trans_all},
                          course_recs, trans_all, self.settings.write_srt, slides, warnings)
 

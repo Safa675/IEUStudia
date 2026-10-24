@@ -175,6 +175,38 @@ def test_numbered_midterms_capitals_and_quizzes_named_with_their_weeks():
     assert [e["name"] for e in assessment_plan([_ann("w", "Plan", "Midterm 2. hafta")])] == ["Midterm"]   # week 2
 
 
+def test_the_weeks_an_assessment_covers_are_not_the_week_it_is_held_in():
+    plan = lambda *anns: [(e["name"], e["week"]) for e in assessment_plan(list(anns))]   # noqa: E731
+    assert plan(_ann("a", "Quiz 2", "Quiz 2 covers weeks 1-4 and will be held in week 5.")) == [("Quiz 2", 5)]
+    assert plan(_ann("b", "Plan", "Quiz 1\nWeeks 1-3\nWeek 4\nQuiz 2\nWeeks 4-6\nWeek 7")) == [("Quiz 1", 4), ("Quiz 2", 7)]
+    table = _ann("t", "Quizzes", "Quiz 1\nWeek 4\nQuiz 2\nWeek 7")
+    covers = _ann("c", "About Quiz 3", "Quiz 3 will cover weeks 8 and 9.", "2026-10-20T09:00")
+    assert plan(table, covers) == [("Quiz 1", 4), ("Quiz 2", 7)]                  # not moved to weeks 8 and 9
+    rest = _ann("r", "Quizzes", "Quiz 1 will be in week 4; quizzes 2, 3 and 4 in weeks 8, 10 and 12.")
+    assert plan(rest) == [("Quiz 2", 8), ("Quiz 3", 10), ("Quiz 4", 12)]
+    assert plan(_ann("q", "Quizzes", "Quiz 1-4 will be held in weeks 3, 6, 9 and 12.")) == \
+        [("Quiz 1", 3), ("Quiz 2", 6), ("Quiz 3", 9), ("Quiz 4", 12)]
+
+
+@pytest.mark.parametrize("body", ["Midterm Exam 1\nWeek 7\nMidterm Exam 2\nWeek 12",
+                                  "Midterm-1: Week 7\nMidterm-2: Week 12", "Midterm I\nWeek 7\nMidterm II\nWeek 12"])
+def test_two_midterms_however_they_are_written(body):
+    assert [(e["name"], e["week"]) for e in assessment_plan([_ann("m", "Exams", body)])] == \
+        [("Midterm 1", 7), ("Midterm 2", 12)]
+
+
+def test_an_edited_announcement_brings_its_new_text(tmp_path):
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c", title="t", code="MATH 240", name="P")])
+    lib.merge_announcements("c", [Announcement("a1", "Quizzes", "Dr X", dt.datetime(2026, 10, 1, 9), "Quiz 2\n6. hafta")],
+                            first_sync=True)
+    lib.merge_announcements("c", [Announcement("a1", "Quizzes", "Dr X", dt.datetime(2026, 10, 1, 9), "Quiz 2\n5. hafta")],
+                            first_sync=False)
+    (a,) = lib.announcements("c")
+    assert a["body"] == "Quiz 2\n5. hafta" and not a["is_new"]
+    assert [(e["name"], e["week"]) for e in course_alerts(lib, "c")["plan"]] == [("Quiz 2", 5)]
+
+
 def _course_with_lecture(tmp_path):
     lib = Library(tmp_path / "lib.db")
     lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="P", term="T")])

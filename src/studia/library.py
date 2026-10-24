@@ -551,6 +551,9 @@ class Library:
                                        0 if first_sync else 1))
                 if cur.rowcount and not first_sync:
                     new_ids.append(a.id)
+                elif not cur.rowcount and a.body:      # known: an edited post keeps its id, so take its new text
+                    self.db.execute("UPDATE announcements SET title=?, body=? WHERE id=? AND (title IS NOT ? OR "
+                                    "body IS NOT ?)", (a.title, a.body, a.id, a.title, a.body))
             self.db.commit()
         return new_ids
 

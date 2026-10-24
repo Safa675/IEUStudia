@@ -90,7 +90,8 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
             w = _week(d["weeks"], e.get("week"))
             if not (w and w["start"]):
                 continue
-            classes = w.get("classes") or []               # when the course meets that week: it is in one of them
+            # a quiz is held in one of the week's classes; midterms and finals follow the exam schedule
+            classes = (w.get("classes") or []) if e.get("kind", "quiz") == "quiz" else []
             first, last = (classes[0]["date"], classes[-1]["date"]) if classes else (w["start"], w["end"] or w["start"])
             if mon.isoformat() <= last and first <= horizon.isoformat():
                 coming.append({"name": e["name"], "week": e["week"], "start": w["start"], "end": w["end"], "los": e["los"],

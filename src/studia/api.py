@@ -240,6 +240,8 @@ class Api:
     @safe
     def setup_download(self, ids: list[str]) -> dict[str, Any]:
         """Download the components one after another in the background (events: type "setup")."""
+        import requests
+
         from .components import download
         from .net import plain_error
         from .winutil import KeepAwake
@@ -272,7 +274,9 @@ class Api:
                             self._push({"type": "setup", "id": cid, "state": "cancelled"})
                             return
                         log.exception("Download of %s failed", cid)
-                        failed = plain_error(exc).rstrip(".") + ". (Downloading again continues where it stopped.)"
+                        failed = plain_error(exc)
+                        if isinstance(exc, requests.RequestException):     # its parts are kept for the next try
+                            failed = failed.rstrip(".") + ". (Downloading again continues where it stopped.)"
                         self._push({"type": "setup", "id": cid, "state": "error", "error": failed})
                         return
             finally:
@@ -791,8 +795,8 @@ class Api:
         except OSError as exc:
             from .net import plain_error
 
-            return {"ok": False, "error": f"The output folder can't be created. {plain_error(exc)} You can choose "
-                                          "another folder in Settings → Files."}
+            return {"ok": False, "error": f"The output folder {self._s.output_root} can't be created. "
+                                          f"{plain_error(exc)} You can choose another folder in Settings → Files."}
         open_path(self._s.output_root)
         return {"ok": True}
 
@@ -1199,7 +1203,7 @@ class Api:
         s = self._s.update_settings(patch or {})
         if s.output_dir != old_out:
             threading.Thread(target=self._rewrite_all, args=(old_out,), daemon=True).start()
-        if "model" in (patch or {}):
+        if {"model", "device"} & set(patch or {}):         # the GPU chip and Settings follow the choice
             threading.Thread(target=self._system_info, daemon=True).start()
         return {"ok": True, "settings": s.to_json()}
 

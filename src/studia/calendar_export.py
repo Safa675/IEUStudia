@@ -32,7 +32,8 @@ def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None
             covered.add(w["no"])
             los = [f"LO{n}: {d['outcomes_en'][n - 1]}" if n <= len(d["outcomes_en"]) else f"LO{n}" for n in e["los"]]
             src = e["sources"][0]["title"] if e.get("sources") else ""
-            classes = [x["date"] for x in w.get("classes") or []]        # it is held in one of the week's classes
+            # a quiz is held in one of the week's classes; midterms and finals follow the exam schedule
+            classes = [x["date"] for x in w.get("classes") or []] if e["kind"] == "quiz" else []
             when = (f"Probably in class on {_days(classes)}; the exact day was not announced: check IEULearn."
                     if classes else "The exact day was not announced: check IEULearn.")
             out.append({"uid": f"{c.id}-{e['kind']}-{e['no']}", "course": d["code"], "name": e["name"],

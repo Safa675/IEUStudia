@@ -200,14 +200,28 @@ def course_alerts(lib: Any, course_id: str, recordings: Optional[Iterable[Any]] 
 # Lecturers post it as a table (cells become lines: "Quiz 1" / "5. hafta" / "LO1–LO2"), as list items, as prose
 # ("quizzes … in weeks 3, 5, 10 and 12") or in a note about one quiz ("About Quiz 1": "… Learning Outcome 2 …").
 # The text is folded first (_fold), so the patterns spell ı as i.
-_MID = r"(?:([1-3])\s*\.\s*)?(ara sinav|midterm|vize)(?:\s*#?\s*([1-3])\b(?!\s*\.?\s*(?:hafta|th|st|nd|rd)))?"
+# a midterm and its number: "Midterm 1", "Midterm Exam 2", "Midterm-1", "Midterm II", "1. vize", "ara sınav 2"
+_MID = (r"(?:([1-3])\s*\.\s*)?(ara sinav|midterm|vize)(?:\s*(?:exam|sinavi))?"
+        r"(?:\s*[#-]?\s*([1-3]|i{1,3})\b(?!\s*\.?\s*(?:hafta|th|st|nd|rd)))?")
 _A_NAME = re.compile(r"^(?:(quiz|kisa sinav|küçük sinav)\s*#?\s*(\d{1,2})\b|" + _MID + r"|(final)\b)")
 _A_ANY = re.compile(r"\b(?:(quiz)\s*#?\s*(\d{1,2})\b|" + _MID + r"|(final)(?= exam| sinav))")
-_WEEK = re.compile(r"\b(\d{1,2})\s*\.\s*hafta|\bweeks?\s*(\d{1,2})\b|\bhafta\s*(\d{1,2})\b")
+# "week 5" (not "weeks 1-4": that is what it covers, not when it is held)
+_WEEK = re.compile(r"\b(\d{1,2})\s*\.\s*hafta|\bweek\s*(\d{1,2})\b|\bhafta\s*(\d{1,2})\b")
 _LO_RANGE = re.compile(r"\blo\s*(\d{1,2})\s*[–—-]\s*(?:lo\s*)?(\d{1,2})\b")
 _LO_ONE = re.compile(r"\b(?:los?|learning outcomes?|öğrenme çiktisi)\s*(\d{1,2})\b")
 _QUIZ_WEEKS = re.compile(r"\bquiz\w*\b[^.]{0,200}?\bweeks?\s+((?:\d{1,2}\s*(?:,|and|&)\s*)+\d{1,2})\b")
-_QUIZ_NOS = re.compile(r"\bquiz(?:zes)?\s*#?\s*(\d{1,2}(?:\s*(?:,|and|&|ve)\s*(?:quiz\s*)?\d{1,2})*)\b")
+_QUIZ_NOS = re.compile(r"\bquiz(?:zes)?\s*#?\s*(\d{1,2}(?:\s*(?:,|and|&|ve|-|–)\s*(?:quiz\s*)?\d{1,2})*)\b")
+_ROMAN = {"i": 1, "ii": 2, "iii": 3}
+
+
+def _quiz_numbers(text: str) -> list[int]:
+    """The quiz numbers a sentence names: "Quiz 3 and Quiz 4" → [3, 4], "quizzes 2-4" → [2, 3, 4]."""
+    out: list[int] = []
+    for q in _QUIZ_NOS.findall(text):
+        for a, b in re.findall(r"(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?", q):
+            lo, hi = int(a), int(b or a)
+            out += list(range(lo, hi + 1)) if 0 <= hi - lo <= 12 else [lo]
+    return out
 
 
 def _fold(text: str) -> str:
@@ -235,7 +249,8 @@ def _assessment(m: re.Match) -> tuple[str, int]:
     quiz, no, before, mid, after, _ = m.groups()
     if quiz:
         return "quiz", int(no)
-    return ("midterm", int(before or after or 0)) if mid else ("final", 0)
+    n = before or after or "0"
+    return ("midterm", int(n) if n.isdigit() else _ROMAN[n]) if mid else ("final", 0)
 
 
 def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -270,9 +285,14 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             add(_assessment(named[0]), None, _los(body), a)
         for m in _QUIZ_WEEKS.finditer(body):           # "quizzes … in weeks 3, 5, 10 and 12"
             weeks = [int(x) for x in re.findall(r"\d{1,2}", m.group(1))]
-            said = [int(x) for q in _QUIZ_NOS.findall(m.group(0)[:m.start(1) - m.start(0)])
-                    for x in re.findall(r"\d{1,2}", q)]          # "Quiz 3 and 4 … in weeks 10 and 12"
-            for n, w in zip(said if len(said) == len(weeks) else range(1, len(weeks) + 1), weeks):
+            said = _quiz_numbers(m.group(0)[:m.start(1) - m.start(0)])   # "Quiz 3 and 4 … in weeks 10 and 12"
+            if not said:
+                nos: list[int] = list(range(1, len(weeks) + 1))
+            elif len(said) >= len(weeks):
+                nos = said[-len(weeks):]
+            else:                                      # "Quiz 3 will cover weeks 8 and 9": what it covers
+                continue
+            for n, w in zip(nos, weeks):
                 add(("quiz", n), w, set(), a)
     if ("midterm", 0) in plan and {no for kind, no in plan if kind == "midterm"} == {0, 1}:
         one, other = plan[("midterm", 1)], plan.pop(("midterm", 0))     # "Midterm" and "Midterm 1": the same exam

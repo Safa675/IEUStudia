@@ -140,3 +140,7 @@ def test_calendar_events_from_the_assessment_plan(tmp_path, monkeypatch):
     (quiz, _) = calendar_export.assessment_events(lib, Settings(), dt.date(2026, 10, 19))
     assert (quiz["start"], quiz["end"]) == ("2026-10-20", "2026-10-22")       # the week's class days, not all of it
     assert "Probably in class on Tue 20 Oct or Thu 22 Oct" in quiz["notes"][-1]
+    detail["alerts"]["plan"] = [{"kind": "midterm", "no": 1, "name": "Midterm 1", "week": 5, "los": [], "sources": []}]
+    (mid, _) = calendar_export.assessment_events(lib, Settings(), dt.date(2026, 10, 19))
+    assert (mid["start"], mid["end"]) == ("2026-10-19", "2026-10-25")         # exams follow the exam schedule
+    assert mid["notes"][-1] == "The exact day was not announced: check IEULearn."

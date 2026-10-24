@@ -193,6 +193,8 @@
     return out;
   }
   const aiReady = (key, a) => connectSteps(key, a).every((s) => s.ok);
+  // installed and signed in: Ask, notes and plans work (the plan and the test message only confirm it)
+  const aiSignedIn = (key, a) => connectSteps(key, a).filter((s) => s.id !== "test" && s.id !== "plan").every((s) => s.ok);
   function connectHTML(key) {
     const a = U.ai && U.ai[key], v = VENDOR[key];
     if (!a) return `<div class="dim">${SPIN()} Checking this PC…</div>`;
@@ -281,7 +283,7 @@
     return `<h2>Almost done</h2><p class="lead">${S.boot && S.boot.signed_in ? `You are signed in as ${esc((S.profile || {}).name || "")}. Finish to open IEUStudia.` : "Last step: sign in with your IEULearn (EkoID) account."}</p>
       <div class="card su-summary">${[["Transcription", (U.st.catalog.speech.find((m) => m.id === U.ch.speech) || {}).label || U.ch.speech],
         ["AI", { chatgpt: "ChatGPT", claude: "Claude", codex: "ChatGPT (Codex CLI)", local: "Offline model", none: "No AI", "": "No AI" }[U.ch.ai]
-          + (VENDOR[U.ch.ai] && !(U.ai && U.ai[U.ch.ai] && aiReady(U.ch.ai, U.ai[U.ch.ai])) ? " — not connected yet (Settings → AI)" : "")],
+          + (VENDOR[U.ch.ai] && !(U.ai && U.ai[U.ch.ai] && aiSignedIn(U.ch.ai, U.ai[U.ch.ai])) ? " — not connected yet (Settings → AI)" : "")],
         ["Background helper", U.ch.tray ? `On${U.ch.startup ? ", starts with Windows" : ""}` : "Off"]].map(([k, v]) => `<div class="su-row"><span class="grow">${k}</span><b>${esc(v)}</b></div>`).join("")}</div>`;
   }
 
@@ -325,10 +327,10 @@
         toast("Tick “I have read this and want to continue” first.", "info");
         return;
       }
-      if (k === "ai" && VENDOR[U.ch.ai] && !(el && el.dataset.anyway) && !(U.ai && U.ai[U.ch.ai] && aiReady(U.ch.ai, U.ai[U.ch.ai]))) {
+      if (k === "ai" && VENDOR[U.ch.ai] && !(el && el.dataset.anyway) && !(U.ai && U.ai[U.ch.ai] && aiSignedIn(U.ch.ai, U.ai[U.ch.ai]))) {
         const v = VENDOR[U.ch.ai];
         St.modal(`<h2>${esc(v.name)} isn't connected yet</h2>
-          <p class="lead">Until it is, the AI buttons (Ask, study notes, plans) stay greyed out. Everything else works. You can connect it later in Settings → AI.</p>
+          <p class="lead">Until it is, Ask, study notes and plans won't work. Everything else does. You can connect it later in Settings → AI.</p>
           <div class="actions"><button class="btn" data-act="modal-close">Connect it now</button><button class="btn primary" data-act="su-next" data-anyway="1">Continue without it ${I("arrow-right", "sm")}</button></div>`);
         return;
       }
@@ -438,7 +440,7 @@
     const status = p === "chatgpt" ? (x.signed_in && x.plan_allowed ? `Signed in with ChatGPT${x.email ? ` as ${x.email}` : ""}.` : "Not connected yet.")
       : p === "claude" ? (x.logged_in ? `Claude Code ${x.version} · signed in${x.plan ? ` (${x.plan})` : ""}` : x.available ? "Claude Code is installed but not signed in." : "Claude Code is not installed.")
       : p === "codex" ? (x.logged_in ? `Codex CLI ${x.version} · signed in with ChatGPT` : x.available ? "The Codex CLI is installed but not signed in." : "The Codex CLI is not installed.")
-      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? "The offline model is on this PC." : "The offline model is not downloaded yet." : "AI is off: the AI buttons stay greyed out. Pick one above to use Ask, study notes and plans.";
+      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? "The offline model is on this PC." : "The offline model is not downloaded yet." : "AI is off: the AI buttons stay greyed out. Choose an AI service in this list to use Ask, study notes and plans.";
     const needs = a && a.local && p === "local" && !(a.local.models.find((m) => m.id === app.local_model) || {}).ready;
     const steps = VENDOR[p] && a && a[p];
     if (steps && !U.timer) pollAi(true);

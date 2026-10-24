@@ -9,6 +9,7 @@ per second, so notes for a lecture take minutes there.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import re
@@ -178,7 +179,8 @@ def one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threading
 CHAT_SYSTEM = ("You answer a university student's questions about their own lectures. Below are the passages of the "
                "lectures that match the question: speech-recognition transcripts, mostly English with Turkish passages "
                "tagged [TR], each paragraph starting with [mm:ss]. Answer briefly from them and cite the moments you use "
-               "like [P2 14:05]. If they don't cover the question, say so.")
+               "like {cite}. If they don't cover the question, say so.")
+CITE_ONE, CITE_MANY = "[P2 14:05] (part, time)", "[L2 P1 05:10] (lecture L2, part, time)"   # as the app links them
 _STOP = set("""the and for are was were with what which who how why when where does did can could would should will
 about there their they you your our this that these those from into than then have has had not but also just
 bir ile için gibi daha çok var yok ama şey nasıl neden nedir""".split())
@@ -205,7 +207,8 @@ def lecture_excerpts(lectures: str, question: str, key: str, max_tokens: int) ->
     want = _keywords(question)
     scores = [len(want & _keywords(p)) + (0.5 if "⭐" in p else 0.0) for _, _, p in blocks]
     if max(scores) >= 1:
-        ranked = [i for i in sorted(range(len(blocks)), key=lambda i: -scores[i]) if scores[i] > 0]
+        # equally good matches: the newest lectures first (they say what is coming next)
+        ranked = [i for i in sorted(range(len(blocks)), key=lambda i: (-scores[i], -i)) if scores[i] > 0]
     else:
         ranked = [i for i, b in enumerate(blocks) if "⭐" in b[2]]
         ranked += [i for i in range(0, len(blocks), max(1, len(blocks) // 40)) if i not in ranked]
@@ -245,7 +248,7 @@ def _course_essentials(brief: str) -> str:
     out = lines[:1]
     for i, line in enumerate(lines):
         if line.startswith("Assessments the lecturer announced"):
-            out += [line] + [x for x in lines[i + 1:] if x.startswith("  ")][:10]
+            out += [line] + list(itertools.takewhile(lambda x: x.startswith("  "), lines[i + 1:]))[:10]
             break
     return "\n".join(out)
 
@@ -261,6 +264,7 @@ class LocalSession:
         self.key: Any = None
         head, _, self._lectures = system_prompt.partition("\n\n=== LECTURES ===\n\n")
         self._course = _course_essentials(head.partition("\n\n=== COURSE ===\n\n")[2])
+        self._cite = CITE_MANY if re.search(r"(?m)^# L\d+ · ", self._lectures) else CITE_ONE   # several: L1, L2…
         self.history: list[dict[str, str]] = []
         self.last_used = time.monotonic()
         self._turn = threading.Lock()
@@ -282,7 +286,8 @@ class LocalSession:
 
     def _system(self, question: str, extra: str) -> str:
         k = self.key_name
-        fixed = f"{CHAT_SYSTEM}\n{ENGLISH}" + (f"\n\n=== COURSE ===\n{self._course}" if self._course else "")
+        fixed = (f"{CHAT_SYSTEM.format(cite=self._cite)}\n{ENGLISH}"
+                 + (f"\n\n=== COURSE ===\n{self._course}" if self._course else ""))
         used = count_tokens(fixed, k) + sum(count_tokens(m["content"], k) for m in self._recent())
         room = max(300, budget(k) - used - count_tokens(question, k) - 50)
         recent = " ".join(m["content"] for m in self.history[-2:] if m["role"] == "user")    # follow-up questions

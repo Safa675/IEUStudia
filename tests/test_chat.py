@@ -269,6 +269,33 @@ def test_the_offline_model_reads_the_passages_that_match_each_question(env):
     env.svc._live.pop(chat["id"])                         # e.g. the app was restarted
     ask(env, chat["id"], "And one more?")
     assert [m["content"] for m in seen[2][1:]] == ["Can you give an example?", "Answer 2", "And one more?"]
+    assert "[P2 14:05]" in system and "[L2 P1" not in system      # one lecture: cited by part and time
+    many = env.svc.create("c", [DAY1, DAY2])
+    ask(env, many["id"], "What is on the quiz?")
+    assert "[L2 P1 05:10]" in seen[-1][0]["content"]            # several: by lecture too, as the app links them
+
+
+def test_the_offline_model_gets_the_assessments_not_the_announcements_and_the_newest_lectures_first():
+    from studia import local_llm
+
+    brief = ("Course: MATH 240 Probability\nAssessments the lecturer announced:\n  Quiz 1: week 3\n  Quiz 2: week 5\n"
+             "Latest announcements:\n  [2026-10-07] Room change: the lecture moves to M01.")
+    assert local_llm._course_essentials(brief) == ("Course: MATH 240 Probability\nAssessments the lecturer announced:\n"
+                                                   "  Quiz 1: week 3\n  Quiz 2: week 5")
+    lectures = "\n\n".join(f"# L{n} · MATH 240\n## Part 1\n[00:{n:02d}] The quiz is next week, lecture {n}."
+                           for n in range(1, 11))
+    text = local_llm.lecture_excerpts(lectures, "When is the quiz?", "k", 40)      # room for a few of them only
+    assert "lecture 10." in text and "lecture 1." not in text
+
+
+def test_the_could_not_be_written_note_never_goes_into_the_files(env):
+    ns = env.svc._s
+    ns.write_outputs = types.MethodType(Services.write_outputs, ns)
+    env.lib.set_warnings("r0", [{"code": "not_written", "level": "warning", "message": "Transcribed, but its files…"},
+                                {"code": "quiet", "level": "warning", "message": "The audio is very quiet."}])
+    out = ns.write_outputs("r0")
+    text = Path(out["md"]).read_text(encoding="utf-8")
+    assert "very quiet" in text and "could not be written" not in text and "Transcribed, but" not in text
 
 
 def test_each_kind_of_ai_notes_has_its_own_file(env):

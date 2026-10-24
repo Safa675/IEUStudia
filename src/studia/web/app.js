@@ -121,7 +121,7 @@
       if (e.final) {
         r.progress = null; r.detail = null;
         if (e.stage === "done") { r.status = "done"; r.is_new = false; toast(`Transcribed: ${e.title}`, "success"); }
-        else if (e.stage === "failed" && e.status === "done") { r.status = "done"; toast(`${e.title} could not be transcribed again: ${e.error || "it failed"}. The earlier transcript is kept.`, "warning"); }
+        else if (e.stage === "failed" && e.status === "done") { r.status = "done"; toast(`${e.title} could not be transcribed again: ${(e.error || "it failed").replace(/[.\s]+$/, "")}. The earlier transcript is kept.`, "warning"); }
         else if (e.stage === "failed") { r.status = "failed"; r.error = e.error; toast(`${e.title}: ${e.error || "failed"}`, "error"); }
         else if (e.stage === "processing") { r.status = "processing"; r.error = e.error; toast(e.error || "Not ready on Panopto yet", "warning"); }
         if (S.view.name === "day" && S.day && S.view.dayKey === hit.d.day_key) openDay(S.view.dayKey, true);
@@ -138,8 +138,8 @@
       }
       updateRow(r);
     } else if (e.final && e.local) {
-      toast(e.stage === "done" ? `Transcribed ${e.title} (see "Local files" in your output folder)` : `${e.title}: ${e.error || e.stage}`,
-        e.stage === "done" ? "success" : "error");
+      toast(e.stage !== "done" ? `${e.title}: ${e.error || e.stage}` : e.unwritten ? `Transcribed ${e.title}, but its file could not be written to your output folder yet: IEUStudia tries again the next time it starts.`
+        : `Transcribed ${e.title} (see "Local files" in your output folder)`, e.stage !== "done" ? "error" : e.unwritten ? "warning" : "success");
     }
   }
   function onExport(e) {
@@ -222,7 +222,7 @@
 
   function courseSub(c) {   // two pages of one course (FENG 495 twice): tell them apart by section or lecturer
     const twins = S.courses.filter((x) => x.code === c.code).length > 1;
-    return c.display_name + (twins ? ` · ${c.section ? `Section ${c.section}` : c.instructor || c.id}` : "");
+    return twins ? `${c.section ? `Section ${c.section}` : c.instructor || c.id} · ${c.display_name}` : c.display_name;
   }
   function newCount() { return S.courses.reduce((n, c) => n + (c.counts.new || 0), 0); }
   const courseNew = (c) => (c.counts.new || 0) + ((c.content || {}).materials_new || 0) + ((c.content || {}).announcements_new || 0);
@@ -280,7 +280,7 @@
     const top = $("#top"); if (!top) return;
     const g = S.system.gpu;
     const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="Lectures are transcribed on your NVIDIA graphics card: ${esc(g.name)} · ${g.vram_mb} MB"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
-      : g.available && !g.libraries ? `<span class="chip" title="Your NVIDIA graphics card could transcribe much faster, but its libraries aren't on this PC yet (Settings → Storage)."><span class="dot"></span>GPU not set up</span>` : "";
+      : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="Your NVIDIA graphics card could transcribe much faster once its libraries are downloaded: Settings → About → Run setup again."><span class="dot"></span>GPU not set up</span>` : "";
     const syncLabel = S.sync.running ? `${SPIN()} ${esc(S.sync.message || "Syncing…")}`
       : S.sync.error ? `${I("alert-circle", "sm")} Sync failed — retry` : `${I("refresh", "sm")} Synced ${rel(S.lastSync)}`;
     top.innerHTML = `<div class="crumbs">${crumbs()}</div>
@@ -518,7 +518,7 @@
           · ${plural(d.parts.length, "part")}</div></div>
         <input class="input find" placeholder="Find in transcript  (Ctrl+F)" data-act="find" value="${esc(S.dayFind)}"></div>
       <div class="toolbar" id="day-actions">${dayActionsHTML()}</div>`;
-    if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>Audio notes</b><ul>${warns.map((w) => `<li>Part ${w.part}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
+    if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>Notes</b><ul>${warns.map((w) => `<li>Part ${w.part}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
     h += `<div id="notes-slot">${notesHTML()}</div>`;
     if (d.highlights.length) {
       h += `<div class="card hl-card"><h3>${I("star")} Highlights <span class="count">${d.highlights.length}</span></h3>` +
@@ -724,7 +724,7 @@
   const CITE_FILLER = /^(?:[\s,;·–-]|and|at|ve|&amp;)*$/;
   function citeBtn(l, p, ts, ts2) {
     const secs = ts.split(":").reduce((a, x) => a * 60 + +x, 0);
-    return `<button class="cite" data-act="cite" data-l="${l || ""}" data-p="${p}" data-t="${secs}" title="Open the transcript at this moment">${I("play", "xs")}${l ? `L${l} · ` : ""}P${p} · ${ts}${ts2 ? `–${ts2}` : ""}</button>`;
+    return `<button class="cite" data-act="cite" data-l="${l || ""}" data-p="${p}" data-t="${secs}" title="Open the transcript at this moment">${I("play", "xs")}${l ? `L${l} · ` : ""}Part ${p} · ${ts}${ts2 ? `–${ts2}` : ""}</button>`;
   }
   function citeGroup(content, hold) {
     let l = "", p = "", last = 0, out = "", n = 0, located = false, m;
@@ -895,8 +895,10 @@
           `<button class="btn sm" data-act="profile-add">${I("plus", "sm")} Add account</button>`)}</div>
       <div class="card set-card"><h3>Transcription</h3>
         <div class="presets">${presets || `<div class="skel" style="height:70px"></div>`}</div>
-        ${row("Transcribe with", !g ? "Checking…" : gpuUsed(g) ? `Your NVIDIA graphics card: ${esc(g.name)} (${g.vram_mb} MB)`
-            : g.available && !g.libraries ? `Your ${esc(g.name || "NVIDIA graphics card")} needs its libraries (Storage, below) before it can transcribe; until then the processor does it, slower.`
+        ${row("Transcribe with", !g ? "Checking…" : s.device === "cpu" && g.available ? `Processor only, as chosen here: your ${esc(g.name || "NVIDIA graphics card")} is not used.`
+            : gpuUsed(g) ? `Your NVIDIA graphics card: ${esc(g.name)} (${g.vram_mb} MB)`
+            : gpuFits(g) && !g.libraries ? `Your ${esc(g.name || "NVIDIA graphics card")} needs its libraries before it can transcribe (About → Run setup again, below); until then the processor does it, slower.`
+            : g.available ? `Your ${esc(g.name || "NVIDIA graphics card")} can't transcribe (too little graphics memory or an old driver): the processor does it, slower.`
             : "No NVIDIA graphics card found: the processor transcribes (slower).",
           `<select class="input" style="width:170px" data-act="set-sel" data-key="device">${["auto", "cuda", "cpu"].map((v) => `<option value="${v}" ${s.device === v ? "selected" : ""}>${{ auto: "Automatic", cuda: "Graphics card", cpu: "Processor only" }[v]}</option>`).join("")}</select>`)}
         ${row("Languages", "English with Turkish passages: each passage is transcribed in the language actually spoken and tagged [TR].", `<span class="chip">English + Turkish</span>`)}
@@ -954,6 +956,7 @@
   // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons
   const isChatGPT = (ai) => ["chatgpt", "codex"].includes((ai || S.system.ai || {}).provider);
   const gpuUsed = (g) => !!g && (g.used != null ? g.used : g.available && g.libraries);    // does the graphics card transcribe?
+  const gpuFits = (g) => !!g && g.available && (g.vram_mb || 0) >= 3500;    // what the setup asks of a card it sets up
   const REASONING = [["haiku", "Quick", "light reasoning"], ["sonnet", "Standard", "recommended"], ["opus", "Thorough", "slowest, uses the most"]];
   const modelsFor = () => (isChatGPT() ? REASONING : MODELS);
   const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -1373,7 +1376,7 @@
         ${images ? `<div class="set-row" style="border:0;padding:6px 0"><div class="txt"><div class="t">Include slide images</div><div class="d">Lets the AI read the slides and board (more accurate formulas, uses more of your plan).</div></div>
           <input type="checkbox" class="switch" data-act="cl-slides" ${slides ? "checked" : ""} ${d.parts.some((p) => p.slides) ? "" : "disabled"}></div>` : ""}
         <div class="est">${local ? "" : `<div><b>~${(e.input / 1000).toFixed(1)}k</b><span>input tokens</span></div><div><b>~${(e.output / 1000).toFixed(1)}k</b><span>output tokens</span></div>`}${how}</div>
-        <div class="callout info">${I("info")}<div>${have ? `This lecture already has ${esc(label.toLowerCase())}. Generating them again replaces the saved ones.`
+        <div class="callout info">${I("info")}<div>${have ? `This lecture already has ${{ notes: "study notes", exam: "exam-focus notes", flashcards: "flashcards" }[tpl]}. Generating them again replaces the saved ones.`
           : local ? "The offline model works on this PC: a lecture takes a few minutes with an NVIDIA graphics card, longer on the processor. The notes are saved next to the transcript."
           : `Kept small to save your plan: a short instruction, no tools, the compact transcript${slides && images ? ` and ${e.images} downscaled slide images` : ""}. The notes are saved next to the transcript.`}</div></div>
         <div class="actions"><button class="btn" data-act="modal-close">Cancel</button>${have ? `<button class="btn" data-act="cl-open">${I("file-text", "sm")} Show them</button>` : ""}
@@ -1418,7 +1421,7 @@
     "mark-seen": async (el) => { const r = await call("mark_seen", el.dataset.id || null); if (r.ok) { setCourses(r.courses); renderSidebar(); renderView(); } },
     "toggle-others": (el) => { S.expanded.has(el.dataset.id) ? S.expanded.delete(el.dataset.id) : S.expanded.add(el.dataset.id); renderView(); },
     "open-folder": (el) => call("open_course_folder", el.dataset.id),
-    "open-output": () => call("open_output"),
+    "open-output": async () => { const r = await call("open_output"); if (!r.ok) toast(r.error, "error"); },
     file: (el) => call("open_file", S.day.day_key, el.dataset.what),
     export: () => call("export_pack", S.day.day_key),
     claude: () => claudeDialog(),
@@ -1512,7 +1515,7 @@
     ]),
     "menu-more": (el) => menu(el, [
       { id: "file", icon: "file-audio", label: "Transcribe a file from this PC…", desc: "Any audio/video file", run: async () => { const r = await call("transcribe_local_file"); if (r.ok && r.queued) toast(`${plural(r.queued, "file")} added to the queue`); } },
-      { id: "out", icon: "folder-open", label: "Open output folder", run: () => call("open_output") },
+      { id: "out", icon: "folder-open", label: "Open output folder", run: () => A["open-output"]() },
       { id: "set", icon: "settings", label: "Settings", run: () => go({ name: "settings" }) },
     ]),
     set: async (el) => saveSetting({ [el.dataset.key]: el.dataset.val }),

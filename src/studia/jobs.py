@@ -70,6 +70,7 @@ class Job:
     slides: Optional[Future] = None
     attempts: int = 0
     holds_audio: bool = False        # one of the DECODED_MAX places for decoded audio
+    unwritten: bool = False          # done, but its files in the output folder could not be written yet
     prev_status: str = "available"
     started: float = dc.field(default_factory=time.monotonic)
     finished: bool = False
@@ -322,7 +323,8 @@ class JobManager:
             idle = not self._jobs
             if idle:
                 self._awake.off()
-        self.emit({"type": "job", **job.view(), "final": True, "batch_done": idle, "status": status})
+        self.emit({"type": "job", **job.view(), "final": True, "batch_done": idle, "status": status,
+                   "unwritten": job.unwritten})
         self._emit_queue()
         if idle and self._engine is not None:
             self._schedule_idle_unload()
@@ -352,7 +354,9 @@ class JobManager:
             elif isinstance(error, NotReady):
                 self._finish(job, "processing", str(error))
             elif isinstance(error, (requests.RequestException, OSError)):
-                lasting = isinstance(error, PermissionError) or getattr(error, "errno", None) == errno.ENOSPC
+                # a full disk, a blocked file, or a file of this PC that can't be read won't be fixed by trying again
+                lasting = (isinstance(error, PermissionError) or getattr(error, "errno", None) == errno.ENOSPC
+                           or job.local_path is not None)
                 job.attempts += 1
                 if job.attempts <= 2 and not lasting and not job.cancel.is_set():
                     self.log.info("Download problem for %s (%s); retrying", job.id, error)
@@ -514,11 +518,13 @@ class JobManager:
         except OSError as exc:            # the transcript is saved: its files are written again at the next start
             self.log.warning("Writing the files of %s failed: %s", job.id, exc)
             self.note_unwritten(job.id, True)
+            job.unwritten = True
             if job.local_path is None:
                 self.lib.set_warnings(job.id, warnings + [{
                     "code": "not_written", "level": "warning",
-                    "message": f"Transcribed, but its files in your IEUStudia folder could not be written. "
-                               f"{plain_error(exc)} IEUStudia tries again the next time it starts."}])
+                    "message": f"Transcribed, but its files in your output folder could not be written. "
+                               f"{plain_error(exc)} IEUStudia tries again the next time it starts; you can also "
+                               f"choose another output folder in Settings → Files."}])
         if job.audio_path and not settings.keep_audio:
             for p in (job.audio_path,):
                 try:
