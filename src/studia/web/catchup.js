@@ -24,7 +24,7 @@
       : c.lectures || c.materials ? `<span class="r">${c.lectures ? `${plural(c.lectures, "lecture")} · ${fmtDur(c.audio_s)}` : "lectures done"}${c.materials ? ` · ${plural(c.materials, "file")}` : ""}</span>`
         : `<span class="r" style="color:var(--green)">${I("check", "xs")} up to date</span>`;
     return `<label class="sync-row"><input type="checkbox" class="check" data-act="cu-pick" data-id="${esc(c.course_id)}" ${S.catchup.picked.has(c.course_id) ? "checked" : ""}>
-      <span class="t"><span class="code">${esc(c.code)}</span>${esc(c.name)}</span>${what}</label>`;
+      <span class="t"><span class="code">${esc(c.code)}</span>${esc(St.findCourse(c.course_id) ? St.courseSub(St.findCourse(c.course_id)) : c.name)}</span>${what}</label>`;
   }
 
   function bodyHTML() {

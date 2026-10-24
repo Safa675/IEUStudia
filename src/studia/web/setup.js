@@ -458,7 +458,7 @@
     const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, `Speech model “${m.label}”`, m.size_mb]),
       ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, `Offline model “${m.label}”`, m.size_mb])] : [];
     return `<div class="card set-card"><h3>Background and notifications</h3>
-        ${row("Tray helper", "Keeps running when the window is closed (about 50 MB of memory), checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads by itself.", sw("tray"))}
+        ${row("Keep running in the background", "A small helper in the notification area (tray) keeps going when the window is closed (about 50 MB of memory), checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads by itself.", sw("tray"))}
         ${row("Start with Windows", "Start the helper when you sign in to Windows.", sw("start_with_windows", !app.tray))}
         ${row("New lecture recordings", "Of your own section.", sw("notify_recordings", !app.tray))}
         ${row("New announcements", "Quiz, exam and homework news is marked as a heads-up.", sw("notify_announcements", !app.tray))}

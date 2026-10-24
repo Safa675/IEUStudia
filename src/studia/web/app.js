@@ -100,8 +100,10 @@
       if (e.new_count) toast(`${plural(e.new_count, "new recording")} found`, "success");
       (e.errors || []).forEach((m) => toast(m, "warning"));
       renderSidebar();
+      if (S.view.name === "home") renderView();          // its greeting line said "Syncing…"
     } else if (e.phase === "error") {
       S.sync = { running: false, message: "", error: e.message };
+      if (S.view.name === "home" && S.mode === "app") renderView();
       if (e.quiet) { renderTop(); return; }          // the app's own half-hourly sync: the top bar shows it, nothing pops up
       if (e.need_login) { S.mode = "signin"; S.signin.error = e.message; render(); return; }
       toast(e.message || "Sync failed", "error");
@@ -141,8 +143,8 @@
     }
   }
   function onExport(e) {
-    if (e.phase === "start") { S.exporting = e.day_key; toast("Building the AI pack (PDF + ZIP)…", "info"); }
-    else if (e.phase === "done") { S.exporting = null; toast("AI pack ready — opened in Explorer. Upload the PDF to ChatGPT or Claude.", "success"); if (S.view.name === "day") openDay(S.view.dayKey, true); }
+    if (e.phase === "start") { S.exporting = e.day_key; toast("Making the PDF, with the slides next to the transcript…", "info"); }
+    else if (e.phase === "done") { S.exporting = null; toast("PDF ready — shown in Explorer. You can also upload it to ChatGPT or Claude.", "success"); if (S.view.name === "day") openDay(S.view.dayKey, true); }
     else { S.exporting = null; toast(e.message || "Export failed", "error"); }
     if (S.view.name === "day") renderDayActions();
   }
@@ -245,10 +247,11 @@
     };
     h += S.courses.map((c) => item(c, false)).join("");
     if ((S.earlier || []).length) h += `<div class="nav-section" title="No longer on your IEULearn dashboard. What you saved from them stays here.">Earlier courses</div>` + S.earlier.map((c) => item(c, true)).join("");
-    h += `<div class="nav-section">Study</div>
+    // the Study group stays in view at the bottom when many courses make the list scroll
+    h += `<div class="nav-study"><div class="nav-section">Study</div>
       <button class="nav-item ${v.name === "chat" ? "active" : ""}" data-act="go" data-view="chat">${I("chat")}<span class="label"><span class="code">Ask ${esc(aiName())}</span></span></button>
       ${Studia.navExtra ? Studia.navExtra(v) : ""}
-      <button class="nav-item ${v.name === "library" ? "active" : ""}" data-act="go" data-view="library">${I("search")}<span class="label"><span class="code">Search</span></span></button>`;
+      <button class="nav-item ${v.name === "library" ? "active" : ""}" data-act="go" data-view="library">${I("search")}<span class="label"><span class="code">Search</span></span></button></div>`;
     nav.innerHTML = h;
     const p = S.profile || {};
     const others = S.profiles.filter((x) => !x.active).length;
@@ -519,7 +522,7 @@
     h += `<div id="notes-slot">${notesHTML()}</div>`;
     if (d.highlights.length) {
       h += `<div class="card hl-card"><h3>${I("star")} Highlights <span class="count">${d.highlights.length}</span></h3>` +
-        d.highlights.map((x) => `<div class="hl-item" data-act="jump" data-part="${x.part}" data-t="${x.t}"><span class="when">P${x.part} · ${esc(x.ts)}</span>
+        d.highlights.map((x) => `<div class="hl-item" data-act="jump" data-part="${x.part}" data-t="${x.t}"><span class="when">Part ${x.part} · ${esc(x.ts)}</span>
           <span class="tags">${esc(x.tags.join(", "))}</span><span class="para-text" style="font-size:13.5px">${esc(x.text)}</span></div>`).join("") + `</div>`;
     }
     for (const p of d.parts) {
@@ -555,12 +558,12 @@
     const hasText = d.parts.some((p) => p.paragraphs.length);
     return `<button class="btn primary sm" data-act="menu-copy" ${hasText ? "" : "disabled"}>${I("copy", "sm")} Copy for AI ${I("chevron-down", "sm caret")}</button>
       <button class="btn sm" data-act="export" ${hasText && S.exporting !== d.day_key ? "" : "disabled"} title="PDF with slides next to the transcript + ZIP, for ChatGPT / Claude">
-        ${S.exporting === d.day_key ? SPIN() : I("download", "sm")} Export AI pack</button>
+        ${S.exporting === d.day_key ? SPIN() : I("download", "sm")} Save as PDF</button>
       <button class="btn grad sm" data-act="ask-day" ${hasText && ai.available ? "" : "disabled"} title="${ai.available ? `Chat with ${aiName()} about this lecture (${aiPlan()})` : aiHint()}">${I("chat", "sm")} Ask ${esc(aiName())}</button>
       <button class="btn sm" data-act="claude" ${hasText && ai.available && !S.ai.running ? "" : "disabled"} title="${ai.available ? `Write study notes with ${aiPlan()}` : aiHint()}">${I("ai", "sm")} Study notes</button>
       <span class="spacer"></span>
       ${d.files.pdf ? `<button class="btn ghost sm" data-act="file" data-what="pdf">${I("file", "sm")} PDF</button>` : ""}
-      <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"}>${I("file-text", "sm")} Markdown</button>
+      <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="The transcript as a text file (Markdown) in your IEUStudia folder">${I("file-text", "sm")} Text file</button>
       <button class="btn ghost sm" data-act="file" data-what="folder">${I("folder-open", "sm")} Folder</button>`;
   }
   function renderDayActions() { const el = $("#day-actions"); if (el) el.innerHTML = dayActionsHTML(); }

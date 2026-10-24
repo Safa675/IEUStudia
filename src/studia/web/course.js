@@ -605,7 +605,14 @@
     return call("materials_download", ids).then((r) => { if (!r.ok) toast(r.error, "error"); });
   }
   Object.assign(A, {
-    "course-tab": (el) => { const v = S.view; go({ name: "course", courseId: v.courseId, tab: el.dataset.tab }); },
+    "course-tab": (el) => {
+      const v = S.view, scrolled = $("#view").scrollTop > 0;
+      go({ name: "course", courseId: v.courseId, tab: el.dataset.tab });
+      // the tab's content starts below the course header: on a small screen, or when you had scrolled down to the
+      // tabs, show the tabs at the top so the click visibly does something
+      const tabs = $(".tabs");
+      if (tabs && (scrolled || tabs.getBoundingClientRect().bottom > window.innerHeight - 160)) tabs.scrollIntoView({ block: "start", behavior: "instant" });
+    },
     "goto-week": (el) => {
       const v = S.view;
       if ((v.tab || "weeks") === "weeks") { v.jumpWeek = +el.dataset.no; renderView(); }
