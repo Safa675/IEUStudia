@@ -134,7 +134,7 @@ def digest_prompt(digest: dict[str, Any]) -> str:
     return ("Write a short weekly digest for the student (Markdown, at most ~250 words): first 2–3 sentences on the week "
             "as a whole, then per course one or two bullets on what was covered and what matters next (quizzes, "
             "deadlines, what the lecturer stressed), then a prioritised list of 3–6 things to do in the next days. "
-            "Use only these facts; no greetings.\n\n" + "\n".join(lines))
+            "Use only these facts; no greetings.\n\n=== THE WEEK ===\n\n" + "\n".join(lines))
 
 
 def digest_markdown(digest: dict[str, Any], summary: str = "") -> str:

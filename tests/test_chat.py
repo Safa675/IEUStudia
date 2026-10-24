@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+import os
 import sys
 import tempfile
 import time
@@ -216,6 +217,74 @@ def test_slides_go_with_the_first_message_only(env):
     assert "(slide 1)" in env.svc.context("c", [DAY1], slides=True)["system"]
     assert ask(env, chat["id"], "q1")["text"].startswith("Answer 1 (images 2")
     assert ask(env, chat["id"], "q2")["text"].startswith("Answer 2 (images 0")
+
+
+def test_chatgpt_gets_the_labelled_slides_and_the_conversation_with_every_question(env):
+    img = env.tmp / "s1.jpg"
+    img.write_bytes(b"jpg")
+    store.save_slides("r0", [Slide(1, 0.0, 8.0, "slides/x/s1.jpg", str(img)), Slide(2, 8.0, 20.0, "x", str(img))])
+    env.mp.setattr(ai, "image_block", lambda p: {"type": "image", "source": {"type": "base64",
+                                                                               "media_type": "image/jpeg", "data": "x"}})
+    appconfig.update({"ai_provider": "chatgpt"})
+    sent = []
+    env.mp.setattr(ai, "_chatgpt_one_shot", lambda system, content, *a, **k: sent.append(content)
+                   or {"text": f"Answer {len(sent)}", "usage": {}})
+    chat = env.svc.create("c", [DAY1], slides=True)
+    ask(env, chat["id"], "q1")
+    ask(env, chat["id"], "q2")
+    for content in sent:                                  # each request is new: the slides go with every one
+        assert [b["type"] for b in content] == ["text", "text", "image", "text", "image", "text"]
+        assert content[1]["text"] == "[Part 1, slide 1]" and content[3]["text"] == "[Part 1, slide 2]"
+    assert "[Student]\nq1\n\n[You]\nAnswer 1" in sent[1][-1]["text"]
+    assert sent[1][-1]["text"].endswith("=== NEW QUESTION ===\nq2")
+    env.svc._live.pop(chat["id"])                         # e.g. the app was restarted
+    ask(env, chat["id"], "q3")
+    assert "[Student]\nq1" in sent[2][-1]["text"] and "[You]\nAnswer 2" in sent[2][-1]["text"]
+    assert "We already talked" not in sent[2][-1]["text"]
+
+
+def test_the_offline_model_reads_the_passages_that_match_each_question(env):
+    from studia import local_llm
+
+    filler = "We continue with the next example on the board and look at the numbers once more."
+    segs = [Segment(i * 10.0, i * 10.0 + 6, filler, "en", 0.9) for i in range(300)]
+    segs[180] = Segment(1800, 1806, "Bayes theorem relates the conditional probabilities of two events.", "en", 0.9)
+    t = Transcript(delivery_id="r2", segments=segs, duration_s=3000, speech_s=1800, language_seconds={"en": 1800},
+                   model="m", device="cpu", engine_version="t", created_at="2026-10-20T10:00:00")
+    env.lib.save_transcript(t, store.save_transcript(t))
+    appconfig.update({"ai_provider": "local"})
+    seen = []
+    env.mp.setattr(local_llm, "budget", lambda key: 2500)
+    env.mp.setattr(local_llm, "count_tokens", lambda text, key: int(len(text) / 3.5))
+    env.mp.setattr(local_llm, "generate", lambda msgs, key, *a, **k: seen.append(msgs)
+                   or {"text": f"Answer {len(seen)}", "usage": {"input_tokens": 1, "output_tokens": 1}})
+    chat = env.svc.create("c", [DAY2])
+    assert ask(env, chat["id"], "What does Bayes theorem say?")["state"] == "done"
+    system = seen[0][0]["content"]
+    assert "Bayes theorem relates" in system and "# MATH 240" in system and "## Part 1" in system
+    assert sum(local_llm.count_tokens(m["content"], "k") for m in seen[0]) < 2500
+    ask(env, chat["id"], "Can you give an example?")       # a follow-up stays on the topic, with the last exchange
+    assert "Bayes theorem relates" in seen[1][0]["content"]
+    assert [m["role"] for m in seen[1]] == ["system", "user", "assistant", "user"]
+    env.svc._live.pop(chat["id"])                         # e.g. the app was restarted
+    ask(env, chat["id"], "And one more?")
+    assert [m["content"] for m in seen[2][1:]] == ["Can you give an example?", "Answer 2", "And one more?"]
+
+
+def test_each_kind_of_ai_notes_has_its_own_file(env):
+    ns = env.svc._s
+    for name in ("ai_notes", "ai_inputs", "day_files"):
+        setattr(ns, name, types.MethodType(getattr(Services, name), ns))
+    ns._notes_path = Services._notes_path
+    env.mp.setattr(ai, "run_claude", lambda prompt, text, images, **k: {"text": prompt[:20], "usage": {}, "model": "m"})
+    notes = ns.ai_notes(DAY1, "notes", False, "sonnet")
+    cards = ns.ai_notes(DAY1, "flashcards", False, "sonnet")
+    assert notes.name.endswith(" - Study notes.md") and cards.name.endswith(" - Flashcards.md")
+    assert notes.read_text(encoding="utf-8") != cards.read_text(encoding="utf-8")
+    os.utime(notes, (1, 1))
+    files = ns.day_files(DAY1)
+    assert files["notes_kinds"] == ["flashcards", "notes"] and files["notes"] == str(cards)
+    assert files["notes:notes"] == str(notes) and "notes:exam" not in files
 
 
 def test_another_ai_choice_gets_its_own_session(env):

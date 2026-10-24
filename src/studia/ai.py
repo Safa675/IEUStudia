@@ -295,6 +295,11 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
         from . import appconfig, local_llm
 
         text = "\n\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+        for marker in ("=== LECTURE TRANSCRIPT ===", "=== THE WEEK ==="):
+            task, found, rest = text.partition(marker)
+            if found:                  # the task stays whole; only the material is condensed when it is too long
+                system_prompt, text = f"{system_prompt}\n\n{task.strip()}", rest.strip()
+                break
         return local_llm.one_shot(system_prompt, text, appconfig.load().local_model, cancel, on_text)
     if p != "claude":
         raise RuntimeError("AI features are turned off (Settings → AI).")
@@ -801,6 +806,7 @@ class ChatGPTSession:
         self.system = system_prompt
         self.effort = effort
         self.history: list[tuple[str, str]] = []
+        self.slides: list[dict[str, Any]] = []         # the slide images with their labels, sent with every turn
         self.last_used = time.monotonic()
         self._turn = threading.Lock()
 
@@ -810,15 +816,30 @@ class ChatGPTSession:
     def busy(self) -> bool:
         return self._turn.locked()
 
+    def seed(self, history: list[dict[str, Any]]) -> None:
+        """The conversation so far, from the library (a new session for an earlier chat)."""
+        question = None
+        for m in history:
+            if m.get("role") == "user":
+                question = m.get("text") or ""
+            elif question is not None and (m.get("text") or "").strip():
+                self.history.append((question, m["text"]))
+                question = None
+
     def ask(self, content: list[dict[str, Any]], on_text: Optional[Callable[[str], None]] = None,
             stop: Optional[threading.Event] = None, timeout_s: float = 900) -> dict[str, Any]:
         with self._turn:
-            question = "\n\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+            last_image = max((i for i, b in enumerate(content) if b.get("type") == "image"), default=-1)
+            if last_image >= 0:                        # each turn is a new request: the slides go with every one
+                self.slides = content[:last_image + 1]
+            texts = [b.get("text", "") for b in content[last_image + 1:] if b.get("type") == "text"]
+            question = texts[-1].strip() if texts else ""
+            found = "\n\n".join(t for t in texts[:-1] if t.strip())
             convo = "".join(f"\n\n[Student]\n{q}\n\n[You]\n{a}" for q, a in self.history[-8:])
-            blocks = [b for b in content if b.get("type") != "text"]
-            text = (f"=== CONVERSATION SO FAR ==={convo}\n\n" if convo else "") + f"=== NEW QUESTION ===\n{question}"
+            text = ((f"=== CONVERSATION SO FAR ==={convo}\n\n" if convo else "") + (f"{found}\n\n" if found else "")
+                    + f"=== NEW QUESTION ===\n{question}")
             try:
-                r = self.request(self.system, [{"type": "text", "text": text}, *blocks], self.model, self.effort,
+                r = self.request(self.system, [*self.slides, {"type": "text", "text": text}], self.model, self.effort,
                                  stop, on_text, timeout_s)
             except Cancelled:
                 return {"text": "", "usage": {}, "stopped": True}

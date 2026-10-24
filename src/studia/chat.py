@@ -440,7 +440,9 @@ class ChatService:
                         if stop.is_set():
                             break
                         content += [{"type": "text", "text": label}, ai.image_block(path)]
-                if history:
+                if history and hasattr(session, "seed"):
+                    session.seed(history)               # it sends the conversation with every question itself
+                elif history:
                     content.append({"type": "text", "text": replay_text(history)})
             scope = chat.get("scope") or {}
             try:                                            # course files and other lectures that match the question

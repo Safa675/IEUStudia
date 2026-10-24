@@ -21,6 +21,7 @@ from .sync import SyncService
 
 log = logging.getLogger("studia")
 RENAME_KEY = "output_renamed"          # library meta: an output folder rename that is not finished yet
+NOTE_KINDS = {"notes": "Study notes", "exam": "Exam focus", "flashcards": "Flashcards"}   # AI notes: file name ends
 
 
 class Services:
@@ -177,20 +178,34 @@ class Services:
             raise KeyError("Unknown class day")
         return course, recs
 
-    def day_files(self, day_key: str) -> dict[str, str]:
+    def day_files(self, day_key: str) -> dict[str, Any]:
+        """The day's files that exist: "md", "pack", "pdf", "zip", "notes:<kind>" for each kind of AI notes,
+        "notes" (the newest of those) and "notes_kinds" (newest first)."""
         course, recs = self.day(day_key)
         all_courses = self.lib.courses(True)
         folder = course_dir(self.output_root, course, all_courses)
         md = folder / day_file_name(course, recs[0].start.date(), recs[0].kind)
         stem = day_stem(course, recs[0].start.date(), recs[0].kind)
         pack = folder / safe_name(f"{course.code or course.name} - Study pack.md")
-        out = {"folder": str(folder), "md": str(md) if md.exists() else "", "pack": str(pack) if pack.exists() else ""}
+        out: dict[str, Any] = {"folder": str(folder), "md": str(md) if md.exists() else "",
+                               "pack": str(pack) if pack.exists() else ""}
         pdf = folder / "AI packs" / safe_name(f"{stem} - AI pack.pdf")
         zp = folder / "AI packs" / safe_name(f"{stem} - AI pack.zip")
-        notes = folder / "AI notes" / safe_name(f"{stem} - Study notes.md")
-        out.update(pdf=str(pdf) if pdf.exists() else "", zip=str(zp) if zp.exists() else "",
-                   notes=str(notes) if notes.exists() else "")
+        out.update(pdf=str(pdf) if pdf.exists() else "", zip=str(zp) if zp.exists() else "")
+        notes = []
+        for kind in NOTE_KINDS:
+            p = self._notes_path(folder, stem, kind)
+            if p.exists():
+                out[f"notes:{kind}"] = str(p)
+                notes.append((p.stat().st_mtime, kind))
+        notes.sort(reverse=True)
+        out["notes_kinds"] = [k for _, k in notes]
+        out["notes"] = out[f"notes:{notes[0][1]}"] if notes else ""
         return out
+
+    @staticmethod
+    def _notes_path(folder: Path, stem: str, kind: str) -> Path:
+        return folder / "AI notes" / safe_name(f"{stem} - {NOTE_KINDS.get(kind, NOTE_KINDS['notes'])}.md")
 
     # ------------------------------------------------------------------ outputs
     def write_outputs(self, delivery_id: str) -> dict[str, Any]:
@@ -289,10 +304,11 @@ class Services:
 
     def ai_notes(self, day_key: str, template: str, include_slides: bool, model: str,
                  cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None) -> Path:
-        from .ai import PROVIDER_LABELS, provider, run_claude
+        from .ai import PLAN_AIS, PROVIDER_LABELS, provider, run_claude
         from .outputs.prompts import ai_prompt
 
-        text, images, course, recs = self.ai_inputs(day_key, include_slides)
+        reads_images = provider() in PLAN_AIS
+        text, images, course, recs = self.ai_inputs(day_key, include_slides and reads_images)
         if not text:
             raise RuntimeError("Transcribe this class day first.")
         prompt = ai_prompt(template)
@@ -301,9 +317,8 @@ class Services:
                        "(slide N), the slide that was on screen.")
         res = run_claude(prompt, text, images[:60], model=model, cancel=cancel, on_text=on_text)
         stem = day_stem(course, recs[0].start.date(), recs[0].kind)
-        folder = course_dir(self.output_root, course, self.lib.courses(True)) / "AI notes"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / safe_name(f"{stem} - Study notes.md")
+        path = self._notes_path(course_dir(self.output_root, course, self.lib.courses(True)), stem, template)
+        path.parent.mkdir(parents=True, exist_ok=True)
         usage = res.get("usage") or {}
         tokens_in = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens",
                                                          "cache_read_input_tokens"))

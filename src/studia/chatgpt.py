@@ -490,11 +490,16 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
     """One streamed request on the user's ChatGPT plan: {"text", "usage", "seconds", "model"}. ``model`` is the
     app's level ("haiku" / "sonnet" / "opus" -> reasoning effort); the ChatGPT model is the one chosen in Settings,
     else the account's first listed one."""
+    import requests
+
     from . import appconfig
 
     started = time.monotonic()
     chosen = appconfig.load().codex_model
-    listed = models()
+    try:
+        listed = models()
+    except requests.RequestException as exc:
+        raise _unreachable(exc) from exc
     slug = chosen if chosen and any(m["slug"] == chosen for m in listed) else (listed[0]["slug"] if listed else "")
     if not slug:
         raise RuntimeError("ChatGPT lists no models for your account.")
@@ -515,7 +520,20 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
                 body.pop("reasoning")                       # this model takes no effort setting: ask without it
                 continue
             raise RuntimeError(f"ChatGPT: {exc}") from exc
+        except requests.RequestException as exc:            # the sign-in renewal or the request itself
+            if cancel is not None and cancel.is_set():
+                raise Cancelled() from exc
+            raise _unreachable(exc) from exc
     raise RuntimeError("ChatGPT did not return an answer.")
+
+
+def _unreachable(exc: Exception) -> RuntimeError:
+    import requests
+
+    log.info("ChatGPT could not be reached: %s", exc)
+    if isinstance(exc, requests.Timeout):
+        return RuntimeError("ChatGPT did not answer in time. Check your internet connection and try again.")
+    return RuntimeError("Can't reach ChatGPT. Check your internet connection and try again.")
 
 
 class _Unsupported(RuntimeError):

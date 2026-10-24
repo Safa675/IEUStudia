@@ -143,11 +143,13 @@
     else { S.exporting = null; toast(e.message || "Export failed", "error"); }
     if (S.view.name === "day") renderDayActions();
   }
-  function onAi(e) {
-    if (e.phase === "start") S.ai = { running: true, text: "", dayKey: e.day_key };
-    else if (e.phase === "progress") S.ai = { running: true, text: e.text, dayKey: e.day_key };   // "start" may be coalesced away
-    else if (e.phase === "done") { S.ai = { running: false, text: e.text, dayKey: e.day_key }; toast("Study notes saved next to the transcript.", "success"); if (S.day && S.day.day_key === e.day_key) S.day.notes_md = e.text; }
-    else if (e.phase === "error") { S.ai.running = false; toast(e.message || "The AI could not finish", "error"); }
+  function onAi(e) {   // study notes being written ("start" may be coalesced away)
+    if (e.phase === "start" || e.phase === "progress") S.ai = { running: true, text: e.text || "", dayKey: e.day_key, kind: e.kind || "notes", label: e.label || "Study notes" };
+    else if (e.phase === "done") {
+      S.ai = { running: false, text: "", dayKey: e.day_key, kind: e.kind, label: e.label };
+      toast(`${e.label || "Study notes"} saved next to the transcript.`, "success");
+      if (S.day && S.day.day_key === e.day_key) { S.day.notes = [{ kind: e.kind, label: e.label, md: e.text }, ...(S.day.notes || []).filter((n) => n.kind !== e.kind)]; S.notesKind = e.kind; }
+    } else if (e.phase === "error") { S.ai.running = false; if (e.cancelled) toast("Stopped.", "info"); else toast(e.message || "The AI could not finish", "error"); }
     if (S.view.name === "day") renderNotes();
   }
   function onChat(e) {   // every event is a full snapshot of one answer
@@ -480,7 +482,8 @@
     if (S.view.name !== "day" || S.view.dayKey !== dayKey) return;
     const keep = $("#view").scrollTop;
     S.day = res.day;
-    if (S.ai.dayKey !== dayKey) S.ai = { running: false, text: "", dayKey: null };
+    if (!refresh) S.notesKind = null;
+    if (S.ai.dayKey !== dayKey && !S.ai.running) S.ai = { running: false, text: "", dayKey: null };
     renderTop(); renderView();
     $("#view").scrollTo({ top: refresh ? keep : 0, behavior: "instant" });
   }
@@ -549,15 +552,17 @@
       <button class="btn ghost sm" data-act="file" data-what="folder">${I("folder-open", "sm")} Folder</button>`;
   }
   function renderDayActions() { const el = $("#day-actions"); if (el) el.innerHTML = dayActionsHTML(); }
-  function notesHTML() {
+  function notesHTML() {   // the AI notes of this day: the kind being written, else the chosen (or newest) kind
     const d = S.day; if (!d) return "";
-    const live = S.ai.dayKey === d.day_key && (S.ai.running || S.ai.text);
-    const md = live ? S.ai.text : d.notes_md;
-    if (!md && !(live && S.ai.running)) return "";
-    return `<div class="card notes-card"><h3>${I("ai")} Study notes ${S.ai.running && live ? `<span class="pill active">${SPIN()} ${esc(aiName())} is writing…</span>
-      <button class="btn ghost sm" data-act="ai-cancel">Stop</button>` : `<span class="pill done">${I("check")}Saved</span>
-      <button class="btn ghost sm" data-act="file" data-what="notes">${I("file-text", "sm")} Open file</button>`}</h3>
-      <div class="notes-body md">${md ? mdToHtml(md, { cites: true }) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
+    const notes = d.notes || [];
+    const writing = S.ai.running && S.ai.dayKey === d.day_key;
+    const shown = writing ? { kind: S.ai.kind, label: S.ai.label, md: S.ai.text } : notes.find((n) => n.kind === S.notesKind) || notes[0];
+    if (!shown) return "";
+    const kinds = !writing && notes.length > 1 ? `<span class="seg sm">${notes.map((n) => `<button class="${n.kind === shown.kind ? "on" : ""}" data-act="notes-kind" data-val="${n.kind}">${esc(n.label)}</button>`).join("")}</span>` : "";
+    return `<div class="card notes-card"><h3>${I("ai")} ${esc(shown.label || "Study notes")} ${writing ? `<span class="pill active">${SPIN()} ${esc(aiName())} is writing…</span>
+      <button class="btn ghost sm" data-act="ai-cancel">Stop</button>` : `<span class="pill done">${I("check")}Saved</span>${kinds}
+      <button class="btn ghost sm" data-act="file" data-what="notes:${esc(shown.kind)}">${I("file-text", "sm")} Open file</button>`}</h3>
+      <div class="notes-body md">${shown.md ? mdToHtml(shown.md, { cites: true }) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
   }
   function renderNotes() { const el = $("#notes-slot"); if (el) el.innerHTML = notesHTML(); renderDayActions(); }
 
@@ -1178,7 +1183,7 @@
         ${whole() ? `<div class="cp-whole">${I("check-circle", "sm")}<div><b>All ${plural(days.length, "transcribed class day")}</b> of ${esc((cr.courses.find((c) => c.id === st.course) || {}).code || "this course")}, plus its learning outcomes, weekly plan, announced quizzes and latest announcements.</div></div>`
           : `<div class="field"><label class="cp-label">Class days <span class="dim sm">${st.sel.size} of ${days.length} picked</span><span class="cp-tools"><button type="button" class="btn ghost sm" data-act="cp-last">Last 3</button><button type="button" class="btn ghost sm" data-act="cp-all">All</button><button type="button" class="btn ghost sm" data-act="cp-none">None</button></span></label>${list}</div>`}
         <div class="cp-opts">
-          ${ai.provider === "local" ? `<div class="cp-opt"><div class="t">${I("cpu", "xs")} Offline model</div><div class="d">Runs on this PC: a shortened version of the lectures is used.</div></div>`
+          ${ai.provider === "local" ? `<div class="cp-opt"><div class="t">${I("cpu", "xs")} Offline model</div><div class="d">Runs on this PC. For each question it reads the parts of these lectures that match it.</div></div>`
             : `<div class="cp-opt"><div class="t">${isChatGPT(ai) ? "Reasoning" : "Model"}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
           ${images ? `<label class="cp-opt cp-switch"><div><div class="t">Include slide images</div><div class="d">${sc ? `${plural(Math.min(60, sc), "slide")} · formulas and figures · ≈${fmtK(Math.min(60, sc) * 800)} more tokens` : "No slides were captured for these days."}</div></div>
             <input type="checkbox" class="switch" data-act="cp-slides" ${st.slides && sc ? "checked" : ""} ${sc ? "" : "disabled"}></label>` : ""}</div>
@@ -1319,24 +1324,36 @@
   }
   function closeMenu() { const m = $("#menu"); if (m) m.remove(); }
 
+  const NOTE_KINDS = [["notes", "Study notes"], ["exam", "Exam focus"], ["flashcards", "Flashcards"]];
+  const levelLabel = (v) => { const row = modelsFor().find(([k]) => k === v); return row ? row[1] : v; };   // "Sonnet", "Standard"
   async function claudeDialog() {
     const d = S.day; if (!d) return;
+    const ai = S.system.ai || {}, local = ai.provider === "local";
+    const images = ai.can_images !== false && !local;          // the offline model reads text only
     let tpl = "notes", slides = false;
     const draw = async () => {
-      const est = await call("ai_estimate", d.day_key, slides);
+      const est = await call("ai_estimate", d.day_key, slides && images);
       const e = est.ok ? est.estimate : { input: 0, output: 0, images: 0 };
-      const model = (S.settings.ai_model || "sonnet");
+      const have = (d.notes || []).find((n) => n.kind === tpl);
+      const label = (NOTE_KINDS.find(([k]) => k === tpl) || NOTE_KINDS[0])[1];
+      const how = local ? `<div><b>Offline model</b><span>runs on this PC</span></div>`
+        : `<div><b>${esc(levelLabel(S.settings.ai_model || "sonnet"))}</b><span>${isChatGPT(ai) ? "reasoning" : "model"} (Settings → AI)</span></div>`;
       modal(`<h2>${I("ai")} Study notes with ${esc(aiName())}</h2>
         <p class="lead">Uses ${esc(aiPlan())}. Nothing runs until you press Generate. AI can make mistakes — check the notes against the lecture.</p>
         <div class="field"><label>What should it write?</label><div class="seg">
-          ${[["notes", "Study notes"], ["exam", "Exam focus"], ["flashcards", "Flashcards"]].map(([k, l]) => `<button class="${tpl === k ? "on" : ""}" data-act="cl-tpl" data-val="${k}">${l}</button>`).join("")}</div></div>
-        <div class="set-row" style="border:0;padding:6px 0"><div class="txt"><div class="t">Include slide images</div><div class="d">Lets the AI read the slides and board (more accurate formulas, uses more of your plan).</div></div>
-          <input type="checkbox" class="switch" data-act="cl-slides" ${slides ? "checked" : ""} ${d.parts.some((p) => p.slides) ? "" : "disabled"}></div>
-        <div class="est"><div><b>~${(e.input / 1000).toFixed(1)}k</b><span>input tokens</span></div><div><b>~${(e.output / 1000).toFixed(1)}k</b><span>output tokens</span></div><div><b>${esc(model)}</b><span>model (Settings)</span></div></div>
-        <div class="callout info">${I("info")}<div>Optimised to save quota: a short system prompt, no tools, compact transcript${slides ? `, ${e.images} downscaled slide images` : ""}. The result is saved, so you never pay twice for the same notes.</div></div>
-        <div class="actions"><button class="btn" data-act="modal-close">Cancel</button><button class="btn grad" data-act="cl-go">${I("ai", "sm")} Generate</button></div>`);
+          ${NOTE_KINDS.map(([k, l]) => `<button class="${tpl === k ? "on" : ""}" data-act="cl-tpl" data-val="${k}">${l}</button>`).join("")}</div></div>
+        ${images ? `<div class="set-row" style="border:0;padding:6px 0"><div class="txt"><div class="t">Include slide images</div><div class="d">Lets the AI read the slides and board (more accurate formulas, uses more of your plan).</div></div>
+          <input type="checkbox" class="switch" data-act="cl-slides" ${slides ? "checked" : ""} ${d.parts.some((p) => p.slides) ? "" : "disabled"}></div>` : ""}
+        <div class="est">${local ? "" : `<div><b>~${(e.input / 1000).toFixed(1)}k</b><span>input tokens</span></div><div><b>~${(e.output / 1000).toFixed(1)}k</b><span>output tokens</span></div>`}${how}</div>
+        <div class="callout info">${I("info")}<div>${have ? `This lecture already has ${esc(label.toLowerCase())}. Generating them again replaces the saved ones.`
+          : local ? "The offline model works on this PC: a lecture takes a few minutes with an NVIDIA graphics card, longer on the processor. The notes are saved next to the transcript."
+          : `Kept small to save your plan: a short instruction, no tools, the compact transcript${slides && images ? ` and ${e.images} downscaled slide images` : ""}. The notes are saved next to the transcript.`}</div></div>
+        <div class="actions"><button class="btn" data-act="modal-close">Cancel</button>${have ? `<button class="btn" data-act="cl-open">${I("file-text", "sm")} Show them</button>` : ""}
+          <button class="btn grad" data-act="cl-go">${I("ai", "sm")} ${have ? "Generate again" : "Generate"}</button></div>`);
     };
-    window.__cl = { set tpl(v) { tpl = v; draw(); }, set slides(v) { slides = v; draw(); }, go: () => { closeModal(); call("ai_notes", d.day_key, tpl, slides).then((r) => { if (!r.ok) toast(r.error, "error"); }); } };
+    window.__cl = { set tpl(v) { tpl = v; draw(); }, set slides(v) { slides = v; draw(); },
+      open: () => { closeModal(); S.notesKind = tpl; renderNotes(); const el = $("#notes-slot"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); },
+      go: () => { closeModal(); call("ai_notes", d.day_key, tpl, slides && images).then((r) => { if (!r.ok) toast(r.error, "error"); }); } };
     await draw();
   }
 
@@ -1381,6 +1398,8 @@
     "cl-tpl": (el) => { window.__cl.tpl = el.dataset.val; },
     "cl-slides": (el) => { window.__cl.slides = el.checked; },
     "cl-go": () => window.__cl.go(),
+    "cl-open": () => window.__cl.open(),
+    "notes-kind": (el) => { S.notesKind = el.dataset.val; renderNotes(); },
     "ask-day": () => {
       const d = S.day; if (!d) return;
       const iso = d.day_key.split("|")[1] || "";
@@ -1721,7 +1740,7 @@
           P(305, "Arkadaşlar, bu konu sınavda çıkacak, dikkat edin. Formülü ezberlemeyin, mantığını anlayın.", { tr: true, star: true }),
           P(340, "So the posterior probability is 396 over 3384, which is about 11.7 percent. Surprising, isn't it?"),
         ] },
-      ], files: { folder: "C:\\Users\\student\\Documents\\IEUStudia\\MATH 240", md: "x.md", pack: "pack.md", pdf: "", zip: "", notes: "" }, notes_md: "",
+      ], files: { folder: "C:\\Users\\student\\Documents\\IEUStudia\\MATH 240", md: "x.md", pack: "pack.md", pdf: "", zip: "", notes: "" }, notes: [],
     };
     const emit = (e) => setTimeout(() => window.__lsEvent(e), 0);
     function simulate(ids) {
@@ -1763,8 +1782,8 @@
       open_url: () => ({ ok: true }), open_logs: () => ({ ok: true }),
       copy_for_ai: () => ({ ok: true, chars: 41234, tokens: 11450 }), export_pack: (k) => { emit({ type: "export", phase: "start", day_key: k }); setTimeout(() => emit({ type: "export", phase: "done", day_key: k, files: {} }), 1500); return { ok: true }; },
       ai_estimate: (k, s) => ({ ok: true, estimate: { input: s ? 38400 : 11800, output: 3500, images: s ? 33 : 0 }, ai: { available: true }, model: "sonnet" }),
-      ai_notes: (k) => { emit({ type: "ai", phase: "start", day_key: k }); let i = 0; const txt = "# Overview\nThis lecture covered **conditional probability** and Bayes' theorem.\n\n## Topics\n1. Multiplication rule — $P(A\\cap B)=P(A\\mid B)P(B)$ (Part 1, 00:31)\n2. Screening example (Part 1, 08:00)\n\n## What the lecturer emphasised\n- The denominator in Bayes' theorem — *likely midterm question* (Part 1, 18:41)\n";
-        const iv = setInterval(() => { i += 40; emit({ type: "ai", phase: i >= txt.length ? "done" : "progress", day_key: k, text: txt.slice(0, i), path: "notes.md" }); if (i >= txt.length) clearInterval(iv); }, 120); return { ok: true }; },
+      ai_notes: (k, kind = "notes") => { const label = { notes: "Study notes", exam: "Exam focus", flashcards: "Flashcards" }[kind]; emit({ type: "ai", phase: "start", day_key: k, kind, label }); let i = 0; const txt = "# Overview\nThis lecture covered **conditional probability** and Bayes' theorem.\n\n## Topics\n1. Multiplication rule — $P(A\\cap B)=P(A\\mid B)P(B)$ (Part 1, 00:31)\n2. Screening example (Part 1, 08:00)\n\n## What the lecturer emphasised\n- The denominator in Bayes' theorem — *likely midterm question* (Part 1, 18:41)\n";
+        const iv = setInterval(() => { i += 40; emit({ type: "ai", phase: i >= txt.length ? "done" : "progress", day_key: k, kind, label, text: txt.slice(0, i), path: "notes.md" }); if (i >= txt.length) clearInterval(iv); }, 120); return { ok: true }; },
       ai_cancel: () => ({ ok: true }),
       set_course_prefs: (id, patch) => { const c = courses.find((x) => x.id === id); Object.assign(c, patch.show_mode ? { show_mode: patch.show_mode } : {}, patch.my_section ? { my_section: patch.my_section } : {}); return { ok: true, courses }; },
       set_hidden: () => ({ ok: true, courses }), mark_seen: () => { courses.forEach((c) => { c.counts.new = 0; c.days.forEach((d) => { d.is_new = false; d.recordings.forEach((r) => (r.is_new = false)); }); }); return { ok: true, courses }; },

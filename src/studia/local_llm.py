@@ -2,14 +2,16 @@
 the speech model, so nothing else is installed. Good enough for short study notes, a weekly summary and simple
 questions about a lecture; study plans and prep packs need ChatGPT or Claude.
 
-Long transcripts are summarised in parts first (the small model keeps a few thousand tokens in view). On an NVIDIA GPU
-it writes ~40 words/s; on the processor a few words per second, so notes for a lecture take minutes there.
+Long transcripts are summarised in parts first (the small model keeps a few thousand tokens in view); a chat gets, for
+each question, the lecture passages that match it. On an NVIDIA GPU it writes ~40 words/s; on the processor a few words
+per second, so notes for a lecture take minutes there.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -173,18 +175,95 @@ def one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threading
     return r
 
 
+CHAT_SYSTEM = ("You answer a university student's questions about their own lectures. Below are the passages of the "
+               "lectures that match the question: speech-recognition transcripts, mostly English with Turkish passages "
+               "tagged [TR], each paragraph starting with [mm:ss]. Answer briefly from them and cite the moments you use "
+               "like [P2 14:05]. If they don't cover the question, say so.")
+_STOP = set("""the and for are was were with what which who how why when where does did can could would should will
+about there their they you your our this that these those from into than then have has had not but also just
+bir ile için gibi daha çok var yok ama şey nasıl neden nedir""".split())
+
+
+def _keywords(text: str) -> set[str]:
+    return {w for w in re.findall(r"[\wçğıöşü]+", text.replace("İ", "i").lower()) if len(w) >= 3 and w not in _STOP}
+
+
+def lecture_excerpts(lectures: str, question: str, key: str, max_tokens: int) -> str:
+    """The paragraphs of the chat's lectures that match the question best, in lecture order under their headings, in
+    at most ``max_tokens``. A question that matches nothing gets the emphasised (⭐) moments, then an even spread."""
+    blocks: list[tuple[str, str, str]] = []          # (lecture heading, part heading, paragraph)
+    day = part = ""
+    for line in lectures.splitlines():
+        if line.startswith("# "):
+            day, part = line, ""
+        elif line.startswith("## "):
+            part = line
+        elif line.strip():
+            blocks.append((day, part, line))
+    if not blocks:
+        return ""
+    want = _keywords(question)
+    scores = [len(want & _keywords(p)) + (0.5 if "⭐" in p else 0.0) for _, _, p in blocks]
+    if max(scores) >= 1:
+        ranked = [i for i in sorted(range(len(blocks)), key=lambda i: -scores[i]) if scores[i] > 0]
+    else:
+        ranked = [i for i, b in enumerate(blocks) if "⭐" in b[2]]
+        ranked += [i for i in range(0, len(blocks), max(1, len(blocks) // 40)) if i not in ranked]
+    chosen: set[int] = set()
+    used = 0
+    for i in ranked:
+        t = count_tokens(blocks[i][2], key) + 1
+        if used + t <= max_tokens:
+            chosen.add(i)
+            used += t
+        if used >= max_tokens - 20:
+            break
+    out: list[str] = []
+    last_day = last_part = None
+    for i in sorted(chosen):
+        d, p, para = blocks[i]
+        if d != last_day:
+            out.append(d)
+            last_day, last_part = d, None
+        if p and p != last_part:
+            out.append(p)
+            last_part = p
+        out.append(para)
+    return "\n".join(out)
+
+
+def _fit(text: str, key: str, max_tokens: int) -> str:
+    n = count_tokens(text, key)
+    if n <= max_tokens:
+        return text
+    return text[:max(0, int(len(text) * max_tokens / max(1, n)) - 20)].rsplit("\n", 1)[0] + "\n…"
+
+
+def _course_essentials(brief: str) -> str:
+    """The course line and the announced assessments of a chat's course brief (the rest is too much for the model)."""
+    lines = brief.splitlines()
+    out = lines[:1]
+    for i, line in enumerate(lines):
+        if line.startswith("Assessments the lecturer announced"):
+            out += [line] + [x for x in lines[i + 1:] if x.startswith("  ")][:10]
+            break
+    return "\n".join(out)
+
+
 class LocalSession:
-    """A chat with the offline model: the lecture context is condensed to fit, and earlier turns are kept short."""
+    """A chat with the offline model. Its window holds a few thousand tokens, so instead of the whole lectures it gets
+    short instructions, the course's announced assessments and, for each question, the lecture passages that match it
+    best; earlier turns are kept short."""
 
     def __init__(self, system_prompt: str, key: str) -> None:
         self.key_name = key
         self.model = key
         self.key: Any = None
-        self.system = system_prompt
+        head, _, self._lectures = system_prompt.partition("\n\n=== LECTURES ===\n\n")
+        self._course = _course_essentials(head.partition("\n\n=== COURSE ===\n\n")[2])
         self.history: list[dict[str, str]] = []
         self.last_used = time.monotonic()
         self._turn = threading.Lock()
-        self._context: Optional[str] = None
 
     def alive(self) -> bool:
         return True
@@ -192,22 +271,34 @@ class LocalSession:
     def busy(self) -> bool:
         return self._turn.locked()
 
-    def _fit_context(self) -> str:
-        if self._context is None:
-            limit = budget(self.key_name) - 900
-            if count_tokens(self.system, self.key_name) > limit:
-                cut = int(len(self.system) * limit / max(1, count_tokens(self.system, self.key_name)))
-                self._context = self.system[:cut] + "\n[…the rest of the lectures is left out to fit the offline model]"
-            else:
-                self._context = self.system
-        return self._context
+    def seed(self, history: list[dict[str, Any]]) -> None:
+        """The conversation so far, from the library (a new session for an earlier chat)."""
+        self.history = [{"role": m["role"], "content": (m.get("text") or "")[-1500:]} for m in history
+                        if m.get("role") in ("user", "assistant") and (m.get("text") or "").strip()][-4:]
+
+    def _recent(self) -> list[dict[str, str]]:
+        """The last exchange, shortened: the model's window is small."""
+        return [{"role": m["role"], "content": m["content"][:800]} for m in self.history[-2:]]
+
+    def _system(self, question: str, extra: str) -> str:
+        k = self.key_name
+        fixed = f"{CHAT_SYSTEM}\n{ENGLISH}" + (f"\n\n=== COURSE ===\n{self._course}" if self._course else "")
+        used = count_tokens(fixed, k) + sum(count_tokens(m["content"], k) for m in self._recent())
+        room = max(300, budget(k) - used - count_tokens(question, k) - 50)
+        recent = " ".join(m["content"] for m in self.history[-2:] if m["role"] == "user")    # follow-up questions
+        lectures = lecture_excerpts(self._lectures, f"{question} {recent}", k, int(room * (0.75 if extra else 1.0)))
+        more = _fit(extra, k, room - count_tokens(lectures, k)) if extra else ""
+        return (fixed + (f"\n\n=== LECTURE PASSAGES ===\n{lectures}" if lectures else "")
+                + (f"\n\n=== OTHER MATCHING PASSAGES ===\n{more}" if more.strip() else ""))
 
     def ask(self, content: list[dict[str, Any]], on_text: Optional[Callable[[str], None]] = None,
             stop: Optional[threading.Event] = None, timeout_s: float = 900) -> dict[str, Any]:
-        question = "\n\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+        texts = [b["text"] for b in content if b.get("type") == "text" and (b.get("text") or "").strip()]
+        question = texts[-1].strip() if texts else ""
+        extra = "\n\n".join(texts[:-1])           # matching passages of course files and of other lectures
         with self._turn:
-            msgs = [{"role": "system", "content": self._fit_context() + "\n" + ENGLISH}]
-            msgs += self.history[-4:]
+            msgs = [{"role": "system", "content": self._system(question, extra)}]
+            msgs += self._recent()
             msgs.append({"role": "user", "content": question})
             try:
                 r = generate(msgs, self.key_name, 700, on_text, stop)

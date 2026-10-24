@@ -256,6 +256,25 @@ def test_offline_model_prompt_and_chunks(monkeypatch):
     assert len(parts) == 5 and all(len(p.split()) <= 12 for p in parts)
 
 
+def test_the_offline_model_keeps_the_task_when_it_condenses(monkeypatch):
+    from studia import local_llm
+    from studia.digest import digest_prompt
+
+    appconfig.update({"ai_provider": "local"})
+    sent = []
+    monkeypatch.setattr(local_llm, "budget", lambda key: 500)
+    monkeypatch.setattr(local_llm, "count_tokens", lambda text, key: len(text.split()))
+    monkeypatch.setattr(local_llm, "generate", lambda msgs, key, *a, **k: sent.append(msgs)
+                        or {"text": "notes", "usage": {"input_tokens": 1, "output_tokens": 1}})
+    transcript = "\n".join(f"[00:{i:02d}] a sentence about the topic of the lecture, number {i}" for i in range(60))
+    ai.run_claude("Create 20–30 flashcards.", transcript)
+    assert len(sent) > 2 and not any("flashcards" in m["content"] for m in sent[0])   # the parts are condensed...
+    assert "Create 20–30 flashcards." in sent[-1][0]["content"]                     # ...and the task stays whole
+    ai.one_shot(ai.SYSTEM_PROMPT, [{"type": "text", "text": digest_prompt({"week": {"label": "W"}, "courses": [],
+                                                                             "todo": []})}])
+    assert "Write a short weekly digest" in sent[-1][0]["content"] and sent[-1][1]["content"].startswith("WEEK: W")
+
+
 def test_setup_api(monkeypatch):
     from studia import agent
     from studia.api import Api

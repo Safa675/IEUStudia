@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import __version__, store, views
+from .cancel import Cancelled
 from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
-from .services import Services
+from .services import NOTE_KINDS, Services
 from .winutil import flash_taskbar, open_path, reveal, set_clipboard
 
 log = logging.getLogger("studia")
@@ -645,8 +646,9 @@ class Api:
         detail = views.day_detail(self._s.lib, self._s.settings, day_key, self._s.day_files(day_key))
         if detail is None:
             return {"ok": False, "error": "This class day no longer exists."}
-        notes = detail["files"].get("notes")
-        detail["notes_md"] = Path(notes).read_text(encoding="utf-8") if notes else ""
+        files = detail["files"]
+        detail["notes"] = [{"kind": k, "label": NOTE_KINDS[k], "md": Path(files[f"notes:{k}"]).read_text(encoding="utf-8")}
+                           for k in files.get("notes_kinds", [])]          # newest first
         return {"ok": True, "day": detail}
 
     @safe
@@ -875,19 +877,23 @@ class Api:
 
         if self._ai_cancel is not None:
             return {"ok": False, "error": f"{ai_name()} is already working on something."}
+        template = template if template in NOTE_KINDS else "notes"
         cancel = threading.Event()
         self._ai_cancel = cancel
+        kind = {"kind": template, "label": NOTE_KINDS[template]}
 
         def run() -> None:
             try:
-                self._push({"type": "ai", "phase": "start", "day_key": day_key, "text": ""})
+                self._push({"type": "ai", "phase": "start", "day_key": day_key, "text": "", **kind})
                 path = self._s.ai_notes(day_key, template, include_slides, self._s.settings.ai_model, cancel,
                                         lambda t: self._push({"type": "ai", "phase": "progress", "day_key": day_key,
-                                                              "text": t}))
+                                                              "text": t, **kind}))
                 self._push({"type": "ai", "phase": "done", "day_key": day_key, "path": str(path),
-                            "text": path.read_text(encoding="utf-8")})
+                            "text": path.read_text(encoding="utf-8"), **kind})
+            except Cancelled:
+                self._push({"type": "ai", "phase": "error", "day_key": day_key, "message": "", "cancelled": True, **kind})
             except Exception as exc:  # noqa: BLE001
-                self._push({"type": "ai", "phase": "error", "day_key": day_key, "message": str(exc)})
+                self._push({"type": "ai", "phase": "error", "day_key": day_key, "message": str(exc), **kind})
             finally:
                 self._ai_cancel = None
 

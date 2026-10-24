@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 
 import pytest
+import requests
 
 from studia import ai, ai_setup, chatgpt
 
@@ -141,6 +142,8 @@ class FakeOpenAI:
             return _Resp(200, {})
         if url == f"{chatgpt.API}/responses":
             status, payload = self.stream_answers.pop(0)
+            if isinstance(payload, Exception):                 # the network
+                raise payload
             if isinstance(payload, _Resp):
                 return payload
             return _Resp(status, payload if isinstance(payload, dict) else {}, payload if isinstance(payload, list) else None)
@@ -278,6 +281,12 @@ def test_answers_stream_and_errors_are_explained(openai):
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
     openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "half"}))]   # cut off
     with pytest.raises(RuntimeError, match="ended before"):
+        chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
+    openai.stream_answers = [(0, requests.ConnectionError("HTTPSConnectionPool(host='api.openai.com'): Max retries"))]
+    with pytest.raises(RuntimeError, match="^Can't reach ChatGPT. Check your internet connection"):
+        chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
+    openai.stream_answers = [(0, requests.ReadTimeout("Read timed out."))]
+    with pytest.raises(RuntimeError, match="did not answer in time"):
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
 
 
