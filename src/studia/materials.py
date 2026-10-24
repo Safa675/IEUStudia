@@ -160,10 +160,20 @@ class MaterialStore:
         return course_dir(self._s.output_root, course, self.lib.courses(True)) / "Materials" / safe_name(label, 90)
 
     def target_path(self, material: dict[str, Any]) -> Path:
+        """Where a course file is saved: its own name (a long one is shortened before the extension, which Windows
+        needs to open it), and the IEULearn id added when another file of the course already has that name."""
         name = material.get("file_name") or f"{material['title']}.{material.get('ext') or 'bin'}"
         if material.get("ext") and not name.lower().endswith("." + material["ext"]):
             name += "." + material["ext"]
-        return self.folder_for(material) / safe_name(name, 120)
+        stem, ext = os.path.splitext(name)
+        ext = re.sub(r'[<>:"/\\|?*\x00-\x1f\s]', "", ext)[:12]
+        path = self.folder_for(material) / (safe_name(stem, 120 - len(ext)) + ext)
+        others = self.lib.materials(material.get("course_id"), include_gone=True)
+        taken = {os.path.normcase(m["local_path"]) for m in others
+                 if m.get("local_path") and m.get("resource_id") != material.get("resource_id")}
+        if os.path.normcase(str(path)) in taken:
+            path = path.with_name(f"{safe_name(stem, 100 - len(ext))} ({material.get('resource_id')}){ext}")
+        return path
 
     def download(self, resource_id: str, session: requests.Session,
                  progress: Callable[[int, int], None] = lambda a, b: None,

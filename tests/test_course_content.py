@@ -9,7 +9,7 @@ import pytest
 from studia import alerts, coursesite, store
 from studia.alerts import _excerpt, assessment_plan, categories, course_alerts, matches
 from studia.config import Settings
-from studia.coursesite import Announcement, Unit, parse_announcements, parse_overview, parse_unit_plan
+from studia.coursesite import Announcement, Resource, Unit, parse_announcements, parse_overview, parse_unit_plan
 from studia.domain import Course, Recording, Segment, Transcript
 from studia.ieulearn import parse_dashboard
 from studia.library import Library
@@ -330,3 +330,25 @@ def test_alert_cache_is_per_course(tmp_path):
     lib, _ = _course_with_lecture(tmp_path)
     course_alerts(lib, "c")
     assert set(alerts._cache) == {"c"}
+
+
+def test_course_files_keep_their_extension_and_two_of_one_name_keep_both(tmp_path):
+    import types
+
+    from studia.materials import MaterialStore
+
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="P", term="T")])
+    long_name = "Lecture notes on " + "conditional probability and Bayes " * 4 + "final.pdf"
+    lib.merge_units("c", [Unit("u1", 1, "Hafta 1", dt.date(2026, 9, 21), dt.date(2026, 9, 27), "",
+                               [Resource("r1", "Notes", long_name, "pdf", "pdf", "u", "d"),
+                                Resource("r2", "Homework", "Homework.pdf", "pdf", "pdf", "u", "d"),
+                                Resource("r3", "Homework (new)", "Homework.pdf", "pdf", "pdf", "u", "d")])],
+                    first_sync=True)
+    store_ = MaterialStore(types.SimpleNamespace(lib=lib, output_root=tmp_path / "out"))
+    first = store_.target_path(lib.get_material("r1"))
+    assert first.suffix == ".pdf" and len(first.name) <= 120
+    hw = store_.target_path(lib.get_material("r2"))
+    lib.set_material_file("r2", str(hw), 10, "u")
+    assert store_.target_path(lib.get_material("r2")) == hw                     # its own file: the same name
+    assert store_.target_path(lib.get_material("r3")).name == "Homework (r3).pdf"

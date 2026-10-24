@@ -11,7 +11,7 @@ from urllib.parse import unquote, urljoin
 import requests
 
 from .domain import Course, Profile
-from .net import parse_forms, parse_iframes
+from .net import NetworkError, parse_forms, parse_iframes
 
 log = logging.getLogger("studia")
 BASE = "https://learn.ieu.edu.tr"
@@ -90,6 +90,13 @@ def extract_folder_id(urls: list[str]) -> Optional[str]:
     return None
 
 
+def _not_down(r: requests.Response) -> None:
+    """IEULearn answering with a server error (maintenance, overload) is not a wrong password."""
+    if r.status_code >= 500:
+        raise NetworkError("IEULearn isn't responding right now (it may be down for maintenance). Your password was "
+                           "not rejected: try again later.")
+
+
 class IEULearn:
     BASE = BASE
 
@@ -98,12 +105,14 @@ class IEULearn:
 
     def is_logged_in(self) -> bool:
         r = self.s.get(f"{BASE}/student", allow_redirects=False)
+        _not_down(r)
         return r.status_code == 200
 
     def login(self, username: str, password: str) -> None:
         if not username or not password:
             raise AuthError("Please enter your EkoID username and password.")
         page = self.s.get(f"{BASE}/login")
+        _not_down(page)
         form = next((f for f in parse_forms(page.text) if "password" in f.fields or f.id == "loginForm"), None)
         token = form.fields.get("csrf_token", "") if form else ""
         if not token:
@@ -111,6 +120,7 @@ class IEULearn:
             token = m.group(1) if m else ""
         r = self.s.post(f"{BASE}/login", data={"csrf_token": token, "email": username.strip(),
                                                "password": password, "remember": "1"})
+        _not_down(r)
         if r.ok and "/student" in r.url and "loginForm" not in r.text:
             return
         msg = self._login_error(r.text)
@@ -128,6 +138,7 @@ class IEULearn:
         r = self.s.get(f"{BASE}/student", allow_redirects=False)
         if r.status_code in (301, 302, 303):
             raise NeedLogin("Your IEULearn session has expired.")
+        _not_down(r)
         r.raise_for_status()
         return parse_dashboard(r.text)
 
