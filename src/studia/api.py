@@ -200,9 +200,14 @@ class Api:
             presets = [{"id": k, "label": v["label"], "description": v["description"], "size_mb": v["size_mb"],
                         "downloaded": model_is_downloaded(k)} for k, v in MODEL_PRESETS.items()]
             from .components import cuda_ready
+            from .hardware import MIN_CUDA_DRIVER, _driver_number, nvidia_gpu
 
             used = bool(gpu.get("available")) and cuda_ready() and self._s.settings.device != "cpu"
-            info = {"gpu": {**gpu, "libraries": cuda_ready(), "used": used}, "presets": presets, "ai": claude_info(),
+            # a card the setup would set up: enough graphics memory and a recent driver (as hardware.assess)
+            fits = (bool(gpu.get("available")) and int(gpu.get("vram_mb") or 0) >= 3500
+                    and _driver_number(nvidia_gpu().get("driver", "")) >= MIN_CUDA_DRIVER)
+            info = {"gpu": {**gpu, "libraries": cuda_ready(), "used": used, "fits": fits}, "presets": presets,
+                    "ai": claude_info(),
                     "engine": {"model": self._s.settings.model, "loaded": self._s.jobs.engine_loaded()}}
             self._s.lib.set_meta("system_info", json.dumps(info))
             self._push({"type": "system", **info})
@@ -275,7 +280,7 @@ class Api:
                             return
                         log.exception("Download of %s failed", cid)
                         failed = plain_error(exc)
-                        if isinstance(exc, requests.RequestException):     # its parts are kept for the next try
+                        if isinstance(exc, (requests.RequestException, OSError)):   # its parts are kept for the next try
                             failed = failed.rstrip(".") + ". (Downloading again continues where it stopped.)"
                         self._push({"type": "setup", "id": cid, "state": "error", "error": failed})
                         return

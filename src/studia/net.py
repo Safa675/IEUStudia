@@ -65,10 +65,13 @@ def plain_error(exc: BaseException, url: str = "") -> str:
         name = os.path.basename(str(exc.filename or "")) or "a file"
         return (f"Windows did not let IEUStudia use {name}: it may be open in another program (or syncing), or your "
                 "antivirus or Windows' ransomware protection blocked it.")
-    if isinstance(exc, FileNotFoundError) or getattr(exc, "winerror", None) in (3, 21, 53, 67):
-        where = str(exc.filename or "") if isinstance(exc, OSError) else ""
+    if getattr(exc, "winerror", None) in (3, 21, 53, 67):        # path, drive, network path or name not found
+        where = str(getattr(exc, "filename", "") or "")
         return (f"{where or 'A folder'} can't be reached: is the drive (or the network) connected, and is the folder "
                 "still there?")
+    if isinstance(exc, FileNotFoundError):
+        name = os.path.basename(str(exc.filename or "")) or "A file"
+        return f"{name} isn't there any more: was it moved or deleted?"
     text = str(exc) or exc.__class__.__name__
     return text if text.endswith((".", "!", "?")) else text + "."
 

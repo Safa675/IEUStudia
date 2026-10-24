@@ -61,3 +61,15 @@ def test_the_app_and_its_helper_take_turns_with_the_secrets():
         other.wait(10)
     assert secrets_store.get_credentials() == ("student", "new-password")
     assert not list(secrets_path().parent.glob("secrets.bin.*tmp"))
+
+
+def test_a_refusal_belongs_to_the_password_that_was_refused():
+    secrets_store.set_credentials("student", "old-password")
+    secrets_store.mark_rejected("new-password")                  # the helper tried an older one meanwhile: no
+    assert secrets_store.get_credentials() == ("student", "old-password")
+    secrets_store.mark_rejected("old-password")
+    assert secrets_store.rejected() and secrets_store.get_credentials() is None
+    d = secrets_store._load()                                     # 2.1.1 saves a new password but keeps the flag
+    d["password"] = "new-password"
+    secrets_store._save(d)
+    assert not secrets_store.rejected() and secrets_store.get_credentials() == ("student", "new-password")

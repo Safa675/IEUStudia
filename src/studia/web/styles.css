@@ -470,7 +470,7 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 /* ------------------------------------------------------------------ overlays */
 .toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 60; pointer-events: none; }
 body:has(.setup) .toasts { bottom: 86px; }                         /* above the setup's Continue button */
-body:has(.queuebar:not(.hidden)) .toasts { bottom: 78px; }         /* above the queue bar's Cancel */
+body:has(.queuebar:not(.hidden)) .toasts { bottom: calc(var(--queue-h, 60px) + 18px); }   /* above the queue bar and its list */
 .toast { pointer-events: auto; min-width: 260px; max-width: 420px; background: var(--surface); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: var(--shadow-lg); padding: 11px 14px; display: flex; gap: 10px; align-items: flex-start;
   animation: toast-in .18s ease; font-size: 13.5px; }
@@ -486,7 +486,7 @@ body:has(.queuebar:not(.hidden)) .toasts { bottom: 78px; }         /* above the 
 .modal .lead { color: var(--text-2); margin: 0 0 16px; }
 .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 /* a long dialog on a small screen scrolls, but its buttons stay in view */
-.modal > .actions, .modal > form > .actions { position: sticky; bottom: -22px; margin: 18px -24px -22px; padding: 12px 24px 18px;
+.modal > .actions, .modal > form > .actions, .modal > #cu-body > .actions { position: sticky; bottom: -22px; margin: 18px -24px -22px; padding: 12px 24px 18px;
   background: var(--surface); border-radius: 0 0 14px 14px; }
 .est { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
 .est div { background: var(--surface-2); border-radius: 9px; padding: 9px 11px; } .est b { display: block; font-size: 16px; }

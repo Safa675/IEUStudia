@@ -112,3 +112,15 @@ def test_two_local_files_of_the_same_name_keep_both_transcripts(tmp_path):
     b = write_local(tmp_path, r"C:\Videos\MATH\Lecture.mp4", t)
     assert (a.name, b.name) == ("Lecture.md", "Lecture (MATH).md")
     assert write_local(tmp_path, r"C:\Videos\EEE\Lecture.mp4", t) == a        # the same file again: same transcript
+
+
+def test_a_transcript_written_by_an_earlier_version_is_replaced_not_doubled(tmp_path):
+    from studia.outputs.writer import write_local
+
+    t = Transcript(delivery_id="local-x", segments=[Segment(0, 2, "Hello.", "en", 0.9)], duration_s=2, speech_s=2,
+                   language_seconds={"en": 2}, model="m", device="cpu", engine_version="t", created_at="x")
+    (tmp_path / "Local files").mkdir()
+    (tmp_path / "Local files" / "Lecture.md").write_text("# Lecture\n\nTranscribed 2026-10-01 with IEUStudia.\n",
+                                                         encoding="utf-8")      # 2.1.1: no Source line
+    assert write_local(tmp_path, r"C:\Videos\Lecture.mp4", t).name == "Lecture.md"
+    assert [p.name for p in (tmp_path / "Local files").iterdir()] == ["Lecture.md"]

@@ -123,6 +123,10 @@ class IEULearn:
         _not_down(r, signing_in=True)
         if r.ok and "/student" in r.url and "loginForm" not in r.text:
             return
+        if not any("password" in f.fields or f.id == "loginForm" for f in parse_forms(r.text)):
+            # no sign-in form came back: a throttle, a firewall or a maintenance page, not a refused password
+            raise NetworkError("IEULearn didn't finish signing you in (it may be busy or under maintenance). "
+                               "Your password was not rejected: try again later.")
         msg = self._login_error(r.text)
         raise AuthError(msg or "Sign-in failed. Check your EkoID username and password.")
 

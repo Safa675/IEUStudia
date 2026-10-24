@@ -384,3 +384,9 @@ def test_course_files_keep_their_extension_and_two_of_one_name_keep_both(tmp_pat
     lib.set_material_file("r2", str(hw), 10, "u")
     assert store_.target_path(lib.get_material("r2")) == hw                     # its own file: the same name
     assert store_.target_path(lib.get_material("r3")).name == "Homework (r3).pdf"
+
+
+def test_early_in_the_term_every_class_day_counts():
+    rec = {"end_time": "09:50", "duplicate": False, "hidden": False, "too_short": False}
+    days = [{"date": d, "mine": None, "recordings": [rec]} for d in ("2026-09-21", "2026-09-23", "2026-09-28")]
+    assert class_times(days, dt.date(2026, 9, 29)) == {0: "09:50", 2: "09:50"}   # Wednesday seen once so far

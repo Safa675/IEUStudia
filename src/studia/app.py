@@ -121,7 +121,8 @@ def _selftest(out: str) -> int:
     report: dict[str, Any] = {"version": __version__, "frozen": bool(getattr(sys, "frozen", False)), "ok": True,
                               "modules": {}, "files": {}}
     for mod in ("numpy", "requests", "av", "ctranslate2", "faster_whisper", "onnxruntime", "tokenizers", "pypdfium2",
-                "yt_dlp", "webview", "webview.platforms.winforms", "studia.services", "studia.agent", "studia.tray",
+                "yt_dlp", "truststore", "webview", "webview.platforms.winforms", "studia.services", "studia.agent",
+                "studia.tray",
                 "studia.local_llm", "studia.splash"):
         try:
             m = importlib.import_module(mod)

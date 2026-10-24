@@ -5,9 +5,11 @@ Used for Whisper model files. (Panopto media uses the same ideas in ``panopto.py
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -25,7 +27,8 @@ CHUNK = 256 * 1024
 MIN_PART = 8 * 1024 * 1024
 
 
-def _probe(session: requests.Session, url: str, attempts: int = 3) -> tuple[str, int, bool, str]:
+def _probe(session: requests.Session, url: str, attempts: int = 3,
+           cancel: Optional[threading.Event] = None) -> tuple[str, int, bool, str]:
     """Follow redirects with a 1-byte range request; return (final_url, total_size, ranges_ok, version), the version
     being the file's ETag or Last-Modified (to tell a changed file from the one whose parts are on disk)."""
     for attempt in range(1, attempts + 1):
@@ -42,7 +45,9 @@ def _probe(session: requests.Session, url: str, attempts: int = 3) -> tuple[str,
         except (requests.ConnectionError, requests.Timeout):
             if attempt == attempts:
                 raise
-            time.sleep(2.0 * attempt)
+            for _ in range(int(2.0 * attempt / 0.25)):
+                check(cancel)
+                time.sleep(0.25)
     raise IOError("unreachable")
 
 
@@ -92,23 +97,25 @@ def _fetch_range(session: requests.Session, url: str, part: Path, start: int, en
 
 def _join(part_files: list[Path], tmp: Path) -> None:
     """The parts, in order, as one file: the first part grows and each other one is deleted once appended, so the
-    disk never holds the download twice (a 3 GB model needs about 3 GB, not 6). If that fails (a full disk), all of it
-    is deleted, so the space is free again."""
-    try:
-        os.replace(part_files[0], tmp)
-        with open(tmp, "ab") as out:
-            for pf in part_files[1:]:
-                with open(pf, "rb") as fh:
-                    while buf := fh.read(4 * 1024 * 1024):
-                        out.write(buf)
-                pf.unlink()
-    except OSError:
-        for f in (tmp, *part_files):
-            try:
-                f.unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
+    disk never holds the download twice (a 3 GB model needs about 3 GB, not 6), only one part more. Without room for
+    that it stops before touching anything, so the next try only joins."""
+    need = max((pf.stat().st_size for pf in part_files[1:]), default=0)
+    if shutil.disk_usage(tmp.parent).free < need + 16 * 1024 * 1024:
+        raise OSError(errno.ENOSPC, "No space left on device", str(tmp.parent))
+    os.replace(part_files[0], tmp)
+    with open(tmp, "ab") as out:
+        for pf in part_files[1:]:
+            with open(pf, "rb") as fh:
+                while buf := fh.read(4 * 1024 * 1024):
+                    out.write(buf)
+            for attempt in range(8):             # an antivirus may still hold the part it just scanned
+                try:
+                    pf.unlink()
+                    break
+                except PermissionError:
+                    if attempt == 7:
+                        raise
+                    time.sleep(0.25)
 
 
 def _stream_plain(session: requests.Session, url: str, tmp: Path, counter: list[int],
@@ -131,7 +138,7 @@ def download(url: str, dest: Path, *, session: Optional[requests.Session] = None
     session = session or requests.Session()
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    final_url, total, ranges_ok, version = _probe(session, url)
+    final_url, total, ranges_ok, version = _probe(session, url, cancel=cancel)
     if dest.exists() and total and dest.stat().st_size == total:
         if progress:
             progress(total, total)

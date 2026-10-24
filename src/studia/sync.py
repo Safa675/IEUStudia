@@ -139,7 +139,7 @@ class SyncService:
             try:
                 learn.login(*creds)
             except AuthError:              # the password was changed: never try it again in the background
-                secrets_store.mark_rejected()
+                secrets_store.mark_rejected(creds[1])
                 raise
             self._save_cookies()
 

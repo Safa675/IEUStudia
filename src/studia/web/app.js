@@ -98,7 +98,7 @@
       S.sync = { running: false, message: e.message, error: "" }; S.lastSync = e.last_sync || new Date().toISOString();
       if (e.profile) S.profile = e.profile;
       if (e.new_count) toast(`${plural(e.new_count, "new recording")} found`, "success");
-      (e.errors || []).forEach((m) => toast(m, "warning"));
+      if (!e.quiet) (e.errors || []).forEach((m) => toast(m, "warning"));   // the app's own half-hourly sync stays quiet
       renderSidebar();
       if (S.view.name === "home") renderView();          // its greeting line said "Syncing…"
     } else if (e.phase === "error") {
@@ -111,10 +111,12 @@
     renderTop();
   }
   function findRec(id) {
-    for (const c of S.courses) for (const d of c.days) for (const r of d.recordings) if (r.id === id) return { c, d, r };
+    for (const c of [...S.courses, ...(S.earlier || [])]) for (const d of c.days) for (const r of d.recordings) if (r.id === id) return { c, d, r };
     return null;
   }
   function onJob(e) {
+    const q = !e.final && (S.queue || []).find((j) => j.id === e.id);
+    if (q) { Object.assign(q, { stage: e.stage, progress: e.progress, detail: e.detail, eta_s: e.eta_s }); renderQueue(); }
     const hit = findRec(e.id);
     if (hit) {
       const r = hit.r;
@@ -253,6 +255,8 @@
       ${Studia.navExtra ? Studia.navExtra(v) : ""}
       <button class="nav-item ${v.name === "library" ? "active" : ""}" data-act="go" data-view="library">${I("search")}<span class="label"><span class="code">Search</span></span></button></div>`;
     nav.innerHTML = h;
+    const on = nav.querySelector(".nav-item.active[data-view=course]"), study = nav.querySelector(".nav-study");
+    if (on && study) { const over = on.getBoundingClientRect().bottom - study.getBoundingClientRect().top; if (over > 0) nav.scrollTop += over + 8; }
     const p = S.profile || {};
     const others = S.profiles.filter((x) => !x.active).length;
     $("#sfoot").innerHTML = `
@@ -386,7 +390,7 @@
     const others = d.recordings.filter((r) => r.mine === false && c.show_mode === "mine");
     const status = d.transcribed ? `<span class="pill done">${I("check")}Transcribed</span>`
       : d.is_new ? `<span class="pill new">${I("sparkle")}New</span>` : d.any_done ? `<span class="pill">Partly transcribed</span>` : "";
-    const warn = d.warn_level && d.warn_level !== "info" ? `<span class="warn-icon ${d.warn_level === "error" ? "error" : ""}" title="Audio problems — see the transcript">${I("alert", "sm")}</span>` : "";
+    const warn = d.warn_level && d.warn_level !== "info" ? `<span class="warn-icon ${d.warn_level === "error" ? "error" : ""}" title="See the notes on the transcript page">${I("alert", "sm")}</span>` : "";
     return `<div class="card day" data-day="${esc(d.day_key)}">
       <div class="day-head">
         <input type="checkbox" class="check" data-act="sel-day" data-day="${esc(d.day_key)}" ${selIds.length ? "" : "disabled"} aria-label="Select day">
@@ -955,8 +959,8 @@
       : ai.label ? `Connect ${ai.label} in Settings → AI to use this` : "Turn on AI in Settings → AI to use this"; };
   // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons
   const isChatGPT = (ai) => ["chatgpt", "codex"].includes((ai || S.system.ai || {}).provider);
-  const gpuUsed = (g) => !!g && (g.used != null ? g.used : g.available && g.libraries);    // does the graphics card transcribe?
-  const gpuFits = (g) => !!g && g.available && (g.vram_mb || 0) >= 3500;    // what the setup asks of a card it sets up
+  const gpuUsed = (g) => !!g && !!g.available && !!g.libraries && S.settings.device !== "cpu";    // does the graphics card transcribe?
+  const gpuFits = (g) => !!g && g.available && (g.fits != null ? g.fits : (g.vram_mb || 0) >= 3500);   // what the setup asks of a card
   const REASONING = [["haiku", "Quick", "light reasoning"], ["sonnet", "Standard", "recommended"], ["opus", "Thorough", "slowest, uses the most"]];
   const modelsFor = () => (isChatGPT() ? REASONING : MODELS);
   const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -1261,6 +1265,7 @@
   // ---- queue bar
   function renderQueue() {
     const el = $("#queue"); if (!el) return;
+    requestAnimationFrame(() => document.body.style.setProperty("--queue-h", el.classList.contains("hidden") ? "0px" : `${el.offsetHeight}px`));
     const jobs = S.queue || [];
     const eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
     if (!jobs.length && !eng) { el.classList.add("hidden"); el.innerHTML = ""; return; }

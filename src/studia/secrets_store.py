@@ -105,12 +105,21 @@ def _save(data: dict[str, Any], folder: Optional[Path] = None) -> None:
     os.replace(tmp, path)
 
 
+def _digest(password: str) -> str:
+    return hashlib.sha256(_ENTROPY + (password or "").encode("utf-8")).hexdigest()
+
+
+def _refused(d: dict[str, Any]) -> bool:
+    """IEULearn refused the password that is stored now (not an older one)."""
+    return bool(d.get("password")) and d.get("rejected") == _digest(d["password"])
+
+
 def get_credentials() -> Optional[tuple[str, str]]:
     """The stored username and password; None when there are none, or IEULearn refused them (see rejected)."""
     with _turn():
         d = _load()
     u, p = d.get("username"), d.get("password")
-    return (u, p) if u and p and not d.get("rejected") else None
+    return (u, p) if u and p and not _refused(d) else None
 
 
 def set_credentials(username: str, password: str, folder: Optional[Path] = None) -> None:
@@ -121,19 +130,20 @@ def set_credentials(username: str, password: str, folder: Optional[Path] = None)
         _save(d, folder)
 
 
-def mark_rejected() -> None:
-    """IEULearn refused the stored password (it was changed): stop signing in with it until the user signs in
-    again, so nothing keeps trying a wrong password in the background."""
+def mark_rejected(password: str) -> None:
+    """IEULearn refused ``password`` (it was changed): stop signing in with it until the user signs in again, so
+    nothing keeps trying a wrong password in the background. A newer password stored meanwhile (by the app while
+    the tray helper was signing in, say) is left alone."""
     with _turn():
         d = _load()
-        if d.get("password"):
-            d["rejected"] = True
+        if d.get("password") and d["password"] == password:
+            d["rejected"] = _digest(password)
             _save(d)
 
 
 def rejected() -> bool:
     with _turn():
-        return bool(_load().get("rejected"))
+        return _refused(_load())
 
 
 def clear_credentials() -> None:

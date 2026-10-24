@@ -45,3 +45,16 @@ def test_signing_in_works():
 def test_ieulearn_being_down_is_not_a_wrong_password(get, post):
     with pytest.raises(NetworkError, match="isn't responding right now.*not rejected"):
         IEULearn(Site(get, post)).login("student", "right")
+
+
+@pytest.mark.parametrize("post", [(429, "<h1>Too Many Requests</h1>", "/login"), (403, "<h1>Forbidden</h1>", "/login"),
+                                  (200, "<h1>We'll be back soon</h1>", "/maintenance")])
+def test_an_answer_without_the_sign_in_form_is_not_a_refused_password(post):
+    with pytest.raises(NetworkError, match="not rejected"):
+        IEULearn(Site((200, FORM, "/login"), post)).login("student", "right")
+
+
+def test_ieulearns_own_message_on_its_sign_in_form_is_a_refusal():
+    site = Site((200, FORM, "/login"), (200, FORM + '<div class="alert">Your account is locked for 15 minutes.</div>', "/login"))
+    with pytest.raises(AuthError, match="locked"):
+        IEULearn(site).login("student", "right")

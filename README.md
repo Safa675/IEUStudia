@@ -100,7 +100,7 @@ to learn.ieu.edu.tr, the same as when you sign in on the website.
    - a check of your PC (if it can't run IEUStudia, it tells you why and stops there),
    - the speech model for transcription,
    - AI, if you want it,
-   - the tray helper and notifications,
+   - the background helper and notifications,
    - the downloads, with their sizes shown before anything starts,
    - and signing in to IEULearn.
 

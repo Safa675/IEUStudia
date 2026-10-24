@@ -51,17 +51,23 @@ def test_a_download_in_parts_resumes_and_leaves_nothing_behind(server, tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["model.bin"]
 
 
-def test_joining_frees_each_part_and_cleans_up_when_it_fails(tmp_path):
+def test_joining_frees_each_part_and_without_room_touches_nothing(tmp_path, monkeypatch):
+    import errno
+    import shutil
+    import types
+
     parts = [tmp_path / f"f.part{i}" for i in range(3)]
     for i, p in enumerate(parts):
         p.write_bytes(bytes([i]) * 10)
     httpdl._join(parts, tmp_path / "f.part")
     assert (tmp_path / "f.part").read_bytes() == b"\0" * 10 + b"\1" * 10 + b"\2" * 10
     assert not any(p.exists() for p in parts)
-    parts[0].write_bytes(b"x")                                  # the second part is missing: it fails, all is removed
-    with pytest.raises(OSError):
+    for i, p in enumerate(parts):
+        p.write_bytes(bytes([i]) * 10)
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: types.SimpleNamespace(free=1000))     # a nearly full disk
+    with pytest.raises(OSError) as err:
         httpdl._join(parts, tmp_path / "g.part")
-    assert list(tmp_path.glob("*.part*")) == [tmp_path / "f.part"]
+    assert err.value.errno == errno.ENOSPC and all(p.exists() for p in parts)          # the next try only joins
 
 
 def test_parts_of_a_file_that_changed_since_are_not_reused(server, tmp_path):

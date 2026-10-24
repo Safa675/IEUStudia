@@ -113,7 +113,8 @@ def write_local(output_root: Path, name: str, transcript: Any) -> Path:
     folder = Path(output_root) / "Local files"
     path = folder / (safe_name(Path(name).stem) + ".md")
     source = f"Source: `{Path(name)}`"
-    if path.exists() and source not in path.read_text(encoding="utf-8", errors="replace"):
+    old = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    if "Source: `" in old and source not in old:
         # another file of the same name (from another folder): keep both
         tag = hashlib.sha1(str(Path(name)).lower().encode("utf-8")).hexdigest()[:6]
         path = folder / (safe_name(f"{Path(name).stem} ({Path(name).parent.name or tag})", 140) + ".md")

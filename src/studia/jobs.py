@@ -250,17 +250,18 @@ class JobManager:
         self.emit({"type": "queue", "jobs": self.snapshot(), "batch": self.batch()})
 
     def _update(self, job: Job, stage: str, progress: float, detail: str, force: bool = False) -> None:
-        if job.finished:                 # e.g. cancelled while its worker was still busy with it: that is final
-            return
-        changed = stage != job.stage
-        job.stage, job.progress, job.detail = stage, max(0.0, min(1.0, progress)), detail
-        now = time.monotonic()
-        if not (force or changed) and now - self._last_emit.get(job.id, 0.0) < 0.25:
-            return
-        self._last_emit[job.id] = now
-        if changed and job.local_path is None and stage in _STATUS:
-            self.lib.set_status(job.id, _STATUS[stage])
-        self.emit({"type": "job", **job.view()})
+        with self._lock:                 # _finish marks a job finished under this lock
+            if job.finished:             # e.g. cancelled while its worker was still busy with it: that is final
+                return
+            changed = stage != job.stage
+            job.stage, job.progress, job.detail = stage, max(0.0, min(1.0, progress)), detail
+            now = time.monotonic()
+            if not (force or changed) and now - self._last_emit.get(job.id, 0.0) < 0.25:
+                return
+            self._last_emit[job.id] = now
+            if changed and job.local_path is None and stage in _STATUS:
+                self.lib.set_status(job.id, _STATUS[stage])
+            self.emit({"type": "job", **job.view()})
         if changed:
             self._emit_queue()
 
@@ -349,14 +350,14 @@ class JobManager:
             except BaseException as exc:  # noqa: BLE001 - every way out gives back the place for its audio
                 self._drop_audio(job)
                 error = exc
-            if isinstance(error, Cancelled):
+            if isinstance(error, Cancelled) or job.cancel.is_set():     # whatever the error, Cancel was pressed
                 self._finish(job, "cancelled")
             elif isinstance(error, NotReady):
                 self._finish(job, "processing", str(error))
             elif isinstance(error, (requests.RequestException, OSError)):
-                # a full disk, a blocked file, or a file of this PC that can't be read won't be fixed by trying again
-                lasting = (isinstance(error, PermissionError) or getattr(error, "errno", None) == errno.ENOSPC
-                           or job.local_path is not None)
+                # a full disk, or a file of this PC that can't be read, won't be fixed by trying again (a file in
+                # the app's own cache held for a moment by an antivirus may be)
+                lasting = getattr(error, "errno", None) == errno.ENOSPC or job.local_path is not None
                 job.attempts += 1
                 if job.attempts <= 2 and not lasting and not job.cancel.is_set():
                     self.log.info("Download problem for %s (%s); retrying", job.id, error)

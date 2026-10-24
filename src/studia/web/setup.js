@@ -34,7 +34,7 @@
     const ready = (id) => (r.catalog.speech.find((x) => x.id === id) || {}).ready;
     U.ch = {
       speech: app.onboarded || ready(r.model) ? r.model : v.recommended_model,
-      ai: app.ai_provider || "chatgpt",
+      ai: app.ai_provider === "local" && !v.recommended_llm ? "none" : (app.ai_provider || "chatgpt"),
       llm: app.local_model && app.local_model !== "qwen3-1.7b" ? app.local_model : (v.recommended_llm || "qwen3-1.7b"),
       tray: app.onboarded ? app.tray : true, startup: app.onboarded ? r.startup : true,
       notify_recordings: app.notify_recordings, notify_announcements: app.notify_announcements, notify_materials: app.notify_materials,
@@ -440,7 +440,7 @@
     const status = p === "chatgpt" ? (x.signed_in && x.plan_allowed ? `Signed in with ChatGPT${x.email ? ` as ${x.email}` : ""}.` : "Not connected yet.")
       : p === "claude" ? (x.logged_in ? `Claude Code ${x.version} · signed in${x.plan ? ` (${x.plan})` : ""}` : x.available ? "Claude Code is installed but not signed in." : "Claude Code is not installed.")
       : p === "codex" ? (x.logged_in ? `Codex CLI ${x.version} · signed in with ChatGPT` : x.available ? "The Codex CLI is installed but not signed in." : "The Codex CLI is not installed.")
-      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? "The offline model is on this PC." : "The offline model is not downloaded yet." : "AI is off: the AI buttons stay greyed out. Choose an AI service in this list to use Ask, study notes and plans.";
+      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? "The offline model is on this PC." : "The offline model is not downloaded yet." : "AI is off: the AI buttons stay greyed out. Choose an AI service in the list on the right to use Ask, study notes and plans.";
     const needs = a && a.local && p === "local" && !(a.local.models.find((m) => m.id === app.local_model) || {}).ready;
     const steps = VENDOR[p] && a && a[p];
     if (steps && !U.timer) pollAi(true);

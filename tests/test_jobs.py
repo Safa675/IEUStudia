@@ -335,3 +335,22 @@ def test_a_lecture_cancelled_while_it_waits_stays_cancelled_when_its_turn_comes(
     later = [e for e in env["events"][cancelled_at:] if e.get("type") == "job" and e.get("id") == cancelled]
     assert not later and env["lib"].get_recording(cancelled).status == "available"
     assert jm._audio_places.acquire(blocking=False)    # the place was given back
+
+
+def test_cancel_while_panopto_cant_be_reached_is_a_cancel_not_a_failure(env):
+    import requests
+
+    started = threading.Event()
+
+    def unreachable(self, src, dest, progress, cancel=None, prefer="audio"):
+        started.set()
+        cancel.wait(5)                                        # Cancel is pressed while it tries
+        raise requests.ConnectionError("Can't reach panopto.ieu.edu.tr.")
+
+    env["mp"].setattr(FakePanopto, "download", unreachable)
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert started.wait(5)
+    jm.cancel("r1")
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    assert finals(env["events"], "r1")[0]["stage"] == "cancelled" and env["lib"].get_recording("r1").status == "available"

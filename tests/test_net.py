@@ -17,8 +17,10 @@ def test_errors_are_said_plainly():
     assert plain_error(MemoryError()).startswith("Not enough memory")
     denied = plain_error(PermissionError(13, "Access is denied", r"C:\Users\x\OneDrive\EEE 215 - Study pack.md"))
     assert denied.startswith("Windows did not let IEUStudia use EEE 215 - Study pack.md") and "Settings" not in denied
-    gone = plain_error(FileNotFoundError(3, "The system cannot find the path specified", "Z:\\IEUStudia"))
-    assert gone.startswith("Z:\\IEUStudia can't be reached: is the drive")
+    unplugged = plain_error(OSError(None, "The system cannot find the path specified", "Z:\\IEUStudia", 3))
+    assert unplugged.startswith("Z:\\IEUStudia can't be reached: is the drive")
+    moved = plain_error(FileNotFoundError(2, "No such file or directory", r"C:\Users\x\Videos\Lecture.mp4"))
+    assert moved == "Lecture.mp4 isn't there any more: was it moved or deleted?"
     assert plain_error(NetworkError("Can't reach panopto.ieu.edu.tr.")) == "Can't reach panopto.ieu.edu.tr."
     assert plain_error(RuntimeError("expected HTTP 206, got 403")) == "expected HTTP 206, got 403."   # one full stop
     assert plain_error(RuntimeError("Panopto is still processing this recording.")).endswith("recording.")
