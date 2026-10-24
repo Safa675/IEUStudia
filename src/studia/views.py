@@ -179,9 +179,9 @@ def class_times(days: list[dict[str, Any]], today: dt.date) -> dict[int, str]:
     for date, _ in held:
         weeks[date.weekday()].add(date.isocalendar()[:2])
     every = set().union(*weeks.values()) if weeks else set()
-    # not a one-off make-up class: a weekday seen in one week only counts until the course has met in two other
-    # weeks without it (early in the term every weekday has been seen once)
-    regular = {wd for wd, ws in weeks.items() if len(ws) >= 2 or len(every - ws) < 2}
+    # not a one-off make-up class: a weekday seen in one week only counts until the course has met in three other
+    # weeks without it (early in the term every weekday has been seen once, and a lecture may not have been recorded)
+    regular = {wd for wd, ws in weeks.items() if len(ws) >= 2 or len(every - ws) < 3}
     out: dict[int, str] = {}
     for date, ends in held:
         if not regular or date.weekday() in regular:

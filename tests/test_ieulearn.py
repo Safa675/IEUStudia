@@ -58,3 +58,13 @@ def test_ieulearns_own_message_on_its_sign_in_form_is_a_refusal():
     site = Site((200, FORM, "/login"), (200, FORM + '<div class="alert">Your account is locked for 15 minutes.</div>', "/login"))
     with pytest.raises(AuthError, match="locked"):
         IEULearn(site).login("student", "right")
+
+
+def test_no_sign_in_page_is_not_a_refused_password_either():
+    with pytest.raises(NetworkError, match="didn't show its sign-in page"):
+        IEULearn(Site((429, "<h1>Too Many Requests</h1>", "/login"), (200, "", "/login"))).login("student", "right")
+
+
+def test_a_refusal_answered_with_an_error_status_still_counts_when_the_form_comes_back():
+    with pytest.raises(AuthError, match="Wrong password"):
+        IEULearn(Site((200, FORM, "/login"), (422, FORM + '<p class="error">Wrong password.</p>', "/login"))).login("s", "x")

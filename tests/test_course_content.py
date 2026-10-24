@@ -316,8 +316,8 @@ def test_class_times_follow_your_section_and_skip_extra_recordings():
 
 def test_a_one_off_make_up_class_is_not_a_class_day():
     rec = {"end_time": "10:50", "duplicate": False, "hidden": False, "too_short": False}
-    days = [{"date": d, "mine": None, "recordings": [rec]} for d in ("2026-10-07", "2026-10-14", "2026-10-21",
-                                                                     "2026-10-17")]   # Wednesdays, one Saturday
+    days = [{"date": d, "mine": None, "recordings": [rec]} for d in ("2026-09-30", "2026-10-07", "2026-10-14",
+                                                                     "2026-10-21", "2026-10-17")]   # Wednesdays, one Saturday
     assert class_times(days, dt.date(2026, 10, 23)) == {2: "10:50"}
 
 
@@ -390,6 +390,8 @@ def test_early_in_the_term_every_class_day_counts():
     rec = {"end_time": "09:50", "duplicate": False, "hidden": False, "too_short": False}
     days = [{"date": d, "mine": None, "recordings": [rec]} for d in ("2026-09-21", "2026-09-23", "2026-09-28")]
     assert class_times(days, dt.date(2026, 9, 29)) == {0: "09:50", 2: "09:50"}   # Wednesday seen once so far
+    unrecorded = [{"date": d, "mine": None, "recordings": [rec]} for d in ("2026-09-21", "2026-09-28", "2026-09-30")]
+    assert class_times(unrecorded, dt.date(2026, 10, 6)) == {0: "09:50", 2: "09:50"}   # week 1's Wednesday missing
 
 
 def test_more_ways_of_writing_quiz_and_midterm_numbers():

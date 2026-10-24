@@ -118,6 +118,9 @@ class IEULearn:
         if not token:
             m = re.search(r'name="csrf_token"\s+value="([^"]+)"', page.text)
             token = m.group(1) if m else ""
+        if form is None and not token:      # a throttle, a firewall or a maintenance page instead of the sign-in page
+            raise NetworkError("IEULearn didn't show its sign-in page right now (it may be busy or under "
+                               "maintenance). Your password was not rejected: try again later.")
         r = self.s.post(f"{BASE}/login", data={"csrf_token": token, "email": username.strip(),
                                                "password": password, "remember": "1"})
         _not_down(r, signing_in=True)
