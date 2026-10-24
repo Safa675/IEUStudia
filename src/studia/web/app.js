@@ -70,7 +70,7 @@
   function onEvent(e) {
     switch (e.type) {
       case "courses":
-        S.courses = e.courses || []; renderSidebar();
+        setCourses(e.courses); renderSidebar();
         if (Studia.onEvents.courses) Studia.onEvents.courses(e);
         else if (["course", "new"].includes(S.view.name)) renderView();
         break;
@@ -218,8 +218,15 @@
     renderSidebar(); renderTop(); renderView(); renderQueue();
   }
 
+  function courseSub(c) {   // two pages of one course (FENG 495 twice): tell them apart by section or lecturer
+    const twins = S.courses.filter((x) => x.code === c.code).length > 1;
+    return c.display_name + (twins ? ` · ${c.section ? `Section ${c.section}` : c.instructor || c.id}` : "");
+  }
   function newCount() { return S.courses.reduce((n, c) => n + (c.counts.new || 0), 0); }
   const courseNew = (c) => (c.counts.new || 0) + ((c.content || {}).materials_new || 0) + ((c.content || {}).announcements_new || 0);
+  // the courses on your IEULearn dashboard; S.earlier: ones that left it but hold your transcripts, files, chats or plans
+  function setCourses(list) { S.courses = (list || []).filter((c) => !c.inactive); S.earlier = (list || []).filter((c) => c.inactive); }
+  const findCourse = (id) => S.courses.find((x) => x.id === id) || (S.earlier || []).find((x) => x.id === id);
 
   function renderSidebar() {
     const nav = $("#nav"); if (!nav) return;
@@ -228,13 +235,16 @@
     let h = `<button class="nav-item ${v.name === "home" || v.name === "new" ? "active" : ""}" data-act="go" data-view="home">${I("home")}<span class="label"><span class="code">Home</span></span>${nn ? `<span class="count new">${nn}</span>` : ""}</button>`;
     h += `<div class="nav-section">Courses</div>`;
     if (!S.courses.length) h += `<div class="nav-item" style="cursor:default"><span class="label"><span class="sub">${S.sync.running ? "Loading your courses…" : "No courses yet"}</span></span></div>`;
-    for (const c of S.courses) {
+    const item = (c, dim) => {
       const active = v.name === "course" && v.courseId === c.id;
-      const n = courseNew(c);
+      const n = dim ? 0 : courseNew(c);
       const badge = n ? `<span class="count new" title="New recordings, materials and announcements">${n}</span>` : "";
-      h += `<button class="nav-item ${active ? "active" : ""}" data-act="go" data-view="course" data-id="${esc(c.id)}" title="${esc(c.code + " — " + c.display_name)}">
-        <span class="label"><span class="code">${esc(c.code)}</span><span class="sub">${esc(c.display_name)}</span></span>${badge}</button>`;
-    }
+      const sub = courseSub(c);
+      return `<button class="nav-item ${active ? "active" : ""} ${dim ? "earlier" : ""}" data-act="go" data-view="course" data-id="${esc(c.id)}" title="${esc(c.code + " — " + sub)}">
+        <span class="label"><span class="code">${esc(c.code)}</span><span class="sub">${esc(sub)}</span></span>${badge}</button>`;
+    };
+    h += S.courses.map((c) => item(c, false)).join("");
+    if ((S.earlier || []).length) h += `<div class="nav-section" title="No longer on your IEULearn dashboard. What you saved from them stays here.">Earlier courses</div>` + S.earlier.map((c) => item(c, true)).join("");
     h += `<div class="nav-section">Study</div>
       <button class="nav-item ${v.name === "chat" ? "active" : ""}" data-act="go" data-view="chat">${I("chat")}<span class="label"><span class="code">Ask ${esc(aiName())}</span></span></button>
       ${Studia.navExtra ? Studia.navExtra(v) : ""}
@@ -258,7 +268,7 @@
     if (Studia.crumbs && Studia.crumbs[v.name]) return Studia.crumbs[v.name](v);
     if (v.name === "settings") return `${I("settings")} Settings`;
     if (v.name === "chat") return `${I("chat")} Ask ${esc(aiName())}`;
-    if (v.name === "course") { const c = S.courses.find((x) => x.id === v.courseId); return c ? `${esc(c.code)} <span class="dim">· ${esc(c.display_name)}</span>` : ""; }
+    if (v.name === "course") { const c = findCourse(v.courseId); return c ? `${esc(c.code)} <span class="dim">· ${esc(c.display_name)}</span>` : ""; }
     if (v.name === "day" && S.day) return `<button class="btn ghost sm" data-act="back">${I("arrow-left", "sm")} Back</button> ${esc(S.day.title)} <span class="dim">· ${esc(S.day.date_label)}</span>`;
     return "";
   }
@@ -283,7 +293,7 @@
     const el = $("#view"); if (!el) return;
     const v = S.view;
     if (Studia.views[v.name]) el.innerHTML = Studia.views[v.name](v);   // home, course pages, plans (course.js …)
-    else if (v.name === "course") el.innerHTML = courseHTML(S.courses.find((c) => c.id === v.courseId));
+    else if (v.name === "course") el.innerHTML = courseHTML(findCourse(v.courseId));
     else if (v.name === "new") el.innerHTML = newHTML();
     else if (v.name === "day") el.innerHTML = dayHTML();
     else if (v.name === "library") el.innerHTML = libraryHTML();
@@ -1401,8 +1411,8 @@
     ts: (el) => call("open_url", `${el.dataset.url}&start=${Math.floor(+el.dataset.t)}`),
     jump: (el) => jumpTo(+el.dataset.part, +el.dataset.t),
     zoom: (el) => { $("#overlay").innerHTML = `<div class="lightbox" data-act="modal-close"><img src="${esc(el.dataset.src)}"></div>`; },
-    "show-mode": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { show_mode: el.dataset.mode }); if (r.ok) { S.courses = r.courses; renderView(); } },
-    "mark-seen": async (el) => { const r = await call("mark_seen", el.dataset.id || null); if (r.ok) { S.courses = r.courses; renderSidebar(); renderView(); } },
+    "show-mode": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { show_mode: el.dataset.mode }); if (r.ok) { setCourses(r.courses); renderView(); } },
+    "mark-seen": async (el) => { const r = await call("mark_seen", el.dataset.id || null); if (r.ok) { setCourses(r.courses); renderSidebar(); renderView(); } },
     "toggle-others": (el) => { S.expanded.has(el.dataset.id) ? S.expanded.delete(el.dataset.id) : S.expanded.add(el.dataset.id); renderView(); },
     "open-folder": (el) => call("open_course_folder", el.dataset.id),
     "open-output": () => call("open_output"),
@@ -1505,7 +1515,7 @@
     set: async (el) => saveSetting({ [el.dataset.key]: el.dataset.val }),
     "set-bool": async (el) => saveSetting({ [el.dataset.key]: el.checked }),
     "set-sel": async (el) => saveSetting({ [el.dataset.key]: el.dataset.key === "min_duration_s" ? +el.value : el.value }),
-    "my-section": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { my_section: el.value, show_mode: "mine" }); if (r.ok) { S.courses = r.courses; renderView(); } },
+    "my-section": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { my_section: el.value, show_mode: "mine" }); if (r.ok) { setCourses(r.courses); renderView(); } },
     "pick-folder": async () => { const r = await call("pick_folder"); if (r.ok && r.path) { await saveSetting({ output_dir: r.path }); if (S.mode === "setup") render(); } },
     signout: async () => {
       if (!confirm("Sign out and remove the stored password from this PC? Your courses and transcripts stay here.")) return;
@@ -1542,7 +1552,7 @@
   Object.assign(Studia, { S, call, esc, I, SPIN, plural, fmtDur, rel, pct, toast, modal, closeModal, menu, go, render,
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, MONTHS, WD, fmtK, limitsHTML, isReal: () => REAL,
-    aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch });
+    aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -1646,7 +1656,7 @@
     const b = await call("get_bootstrap");
     clearTimeout(slow);
     if (!b.ok) { startupError(b.error || "IEUStudia could not start."); return; }
-    S.boot = b; S.settings = b.settings || {}; S.profile = b.profile; S.courses = b.courses || []; S.queue = b.queue || []; S.lastSync = b.last_sync;
+    S.boot = b; S.settings = b.settings || {}; S.profile = b.profile; setCourses(b.courses); S.queue = b.queue || []; S.lastSync = b.last_sync;
     S.profiles = b.profiles || []; S.profileId = b.profile_id || "main";
     S.limits = b.limits || {};
     if (b.system) S.system = { ...S.system, ...b.system };

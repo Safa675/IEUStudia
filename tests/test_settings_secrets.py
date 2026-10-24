@@ -41,3 +41,23 @@ def test_can_resume_needs_a_password_or_session(tmp_path):
     secrets_store.clear_all()
     secrets_store.set_credentials("student", "pw")
     assert sync.can_resume()
+
+
+def test_the_app_and_its_helper_take_turns_with_the_secrets():
+    """Two processes (the window and the tray helper) must not overwrite each other's secrets.bin."""
+    import os
+    import subprocess
+    import sys
+    import time
+
+    hold = "import time, studia.secrets_store as s\nwith s._turn():\n    print('held', flush=True)\n    time.sleep(1.5)\n"
+    other = subprocess.Popen([sys.executable, "-c", hold], stdout=subprocess.PIPE, env=dict(os.environ))
+    try:
+        assert other.stdout.readline().strip() == b"held"
+        started = time.monotonic()
+        secrets_store.set_credentials("student", "new-password")       # waits for the other process
+        assert time.monotonic() - started > 0.8
+    finally:
+        other.wait(10)
+    assert secrets_store.get_credentials() == ("student", "new-password")
+    assert not list(secrets_path().parent.glob("secrets.bin.*tmp"))

@@ -40,6 +40,7 @@ class SyncService:
         self.log = log_ or log
         self._lock = threading.RLock()
         self._session = make_session()
+        self._gen = 0                    # + 1 at each sign-in and sign-out
         import_cookies(self._session, secrets_store.load_cookies())
 
     # ------------------------------------------------------------------ session helpers
@@ -49,11 +50,15 @@ class SyncService:
     def worker_session(self) -> requests.Session:
         """A private session (copy of the cookies) for a background thread."""
         with self._lock:
-            return clone_session(self._session)
+            s = clone_session(self._session)
+            s._studia_gen = self._gen  # type: ignore[attr-defined]
+            return s
 
     def absorb(self, session: requests.Session) -> None:
         """Merge cookies a worker session received (e.g. a refreshed Panopto ticket) and persist them."""
         with self._lock:
+            if getattr(session, "_studia_gen", self._gen) != self._gen:
+                return          # taken before a sign-out (or another sign-in): it must not sign this PC in again
             merge_cookies(self._session, session)
             self._save_cookies()
 
@@ -93,6 +98,7 @@ class SyncService:
             profile.username = username.strip()
             secrets_store.set_credentials(username.strip(), password)
             self._session = s
+            self._gen += 1
             self._save_cookies()
             self.lib.upsert_courses(courses)
             self._set_profile(profile)
@@ -105,6 +111,7 @@ class SyncService:
         with self._lock:
             secrets_store.clear_all()
             self._session = make_session()
+            self._gen += 1
 
     @staticmethod
     def check_account(username: str, password: str) -> tuple[Profile, list[Course], list[dict]]:
@@ -125,9 +132,15 @@ class SyncService:
                 return
             creds = secrets_store.get_credentials()
             if not creds:
+                if secrets_store.rejected():
+                    raise NeedLogin("IEULearn didn't accept your saved password (was it changed?). Sign in again.")
                 raise NeedLogin("Please sign in to IEULearn.")
             self.log.info("IEULearn session expired; signing in again")
-            learn.login(*creds)
+            try:
+                learn.login(*creds)
+            except AuthError:              # the password was changed: never try it again in the background
+                secrets_store.mark_rejected()
+                raise
             self._save_cookies()
 
     def ensure_panopto(self, course_id: Optional[str] = None) -> None:
@@ -158,6 +171,12 @@ class SyncService:
             self.log.warning("%s", exc)
             return course_id, "", s
 
+    def _panopto_open(self) -> bool:
+        try:
+            return Panopto(self._session).is_authenticated()
+        except (requests.RequestException, OSError):
+            return False
+
     @staticmethod
     def _list(course: Course, s: requests.Session) -> tuple[Course, list, requests.Session]:
         return course, Panopto(s).list_recordings(course.id, course.folder_id or ""), s
@@ -174,7 +193,12 @@ class SyncService:
                 probe_session = clone_session(self._session)
                 dash_session = clone_session(self._session)
                 f_dash = pool.submit(lambda: IEULearn(dash_session).dashboard())
-                panopto_ok = Panopto(probe_session).is_authenticated()
+                panopto_down = False
+                try:
+                    panopto_ok = Panopto(probe_session).is_authenticated()
+                except (requests.RequestException, OSError) as exc:   # IEULearn's own content still syncs
+                    self.log.warning("Panopto can't be reached: %s", exc)
+                    panopto_ok, panopto_down = False, True
                 early = []
                 if panopto_ok:  # fast path: list known folders while the dashboard loads
                     early = [pool.submit(self._list, c, clone_session(probe_session))
@@ -198,6 +222,8 @@ class SyncService:
             old = self.profile
             if old and old.username and not profile.username:
                 profile.username = old.username
+            if old and not profile.name:          # a page that came back without the name: keep who this is
+                profile.name, profile.student_number = old.name, profile.student_number or old.student_number
             self._set_profile(profile)
             self.lib.upsert_courses(courses)
             known = {c.id: c for c in self.lib.courses()}
@@ -211,7 +237,9 @@ class SyncService:
                 if not c.has_panopto and last and (dt.datetime.now() - dt.datetime.fromisoformat(last)).days < 1:
                     continue
                 todo.append(c.id)
-            if todo or not panopto_ok:
+            if panopto_down:
+                errors.append("Panopto isn't answering right now: new recordings are checked again next time.")
+            elif todo or not panopto_ok:
                 progress("Connecting to Panopto…")
                 self.ensure_login()
                 launch_ids = todo or [next((c.id for c in known.values() if c.folder_id), None)]
@@ -226,25 +254,30 @@ class SyncService:
                             self.lib.set_course_folder(cid, None, False)
                             self.lib.set_meta(f"nofolder:{cid}", dt.datetime.now().isoformat(timespec="seconds"))
                 self._save_cookies()
-                if not Panopto(self._session).is_authenticated():
-                    raise RuntimeError("Could not open Panopto through IEULearn. Try again in a moment.")
+                if any(c.folder_id for c in self.lib.courses()) and not self._panopto_open():
+                    panopto_down = True
+                    errors.append("Panopto didn't open through IEULearn: new recordings are checked again next time.")
 
             progress("Looking for new recordings…")
-            with_folders = [c for c in self.lib.courses() if c.folder_id]
+            with_folders = [c for c in self.lib.courses() if c.folder_id] if not panopto_down else []
             missing = [c for c in with_folders if c.id not in listed]
+            failed: list[str] = []
             with ThreadPoolExecutor(max_workers=6, thread_name_prefix="list") as pool:
-                futures = [pool.submit(self._list, c, clone_session(self._session)) for c in missing]
-                for f in futures:
+                futures = {pool.submit(self._list, c, clone_session(self._session)): c for c in missing}
+                for f, c in futures.items():
                     try:
                         course, recs, s = f.result()
                     except Exception as exc:  # noqa: BLE001 - one course failing must not stop the rest
-                        self.log.warning("Listing recordings failed: %s", exc)
-                        errors.append(str(exc))
+                        self.log.warning("Listing the recordings of %s failed: %s", c.code or c.id, exc)
+                        failed.append(c.code or c.name or c.id)
                         continue
                     merge_cookies(self._session, s)
                     listed[course.id] = recs
                     first = not self.lib.has_recordings(course.id)
                     new_ids += self.lib.merge_recordings(course.id, recs, first_sync=first)
+            if failed:
+                errors.append(f"Couldn't check new recordings for {', '.join(sorted(set(failed)))}: Panopto didn't "
+                              "answer. They're checked again next time.")
             self._save_cookies()
             self.lib.set_meta("last_sync", dt.datetime.now().isoformat(timespec="seconds"))
             secs = time.monotonic() - t0
@@ -318,6 +351,12 @@ class SyncService:
                     s = f.result()
                 except Exception as exc:  # noqa: BLE001 - the public site may be down; try again next time
                     self.log.info("Syllabus failed for %s: %s", cid, exc)
+                    continue
+                if not s and infos[cid].get("syllabus"):
+                    # "not found" may also be a department site that didn't answer: keep the one we have and look
+                    # again tomorrow instead of in a week
+                    retry = dt.datetime.now() - self.SYLLABUS_EVERY + dt.timedelta(days=1)
+                    self.lib.set_course_info(cid, syllabus_at=retry.isoformat(timespec="seconds"))
                     continue
                 self.lib.set_course_info(cid, syllabus=s.to_json() if s else {},
                                          syllabus_at=dt.datetime.now().isoformat(timespec="seconds"))

@@ -71,7 +71,9 @@ def _now() -> str:
 
 
 class Library:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, app_version: str = "") -> None:
+        """``app_version``: the app opening it; when that is a new version, a copy of the library as the previous
+        version left it is kept first (see _backup_before_upgrade)."""
         self.path = Path(path)
         self._lock = threading.RLock()
         self.db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=15)
@@ -79,11 +81,42 @@ class Library:
         with self._lock:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=NORMAL")
+            if app_version:
+                self._backup_before_upgrade(app_version)
             self.db.executescript(_SCHEMA)
             self._add_columns()
             self.fts = self._init_fts()
             self.db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema', ?)", (str(SCHEMA_VERSION),))
+            if app_version:
+                self.db.execute("INSERT INTO meta(key, value) VALUES('app_version', ?) "
+                                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (app_version,))
             self.db.commit()
+
+    def _backup_before_upgrade(self, app_version: str, keep: int = 3) -> None:
+        """The first time a new version opens the library: a copy of it in ``backups\\library-<old version>.db``
+        (the newest ``keep`` copies stay), so a mistake in a new version can never cost what is stored."""
+        try:
+            row = self.db.execute("SELECT value FROM meta WHERE key='app_version'").fetchone()
+            has_data = self.db.execute("SELECT 1 FROM courses LIMIT 1").fetchone() is not None
+        except sqlite3.OperationalError:          # a new library: nothing to keep
+            return
+        old = row[0] if row else ""
+        if old == app_version or not has_data:
+            return
+        folder = self.path.parent / "backups"
+        try:
+            folder.mkdir(exist_ok=True)
+            dest = folder / f"library-{old or 'before-' + app_version}.db"
+            copy = sqlite3.connect(str(dest))
+            try:
+                self.db.backup(copy)
+            finally:
+                copy.close()
+            for extra in sorted(folder.glob("library-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)[keep:]:
+                extra.unlink(missing_ok=True)
+            log.info("Library copied to %s before version %s opens it", dest, app_version)
+        except (OSError, sqlite3.Error) as exc:
+            log.warning("Could not keep a copy of the library before the upgrade: %s", exc)
 
     def _add_columns(self) -> None:
         """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS leaves old tables as they were)."""
@@ -198,8 +231,24 @@ class Library:
         with self._lock:
             existing = {r["delivery_id"] for r in self.db.execute(
                 "SELECT delivery_id FROM recordings WHERE course_id=?", (course_id,))}
+            fresh = [r.delivery_id for r in recs if r.delivery_id not in existing]
+            elsewhere: dict[str, bool] = {}      # in another course: True if it is gone from there
+            for i in range(0, len(fresh), 500):
+                chunk = fresh[i:i + 500]
+                for row in self.db.execute(
+                        "SELECT r.delivery_id, r.gone, c.active FROM recordings r LEFT JOIN courses c ON c.id=r.course_id "
+                        f"WHERE r.delivery_id IN ({','.join('?' * len(chunk))})", chunk):
+                    elsewhere[row[0]] = bool(row[1]) or not row[2]
             for r in recs:
                 start = r.start.isoformat()
+                if r.delivery_id in elsewhere:   # already in another of your courses
+                    if elsewhere[r.delivery_id]:     # gone from there (or that course is gone): it moved here
+                        self.db.execute(
+                            "UPDATE recordings SET course_id=?, folder_id=?, folder_path=?, name=?, start=?, duration_s=?, "
+                            "viewer_url=?, session_id=?, kind=?, section_tag=?, last_seen=?, gone=0 WHERE delivery_id=?",
+                            (course_id, r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url,
+                             r.session_id, r.kind, r.section_tag, now, r.delivery_id))
+                    continue                         # listed by both: it stays where it is, and is not "new"
                 if r.delivery_id in existing:
                     self.db.execute(
                         "UPDATE recordings SET folder_id=?, folder_path=?, name=?, start=?, duration_s=?, viewer_url=?, "
@@ -208,13 +257,13 @@ class Library:
                          r.section_tag, now, r.delivery_id))
                 else:
                     is_new = 0 if first_sync else 1
-                    self.db.execute(
+                    cur = self.db.execute(
                         "INSERT OR IGNORE INTO recordings(delivery_id, course_id, folder_id, folder_path, name, start, "
                         "duration_s, viewer_url, session_id, kind, section_tag, is_new, first_seen, last_seen) "
                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (r.delivery_id, course_id, r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url,
                          r.session_id, r.kind, r.section_tag, is_new, now, now))
-                    if is_new:
+                    if is_new and cur.rowcount == 1:
                         new_ids.append(r.delivery_id)
             seen = {r.delivery_id for r in recs}
             if recs:  # an empty listing is more likely an auth hiccup than a wiped folder: keep what we know
@@ -403,7 +452,8 @@ class Library:
         now = _now()
         new_ids: list[str] = []
         with self._lock:
-            self.db.execute("DELETE FROM units WHERE course_id=?", (course_id,))
+            if units:   # an empty plan is more likely a hiccup than a course without weeks: keep what we know
+                self.db.execute("DELETE FROM units WHERE course_id=?", (course_id,))
             existing = {r[0]: r[1] for r in self.db.execute(
                 "SELECT resource_id, url FROM materials WHERE course_id=?", (course_id,))}
             seen: set[str] = set()

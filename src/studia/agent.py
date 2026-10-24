@@ -160,6 +160,7 @@ class Helper:
         self.wake = threading.Event()
         self.first_delay = FIRST_CHECK_S if at_login else 20
         self.last = ""
+        self.told_rejected = False       # said once that IEULearn refused the saved password
         from .tray import Tray
 
         self.tray = Tray("IEUStudia", _icon(), self._menu, self._command, self._open)
@@ -220,6 +221,7 @@ class Helper:
             self.wake.wait(self.cfg.sync_minutes * 60)
 
     def _check(self) -> None:
+        from . import __version__
         from .accounts import activate
         from .config import load_settings
         from .library import Library
@@ -228,12 +230,24 @@ class Helper:
 
         activate()
         settings = load_settings()
-        lib = Library(db_path())
+        lib = Library(db_path(), app_version=__version__)
         try:
+            from . import secrets_store
+
             sync = SyncService(lib, lambda: settings, log)
             if not sync.has_credentials():
+                if secrets_store.rejected():
+                    self.tray.set_tooltip("IEUStudia · IEULearn didn't accept your saved password: open IEUStudia "
+                                          "to sign in again")
+                    if not self.told_rejected:
+                        self.told_rejected = True
+                        self.tray.notify("IEULearn didn't accept your saved password",
+                                         "Did you change it? Open IEUStudia and sign in again; until then there are "
+                                         "no notifications.")
+                    return
                 self.tray.set_tooltip("IEUStudia · sign in in the app to get notifications")
                 return
+            self.told_rejected = False
             res = sync.sync()
             content = sync.sync_content()
             seen = _load_seen()
@@ -274,7 +288,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     set_app_id()
     migrate_legacy_data()
     activate()
-    setup_logging("--debug" in argv)
+    setup_logging("--debug" in argv, "helper.log")
     from . import appconfig
 
     if not appconfig.load().tray:

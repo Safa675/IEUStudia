@@ -128,8 +128,17 @@ def all_course_views(lib: Any, settings: Settings, jobs: Iterable[dict[str, Any]
     new_anns: dict[str, int] = defaultdict(int)
     for a in lib.announcements(limit=500):
         new_anns[a["course_id"]] += 1 if a["is_new"] else 0
-    for c in lib.courses():
+    active = lib.courses()
+    # a course that left your IEULearn dashboard (dropped, or a term ago) stays while it holds something of yours
+    done = lib.transcribed_ids()
+    yours = ({r.course_id for r in all_recs if r.delivery_id in done}
+             | {m["course_id"] for ms in mats.values() for m in ms if m.get("local_path")}
+             | {ch["course_id"] for ch in lib.chats()} | {p["course_id"] for p in lib.plans()})
+    ids = {c.id for c in active}
+    earlier = [c for c in lib.courses(True) if c.id not in ids and c.id in yours]
+    for c in active + earlier:
         v = course_view(c, by_course.get(c.id, []), settings, job_map, warnings, slides_ids)
+        v["inactive"] = c.id not in ids
         cm = mats.get(c.id, [])
         v["content"] = {"materials": len(cm), "materials_new": sum(1 for m in cm if m["is_new"]),
                         "downloaded": sum(1 for m in cm if m.get("local_path")),
@@ -248,6 +257,10 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         w["units"].append(item)
         if not w["readings"] and u.get("readings"):
             w["readings"] = u["readings"]
+    known_units = {u["unit_id"] for u in units}
+    stray = [m for uid, ms in mats.items() if uid not in known_units for m in ms]
+    if stray:          # downloaded files of a week that left the plan: still on your PC, so still listed
+        general.append({"id": "", "title": "No longer in the weekly plan", "readings": "", "materials": stray})
     for n in sorted(set(tr_topics) | set(en_weeks)):
         week(n)
     for d in cv["days"]:

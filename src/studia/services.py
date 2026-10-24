@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 
 import requests
 
-from . import store
+from . import __version__, store
 from .config import Settings, apply_patch, load_settings, save_settings
 from .domain import Course, Recording
 from .library import Library
@@ -32,7 +32,7 @@ class Services:
         self._lock = threading.RLock()
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self.settings: Settings = load_settings()
-        self.lib = Library(db_path())
+        self.lib = Library(db_path(), app_version=__version__)    # a new version keeps a copy first
         self.lib.reset_interrupted()
         if migrate_output:
             self._migrate_output_root()

@@ -41,3 +41,62 @@ def test_status_and_fts_search(tmp_path):
     lib.set_status("a", "transcribing")
     lib.reset_interrupted()
     assert lib.get_recording("a").status == "done"   # transcript exists -> back to done
+
+
+def test_an_empty_weekly_plan_keeps_the_weeks_and_removed_weeks_keep_downloaded_files(tmp_path):
+    from studia.config import Settings
+    from studia.coursesite import Resource, Unit
+    from studia.views import course_detail
+
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="P", term="T")])
+    weeks = [Unit(f"u{n}", n, f"Hafta {n}", dt.date(2026, 9, 21) + dt.timedelta(weeks=n - 1),
+                  dt.date(2026, 9, 27) + dt.timedelta(weeks=n - 1), "",
+                  [Resource(f"r{n}", f"Week {n}", f"w{n}.pdf", "pdf", "pdf", "u", "d")]) for n in (1, 2)]
+    lib.merge_units("c", weeks, first_sync=True)
+    lib.set_material_file("r1", str(tmp_path / "w1.pdf"), 10, "u")
+    lib.merge_units("c", [], first_sync=False)                    # a page without the plan: a hiccup
+    assert [u["unit_id"] for u in lib.units("c")] == ["u1", "u2"]
+    lib.merge_units("c", weeks[1:], first_sync=False)            # week 1 removed from IEULearn
+    d = course_detail(lib, Settings(), "c")
+    (kept,) = [g for g in d["general"] if g["title"] == "No longer in the weekly plan"]
+    assert [m["id"] for m in kept["materials"]] == ["r1"] and kept["materials"][0]["gone"]
+
+
+def test_a_new_version_keeps_a_copy_of_the_library_first(tmp_path):
+    path = tmp_path / "library.db"
+    lib = Library(path, app_version="2.1.1")
+    lib.upsert_courses([Course(id="c", title="t", code="MATH 240", name="P")])
+    lib.close()
+    Library(path, app_version="2.1.1").close()                   # same version: no copy
+    assert not (tmp_path / "backups").exists()
+    lib = Library(path, app_version="2.2.0")
+    assert lib.get_meta("app_version") == "2.2.0" and lib.get_course("c") is not None
+    lib.close()
+    copy = Library(tmp_path / "backups" / "library-2.1.1.db")
+    assert copy.get_course("c").code == "MATH 240"
+    copy.close()
+    Library(tmp_path / "fresh.db", app_version="2.2.0").close()  # a new library: nothing to keep
+    assert [p.name for p in (tmp_path / "backups").iterdir()] == ["library-2.1.1.db"]
+
+
+def test_a_course_that_left_the_dashboard_stays_while_it_holds_your_transcripts(tmp_path):
+    from studia import store
+    from studia.config import Settings
+    from studia.domain import Segment, Transcript
+    from studia.views import all_course_views
+
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="a", title="t", code="MATH 240", name="P"),
+                        Course(id="b", title="t", code="EEE 215", name="E"),
+                        Course(id="c", title="t", code="PHYS 101", name="F")])
+    lib.merge_recordings("b", [Recording(delivery_id="r1", course_id="b", folder_id="f", folder_path="", name="n",
+                                         start=dt.datetime(2026, 10, 13, 9), duration_s=3000, viewer_url="v")],
+                         first_sync=True)
+    t = Transcript(delivery_id="r1", segments=[Segment(0, 5, "Hello.", "en", 0.9)], duration_s=3000, speech_s=5,
+                   language_seconds={"en": 5}, model="m", device="cpu", engine_version="t", created_at="x")
+    lib.save_transcript(t, store.save_transcript(t))
+    lib.set_status("r1", "done")
+    lib.upsert_courses([Course(id="a", title="t", code="MATH 240", name="P")])     # b and c left the dashboard
+    views = all_course_views(lib, Settings(), [])
+    assert [(v["code"], v["inactive"]) for v in views] == [("MATH 240", False), ("EEE 215", True)]   # c: nothing yours

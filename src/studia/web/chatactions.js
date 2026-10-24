@@ -11,7 +11,7 @@
     study_notes: "ai", open_lecture: "file-text", weekly_digest: "calendar", calendar: "calendar", sync_course: "zap", search: "search" };
   const found = {};                     // "seq:i" -> action
   const chatCourse = () => (S.chat.draft || S.chat.data || {}).course_id || "";
-  const course = (cid) => S.courses.find((c) => c.id === cid) || {};
+  const course = (cid) => St.findCourse(cid) || {};
   const weeksText = (w) => (!w || !w.length ? "" : w.length === 1 ? `week ${w[0]}` : `weeks ${Math.min(...w)}–${Math.max(...w)}`);
   const dayOf = (cid, date) => ((course(cid).days || []).find((d) => d.date === date && d.mine !== false) || (course(cid).days || []).find((d) => d.date === date) || {}).day_key;
 

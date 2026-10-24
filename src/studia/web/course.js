@@ -223,7 +223,7 @@
   async function setSection(cid, patch) {
     const r = await call("set_course_prefs", cid, patch);
     if (!r.ok) { toast(r.error, "error"); return; }
-    S.courses = r.courses; renderSidebar(); renderView();
+    St.setCourses(r.courses); renderSidebar(); renderView();
     reloadSoon(cid);                                   // the weeks' lectures depend on it
   }
 
@@ -253,7 +253,7 @@
     return `<div class="tabs" role="tablist">${tabs.map(([k, l, ic, n]) => `<button role="tab" class="tab ${tab === k ? "on" : ""}" data-act="course-tab" data-tab="${k}">${I(ic, "sm")}${l}${n ? `<span class="count ${k === "alerts" ? "warn" : "new"}" ${k === "alerts" ? `title="In the last ${RECENT_DAYS} days"` : ""}>${n}</span>` : ""}</button>`).join("")}</div>`;
   }
   function coursePage(v) {
-    const c = S.courses.find((x) => x.id === v.courseId);
+    const c = St.findCourse(v.courseId);
     if (!c) return `<div class="view-inner">${emptyHTML("book", "Course not found", "")}</div>`;
     const d = S.cd[c.id];
     const tab = v.tab || "weeks";
@@ -265,7 +265,8 @@
     else if (tab === "materials") body = materialsHTML(c, d);
     else if (tab === "announcements") body = announcementsHTML(c, d);
     else body = weeksHTML(c, d);
-    return `<div class="view-inner">${courseHero(c, d)}${sectionAsk(c)}${tab === "alerts" ? "" : headsUpHTML(c, d)}${tabsHTML(c, d, tab)}<div class="tab-body">${body}</div></div>`;
+    const gone = c.inactive ? `<div class="callout info">${I("info")}<div>This course is no longer on your IEULearn dashboard (dropped, or from an earlier term). Its transcripts, files, chats and plans stay here.</div></div>` : "";
+    return `<div class="view-inner">${courseHero(c, d)}${gone}${sectionAsk(c)}${tab === "alerts" ? "" : headsUpHTML(c, d)}${tabsHTML(c, d, tab)}<div class="tab-body">${body}</div></div>`;
   }
 
   function weeksHTML(c, d) {
@@ -482,7 +483,7 @@
     const said = items.filter((a) => (a.source === "announcement" ? sources.has(a.announcement_id)
       : inWeeks(a) && (a.categories || [a.category]).some((k) => kinds.includes(k)))).slice(0, 6);
     const stressed = items.filter((a) => a.source === "lecture" && a.category === "important" && inWeeks(a)).slice(0, 6);
-    const cv = S.courses.find((x) => x.id === c.id) || { days: [] };
+    const cv = St.findCourse(c.id) || { days: [] };
     const todo = days.filter((x) => !x.transcribed).flatMap((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || [])
       .filter((r) => r.part && r.mine !== false && r.status !== "done" && !["queued", "downloading", "transcribing"].includes(r.status)).map((r) => r.id));
     const busy = days.filter((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || []).some((r) => ["queued", "downloading", "transcribing"].includes(r.status)));
@@ -496,7 +497,7 @@
       <div class="grow"><b>${title}</b>${detail ? `<div class="dim">${detail}</div>` : ""}</div>${action || ""}</div>`;
   }
   function readyHTML() {
-    const c = S.courses.find((x) => x.id === R.cid), d = S.cd[R.cid];
+    const c = St.findCourse(R.cid), d = S.cd[R.cid];
     const e = d && ((d.alerts || {}).plan || []).find((x) => x.name === R.name);
     if (!c || !d || !e) return `<h2>${I("cap")} Get ready</h2><p class="lead">This assessment is no longer in the course's plan.</p>
       <div class="actions"><button class="btn" data-act="modal-close">Close</button></div>`;
@@ -632,7 +633,7 @@
     },
     "course-seen": async (el) => {
       const r = await call("course_mark_seen", el.dataset.id || "", el.dataset.what || "all");
-      if (r.ok) { S.courses = r.courses; renderSidebar(); }
+      if (r.ok) { St.setCourses(r.courses); renderSidebar(); }
       (el.dataset.id ? [el.dataset.id] : Object.keys(S.cd)).forEach((cid) => reloadSoon(cid));
     },
     "ann-more": (el) => { S.ann.add(el.dataset.id); renderView(); },
@@ -664,7 +665,7 @@
     },
     "rd-read": (el) => { setRead(el.dataset.day, el.checked); drawReady(); },
     "rd-transcribe": async () => {
-      const c = S.courses.find((x) => x.id === R.cid), d = S.cd[R.cid];
+      const c = St.findCourse(R.cid), d = S.cd[R.cid];
       const e = d && ((d.alerts || {}).plan || []).find((x) => x.name === R.name);
       const ids = c && e ? readiness(c, d, e).todo : [];
       if (!ids.length) return;
@@ -674,13 +675,13 @@
       reloadSoon(R.cid);
     },
     "rd-download": () => {
-      const c = S.courses.find((x) => x.id === R.cid), d = S.cd[R.cid];
+      const c = St.findCourse(R.cid), d = S.cd[R.cid];
       const e = d && ((d.alerts || {}).plan || []).find((x) => x.name === R.name);
       const ids = c && e ? readiness(c, d, e).missing : [];
       if (ids.length) download(ids, false).then(drawReady);
     },
     "section-menu": (el) => {
-      const c = S.courses.find((x) => x.id === el.dataset.id); if (!c) return;
+      const c = St.findCourse(el.dataset.id); if (!c) return;
       St.menu(el, [...c.available_sections.map((x) => ({ id: "s" + x, icon: x === c.my_section ? "check" : "users", label: `Section ${x}`,
         desc: x === c.my_section ? "your section" : "", run: () => setSection(c.id, { my_section: x, show_mode: "mine" }) })), "-",
         { id: "all", icon: "layers", label: c.show_mode === "all" ? "Showing all sections" : "Show all sections' lectures",
@@ -715,7 +716,7 @@
     return { items, counts, total: items.length, plan };
   }
   St.mocks.course_detail = (cid) => {
-    const c = S.courses.find((x) => x.id === cid) || {};
+    const c = St.findCourse(cid) || {};
     const wds = new Set((c.days || []).map((dd) => day(dd.date).getDay()));        // the weekdays it meets on
     const weeks = mockWeeks.map(([en, tr, start], i) => {
       const end = new Date(Date.parse(start + "T00:00:00Z") + 6 * 864e5).toISOString().slice(0, 10);

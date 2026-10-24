@@ -47,7 +47,7 @@
     if (S.view.name === "plan" && S.view.planId === id) renderView();
   }
   const running = () => (S.plans || []).filter((p) => ["running", "queued"].includes(p.status)).length;
-  const courseOf = (id) => S.courses.find((c) => c.id === id) || {};
+  const courseOf = (id) => St.findCourse(id) || {};
 
   // ------------------------------------------------------------------ list view
   function stateLine(p) {
