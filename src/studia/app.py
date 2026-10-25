@@ -372,7 +372,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
 
     def on_closing() -> bool:     # runs on the UI thread
         services = started.get("services")
-        if api._restart:          # switching profiles: the user already confirmed
+        if api._restart or api._update_installer:     # switching profiles or updating: the user already confirmed
             return True
         # every question first: whoever keeps the window open at the second one has nothing cancelled
         setup = api._setup_running
@@ -402,6 +402,12 @@ def _main(argv: Optional[list[str]] = None) -> None:
     log.info("IEUStudia closed")
     if api._restart:
         _relaunch(argv)
+    elif api._update_installer:                  # its installer replaces this copy, then opens the new one
+        from . import updates
+        from .winutil import release_single_instance
+
+        release_single_instance()
+        updates.run_installer(api._update_installer)
 
 
 if __name__ == "__main__":

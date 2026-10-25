@@ -886,7 +886,7 @@ def ai_status(which: str = "") -> dict[str, Any]:
         from . import chatgpt
 
         native = chatgpt.status()          # signed_in, email, plan_allowed, registered, sign_in (a running attempt)
-        out["chatgpt"] = {**native, "model": cfg.codex_model, "needs": "ChatGPT Plus or Pro subscription",
+        out["chatgpt"] = {**native, "model": cfg.codex_model, "needs": "a ChatGPT plan that apps may use (Plus or Pro)",
                           "models": _chatgpt_models() if native["signed_in"] and native["plan_allowed"] else [],
                           "test": ai_setup.last_test("chatgpt")}
     if which in ("", "claude"):
@@ -901,7 +901,7 @@ def ai_status(which: str = "") -> dict[str, Any]:
         x = codex_cli_info()
         auth = codex_auth() if x["available"] else {"logged_in": False, "plan": "", "email": ""}
         out["codex"] = {**x, **auth, "model": cfg.codex_model, "models": codex_models(),
-                        "needs": "ChatGPT Plus or Pro subscription", "ours": bool(ai_setup.codex_exe()),
+                        "needs": "a ChatGPT plan with Codex", "ours": bool(ai_setup.codex_exe()),
                         "plan_status": ai_setup.plan_status("codex", auth["plan"], auth["logged_in"]),
                         "job": ai_setup.job("codex"), "test": ai_setup.last_test("codex")}
     if not which:

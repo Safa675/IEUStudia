@@ -15,7 +15,11 @@ from .cancel import Cancelled, check
 SAMPLE_RATE = 16000
 log = logging.getLogger("studia")
 
-__all__ = ["SAMPLE_RATE", "decode_audio", "media_duration", "Cancelled"]
+__all__ = ["SAMPLE_RATE", "NoAudioTrack", "decode_audio", "media_duration", "Cancelled"]
+
+
+class NoAudioTrack(ValueError):
+    """A file with no sound track at all (a video-only stream, a screen recording)."""
 
 
 def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = None) -> np.ndarray:
@@ -29,7 +33,7 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
     with av.open(str(path), mode="r") as container:
         streams = [s for s in container.streams if s.type == "audio"]
         if not streams:
-            raise ValueError("This file has no audio track.")
+            raise NoAudioTrack("This file has no audio track.")
         stream = streams[0]
         stream.thread_type = "AUTO"
         resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)

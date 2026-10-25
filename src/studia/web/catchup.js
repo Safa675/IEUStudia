@@ -35,7 +35,7 @@
     const mats = S.catchup.mats;
     const big = t.work > 3600 || t.lectures > 8;
     const summary = t.lectures
-      ? `<b>${plural(t.lectures, "lecture")}</b> to transcribe (≈ ${fmtDur(t.audio)} of audio) — roughly <b>${fmtDur(t.work)}</b> ${est.gpu ? "on your GPU" : "on the CPU, which is slow"}; about ${mb(t.audioMb)} of audio is downloaded and deleted afterwards.`
+      ? `<b>${plural(t.lectures, "lecture")}</b> to transcribe (≈ ${fmtDur(t.audio)} of audio) — roughly <b>${fmtDur(t.work)}</b> ${est.gpu ? "with your graphics card" : "on the processor, which is slow"}; about ${mb(t.audioMb)} of audio is downloaded and deleted afterwards.`
       : "Every lecture of your sections is transcribed already.";
     const section = one && c0 && c0.needs_section && c0.waiting
       ? `<div class="sync-note">${I("users")}<div>This course publishes the lectures of several sections and yours isn’t set yet, so its ${plural(c0.waiting, "lecture")} are held back. Choose your section on the course page first.</div></div>` : "";
@@ -43,8 +43,8 @@
     return `<p class="lead">${one ? `Checks IEULearn and Panopto, then transcribes ${esc(c0 ? c0.code : "this course")}’s lectures that aren’t transcribed yet (your section, newest first)` : "Checks IEULearn and Panopto, then transcribes every lecture of your sections that isn’t transcribed yet (newest first, across all courses)"}${mats ? " and downloads the materials" : ""}. Anything new the sync finds is included.</p>
       ${one ? "" : `<div class="sync-pick">${est.courses.map(rowHTML).join("")}</div>`}
       ${section}
-      <div class="sync-note${big ? "" : " calm"}">${I(big ? "alert" : "info")}<div>${summary}${t.lectures ? ` ${big ? "Your PC works hard while this runs (GPU, fans); " : ""}you can keep using IEUStudia and cancel any time from the queue bar.` : ""}</div></div>
-      <div class="sync-note calm">${I("megaphone")}<div>Heads-ups — quizzes, exams, homework the lecturer mentions — appear as each lecture is transcribed. No AI is used: notes, study plans and chats stay on demand.${others ? ` Lectures of other sections are skipped (${others}).` : ""}</div></div>
+      <div class="sync-note${big ? "" : " calm"}">${I(big ? "alert" : "info")}<div>${summary}${t.lectures ? ` ${big ? "Your PC works hard while this runs, and its fans may get loud. " : ""}You can keep using IEUStudia and cancel any time from the bar at the bottom of the window.` : ""}</div></div>
+      <div class="sync-note calm">${I("megaphone")}<div>Heads-ups — quizzes, exams, homework the lecturer mentions — appear as each lecture is transcribed. No AI is used here: notes, study plans and chats run only when you ask for them.${others ? ` Lectures of other sections are skipped (${others}).` : ""}</div></div>
       <label class="mini-toggle" style="margin:10px 0 0"><input type="checkbox" class="switch sm" data-act="cu-mats" ${mats ? "checked" : ""}>Also download materials${t.materials ? ` (${plural(t.materials, "file")})` : " (none missing)"}</label>
       <div class="actions"><button class="btn" data-act="modal-close">Cancel</button>
         <button class="btn primary" data-act="cu-go" ${!one && !t.rows.length ? "disabled" : ""}>${I("zap", "sm")} ${t.lectures || (mats && t.materials) ? (one ? "Sync course" : "Start full sync") : "Sync now"}</button></div>`;
@@ -55,7 +55,7 @@
   }
 
   async function dialog(courseId) {
-    if (S.catchup.running) { toast("A full sync is starting already — see the queue bar.", "info"); return; }
+    if (S.catchup.running) { toast("A full sync is already starting. Once it has checked IEULearn, its lectures appear in the bar at the bottom of the window.", "info"); return; }
     const one = !!courseId;
     modal(`<h2>${I("zap")} ${one ? "Sync this course" : "Full sync — every course"}</h2><div id="cu-body">${St.skeleton ? St.skeleton() : SPIN()}</div>`);
     const r = await call("catch_up_estimate", courseId || null);

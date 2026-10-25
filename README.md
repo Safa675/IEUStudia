@@ -20,6 +20,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/mirzaisi/IEUStudia/releases/latest/download/IEUStudia-Setup.exe"><b>Download IEUStudia for Windows</b></a>
+  &nbsp;·&nbsp; <a href="#installing">How to install it</a>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/home.png" width="880" alt="The IEUStudia home screen with this week's quizzes and the course cards">
 </p>
 
@@ -88,7 +93,8 @@ to learn.ieu.edu.tr, the same as when you sign in on the website.
 
 ## Installing
 
-1. Download `IEUStudia-Setup-<version>.exe` from the [latest release](https://github.com/mirzaisi/IEUStudia/releases/latest).
+1. Download [IEUStudia-Setup.exe](https://github.com/mirzaisi/IEUStudia/releases/latest/download/IEUStudia-Setup.exe).
+   This link always gets the newest version (it's also on the [releases page](https://github.com/mirzaisi/IEUStudia/releases/latest)).
    The installer isn't code-signed yet, and few people have downloaded it so far, so your browser may say it
    "isn't commonly downloaded". In Edge, open the download list, click *⋯* next to the file, then *Keep*, *Show
    more* and *Keep anyway*. In Chrome, click *Keep* (or *Download anyway*).
@@ -104,7 +110,10 @@ to learn.ieu.edu.tr, the same as when you sign in on the website.
    - the downloads, with their sizes shown before anything starts,
    - and signing in to IEULearn.
 
-Each release also has a portable zip if you'd rather not install anything.
+Once it's installed, IEUStudia tells you when there's a new version and updates itself when you click
+*Update*. You don't download anything yourself, Windows doesn't warn you again, and your courses and transcripts
+stay. Each release also has a portable zip
+if you'd rather not install anything (that one doesn't update itself).
 
 ### What your PC needs
 
@@ -130,9 +139,9 @@ AI is optional. Transcripts, heads-ups, search and everything else work without 
 
 | Choice | What you need | What you get |
 |---|---|---|
-| ChatGPT | A ChatGPT Plus or Pro subscription | Everything: chat, notes, flashcards, prep packs, video study plans. |
+| ChatGPT | A ChatGPT account whose plan apps may use: Plus and Pro can; for Free and Go, OpenAI decides | Everything: chat, notes, flashcards, prep packs, video study plans. |
 | Claude | A Claude Pro or Max subscription | The same features. |
-| ChatGPT through the Codex CLI | A ChatGPT Plus or Pro subscription | The same features, for people who already use OpenAI's Codex CLI. |
+| ChatGPT through the Codex CLI | A ChatGPT plan with Codex (Free and Go have smaller limits) | The same features, for people who already use OpenAI's Codex CLI. |
 | Offline model | Nothing to pay for, but at least 8 GB of memory | Short notes and simple questions, on your PC (Qwen3 1.7B or 4B). No study plans. |
 | No AI | Nothing | The AI buttons are hidden. |
 
@@ -173,12 +182,22 @@ quotes behind every video they recommend.
 - IEUStudia connects to IEULearn and Panopto (your courses and recordings), the public İEÜ syllabus pages, Hugging Face
   (to download the speech model and the offline AI model, once), PyPI (NVIDIA's GPU libraries, once, only if you have
   an NVIDIA card), YouTube (search and captions, only for video study plans), and Anthropic or OpenAI (only when you
-  use an AI feature; the lecture text you chose is sent to them under your account). Setting up Claude downloads
-  Claude Code from claude.ai; signing in with ChatGPT happens on auth.openai.com.
+  use an AI feature; the lecture text you chose is sent to them under your account), and GitHub (see below). Setting
+  up Claude downloads Claude Code from claude.ai; signing in with ChatGPT happens on auth.openai.com.
+- An installed copy looks at IEUStudia's newest release on GitHub about once a day, so it can tell you about a new
+  version. The request says which IEUStudia version is asking and nothing about you or your courses. You can turn it
+  off in *Settings → About*. When you choose to update, the installer is downloaded from GitHub and checked against
+  the release's SHA-256 checksums before it runs.
 - The ChatGPT sign-in is kept on your PC encrypted with DPAPI, like your EkoID password. It only allows requests on
   your plan, not access to your ChatGPT conversations.
 - App data (settings, the encrypted login, your library, models, logs) is kept in `%LOCALAPPDATA%\IEUStudia`.
   Transcripts, notes and downloaded files go to `Documents\IEUStudia`.
+- The services IEUStudia uses have their own privacy policies:
+  [GitHub](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement),
+  [Hugging Face](https://huggingface.co/privacy), [PyPI](https://policies.python.org/pypi.org/Privacy-Notice/),
+  [YouTube (Google)](https://policies.google.com/privacy), [OpenAI](https://openai.com/policies/privacy-policy/) and
+  [Anthropic](https://www.anthropic.com/legal/privacy). IEULearn and Panopto are run for your university and fall
+  under its rules.
 
 ## Uninstalling
 
@@ -201,8 +220,10 @@ No, you need the subscription, not the app. ChatGPT connects with a sign-in in y
 installs Claude Code for you during setup (see [above](#how-chatgpt-and-claude-are-connected)).
 
 **Does the free ChatGPT or Claude plan work?**
-Not for the AI features. OpenAI lets apps use only ChatGPT Plus and Pro plans, and Claude Code needs Claude Pro or Max.
-Everything else in IEUStudia works without any subscription, and the offline model, which runs on your PC, is free.
+For ChatGPT, maybe: OpenAI decides which plans apps like IEUStudia may use. Plus and Pro can; Free and Go come with
+smaller limits, if OpenAI allows them at all. The setup sends a short test message, which shows whether yours works.
+Claude needs Claude Pro or Max (Claude Code isn't part of the free plan). Everything else in IEUStudia works without
+any subscription, and the offline model, which runs on your PC, is free.
 
 **Does it work on a Mac or on Linux?**
 Not right now. It depends on Windows parts such as WebView2, DPAPI and the notification area.
@@ -224,7 +245,8 @@ uv run pytest -q               # run the tests
 
 The interface is plain HTML, CSS and JavaScript in `src/studia/web`. Open `index.html` in a browser to work on it with
 made-up data; `#dark`, `#signin` and `#setup` show other states. Setting `STUDIA_HOME` to a folder runs the app with
-separate data (the tests do this), and `STUDIA_FAKE_ENGINE=1` replaces Whisper with a stub. `install.cmd` installs a
+separate data (the tests do this), `STUDIA_FAKE_ENGINE=1` replaces Whisper with a stub, and `STUDIA_UPDATE_FEED`
+points the update check at another release feed (a URL answering like GitHub's latest-release API), for testing. `install.cmd` installs a
 development build for your Windows account.
 
 Releases are built by GitHub Actions: pushing a version tag such as `v2.1.0` builds the installer and the zip and
@@ -262,6 +284,11 @@ data you lose. AI features can make mistakes, so check AI answers against your l
 IEUStudia is released under the [MIT License](LICENSE). The parts it builds on keep their own licenses:
 faster-whisper and the Whisper models (MIT), CTranslate2 (MIT), the Qwen3 models (Apache-2.0), pywebview
 (BSD-3-Clause), PyAV (BSD-3-Clause), yt-dlp (Unlicense) and pypdfium2 (Apache-2.0 or BSD-3-Clause). NVIDIA's CUDA
-libraries are downloaded from NVIDIA's own packages on PyPI and are covered by NVIDIA's license. Claude Code and the
+libraries are downloaded from NVIDIA's own packages on PyPI and are covered by NVIDIA's license.
+
+The Windows build also contains Python (PSF License); FFmpeg through PyAV, in a build that includes x264 and x265 and
+is therefore under the GPL; CTranslate2's Intel oneMKL and OpenMP runtime and NVIDIA's cuDNN loader (their makers'
+licenses); Microsoft's WebView2 files and the Visual C++ runtime (Microsoft's licenses); and PyInstaller's
+bootloader (GPL-2.0 with an exception that allows bundling any program). The installer is made with Inno Setup. Claude Code and the
 Codex CLI are installed from their official sources and come under Anthropic's and OpenAI's own terms. IEUStudia
 isn't made or endorsed by Anthropic or OpenAI.

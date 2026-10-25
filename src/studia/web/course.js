@@ -251,7 +251,8 @@
     const heads = d && d.alerts ? d.alerts.items.filter((a) => isKey(a) && daysAgo(a.date) <= RECENT_DAYS).length : 0;
     const tabs = [["weeks", "Weeks", "calendar", 0], ["alerts", "Heads-up", "alert", heads], ["overview", "Overview", "target", 0], ["lectures", "Lectures", "video", c.counts.new],
       ["materials", "Materials", "layers", cn.materials_new], ["announcements", "Announcements", "megaphone", cn.announcements_new]];
-    return `<div class="tabs" role="tablist">${tabs.map(([k, l, ic, n]) => `<button role="tab" class="tab ${tab === k ? "on" : ""}" data-act="course-tab" data-tab="${k}">${I(ic, "sm")}${l}${n ? `<span class="count ${k === "alerts" ? "warn" : "new"}" ${k === "alerts" ? `title="In the last ${RECENT_DAYS} days"` : ""}>${n}</span>` : ""}</button>`).join("")}</div>`;
+    const tips = { alerts: "Quizzes, exams, homework and schedule changes your lecturer announced or mentioned in class" };
+    return `<div class="tabs" role="tablist">${tabs.map(([k, l, ic, n]) => `<button role="tab" class="tab ${tab === k ? "on" : ""}" data-act="course-tab" data-tab="${k}"${tips[k] ? ` title="${tips[k]}"` : ""}>${I(ic, "sm")}${l}${n ? `<span class="count ${k === "alerts" ? "warn" : "new"}" ${k === "alerts" ? `title="In the last ${RECENT_DAYS} days"` : ""}>${n}</span>` : ""}</button>`).join("")}</div>`;
   }
   function coursePage(v) {
     const c = St.findCourse(v.courseId);
@@ -401,6 +402,18 @@
           <span class="spacer"></span><span class="cc-go">${I("arrow-right", "sm")}</span></span>
       </span></button>`;
   }
+  // the first days: what to do, in three steps (until the first lecture is transcribed, or "Got it")
+  function howToHTML() {
+    const ai = (S.system.ai || {}).available ? `, or ask ${esc(St.aiName())} about them` : "";
+    const step = (n, title, text) => `<div class="howto-step"><span class="howto-n">${n}</span><div><b>${title}</b><span>${text}</span></div></div>`;
+    return `<div class="card howto"><div class="howto-head"><b>How IEUStudia works</b>
+        <button class="btn ghost sm" data-act="howto-done">Got it</button></div>
+      <div class="howto-steps">
+        ${step(1, "It finds your lectures", "Every sync checks IEULearn and Panopto for your courses, recordings, files and announcements.")}
+        ${step(2, "You pick what to transcribe", "Open a course, go to Lectures and click Transcribe. It runs on this PC; nothing is transcribed until you choose it.")}
+        ${step(3, "Then read, search and study", `Each paragraph jumps to its moment in the recording. Search all your lectures at once${ai}.`)}
+      </div></div>`;
+  }
   function homeView() {
     const now = new Date(), hr = now.getHours();
     const first = ((S.profile || {}).name || "").split(" ")[0];
@@ -429,6 +442,7 @@
           <button class="btn sm" data-act="full-sync" title="Sync every course, then transcribe your untranscribed lectures and download the materials (asks first)">${I("zap", "sm")} Full sync</button>
           <button class="btn sm" data-act="export-calendar" title="Save the announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or your phone">${I("calendar", "sm")} Add to calendar</button></div></div>
         <img class="home-logo" src="../assets/logo.svg" alt=""></div>`;
+    if (courses.length && !courses.some((c) => (c.counts || {}).done_any) && store("studia-howto") !== "seen") h += howToHTML();
     if (soon.length) {
       h += `<div class="section-title">${I("cap")} Coming up <span class="dim sm">this week and next, as announced</span></div>
         <div class="soon">${soon.map(({ c, d, e, r }) => `<button class="soon-card ${r.now ? "now" : ""}" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(`Get ready: what to transcribe, download and read${e.los.length ? "\n" + loTitle(d, e.los) : ""}`)}">
@@ -442,7 +456,7 @@
         <div class="card heads home-heads"><div class="heads-list">${heads.slice(0, 5).map(({ a, c }) => alertHTML(a, c.id, c)).join("")}</div>
         ${heads.length > 5 ? `<div class="heads-more dim">${heads.length - 5} more on the course pages</div>` : ""}</div>`;
     }
-    if (recs) h += `<div class="section-title">${I("sparkle")} New recordings</div>${recs}`;
+    if (recs) h += `<div class="section-title">${I("sparkle")} New recordings <span class="dim sm">nothing is transcribed until you choose it</span></div>${recs}`;
     if (newMats.length) {
       h += `<div class="section-title">${I("layers")} New materials <span class="spacer"></span><button class="btn ghost sm" data-act="course-seen" data-id="" data-what="materials">Mark as seen</button></div>
         <div class="card mat-group">${newMats.map(({ c, m }) => `<div class="mg-course"><span class="pill new">${esc(c.code)}</span></div>${matRowHTML(m)}`).join("")}</div>`;
@@ -610,6 +624,7 @@
     return call("materials_download", ids).then((r) => { if (!r.ok) toast(r.error, "error"); });
   }
   Object.assign(A, {
+    "howto-done": () => { store("studia-howto", "seen"); St.renderView(); },
     "course-tab": (el) => {
       const v = S.view, scrolled = $("#view").scrollTop > 0;
       go({ name: "course", courseId: v.courseId, tab: el.dataset.tab });

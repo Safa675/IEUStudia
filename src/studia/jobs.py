@@ -432,7 +432,23 @@ class JobManager:
             job.audio_path = dest
             self._take_audio_place(job)
             self._update(job, "downloading", 1.0, "Decoding audio")
-            audio = decode_audio(dest, job.cancel)
+            try:
+                audio = decode_audio(dest, job.cancel)
+            except ValueError as exc:
+                from .audio import NoAudioTrack
+
+                if not isinstance(exc, NoAudioTrack):
+                    raise
+                # a stream Panopto made without sound (from the screen recording, say): the next one may have it
+                self.log.info("%s: %s has no audio track; trying another stream", job.id, src.kind)
+                last_exc = NoAudioTrack("Panopto has no sound for this recording (only a picture), so there's "
+                                        "nothing to transcribe.")
+                job.audio_path = None
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+                continue
             if is_silent(audio) and i + 1 < len(sources):
                 self.log.info("%s: %s audio is silent; looking for another stream", job.id, src.kind)
                 silent = audio

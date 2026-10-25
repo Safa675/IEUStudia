@@ -319,9 +319,9 @@ def plan_status(which: str, plan: str, logged_in: bool) -> dict[str, Any]:
     if p == "api":
         return {"ok": True, "label": "OpenAI API key", "note": "Signed in with an API key: every request is billed per "
                 "use, not covered by a ChatGPT subscription."}
-    if p in ("free", "go"):
-        return {"ok": False, "label": f"ChatGPT {p.capitalize()}", "note": "IEUStudia needs a ChatGPT Plus or Pro plan "
-                "for Codex."}
+    if p in ("free", "go"):              # OpenAI includes Codex in Free and Go too, with smaller limits
+        return {"ok": None, "label": f"ChatGPT {p.capitalize()}", "note": "Codex comes with ChatGPT Free and Go too, "
+                "with smaller limits; the test message below shows whether it works."}
     return {"ok": None, "label": "ChatGPT" if p == "chatgpt" else "", "note": "Codex does not show your plan; the "
             "test message below shows whether it works."}
 

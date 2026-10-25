@@ -372,8 +372,8 @@ def access_token() -> str:
         if not rec.get("refresh_token"):
             raise RuntimeError("ChatGPT is not signed in. Settings → AI → Continue with ChatGPT.")
         if PLAN_SCOPE not in (rec.get("scopes") or []):
-            raise RuntimeError("IEUStudia may not use your ChatGPT plan. That needs ChatGPT Plus or Pro; if you have "
-                               "one, go to Settings → AI → Continue with ChatGPT and allow it.")
+            raise RuntimeError("IEUStudia may not use your ChatGPT plan yet. Go to Settings → AI → Continue with "
+                               "ChatGPT and allow it.")
         if rec.get("access_token") and float(rec.get("expires_at") or 0) - REFRESH_MARGIN_S > time.time():
             return rec["access_token"]
         try:
@@ -464,7 +464,8 @@ def _api_error(status: int, body: dict[str, Any]) -> str:
     if code == "subscription_sharing_usage_limit_exceeded" or status == 429:
         return f"You have reached your ChatGPT usage limit for apps. See {USAGE_URL}."
     if code == "subscription_sharing_user_not_eligible":
-        return "Your ChatGPT plan can't be used in apps like IEUStudia. It needs ChatGPT Plus or Pro."
+        return ("OpenAI doesn't let apps like IEUStudia use your ChatGPT plan. ChatGPT Plus and Pro can be used "
+                "(for Free and Go, OpenAI decides).")
     if code in ("subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable") or status == 503:
         return "ChatGPT can't check your plan right now. Try again in a few minutes."
     if code == "subscription_sharing_invalid_user" or status == 401:

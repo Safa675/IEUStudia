@@ -33,6 +33,7 @@
     day: null, dayFind: "", ai: { running: false, text: "", dayKey: null },
     lib: null, search: { q: "", results: null }, signin: { busy: false, error: "" }, exporting: null,
     chat: { list: null, id: null, data: null, draft: null, input: "", sending: false, scroll: null }, limits: {},
+    update: {},      // a new version: updates.status(), plus state/done/total/error while it downloads
   };
   let REAL = false;
   // Extension points: views/events/actions from the other UI files (course.js, plans.js) plug in here.
@@ -85,6 +86,7 @@
         break;
       case "toast": toast(e.message, e.level); break;
       case "open": openTarget(e.target); break;
+      case "update": onUpdate(e); break;
       case "export": onExport(e); break;
       case "ai": onAi(e); break;
       case "chat": onChat(e); break;
@@ -140,8 +142,8 @@
       }
       updateRow(r);
     } else if (e.final && e.local) {
-      toast(e.stage !== "done" ? `${e.title}: ${e.error || e.stage}` : e.unwritten ? `Transcribed ${e.title}, but its file could not be written to your output folder yet: IEUStudia tries again the next time it starts.`
-        : `Transcribed ${e.title} (see "Local files" in your output folder)`, e.stage !== "done" ? "error" : e.unwritten ? "warning" : "success");
+      toast(e.stage !== "done" ? `${e.title}: ${e.error || e.stage}` : e.unwritten ? `Transcribed ${e.title}, but its file could not be written to your IEUStudia folder yet: IEUStudia tries again the next time it starts.`
+        : `Transcribed ${e.title} (see "Local files" in your IEUStudia folder)`, e.stage !== "done" ? "error" : e.unwritten ? "warning" : "success");
     }
   }
   function onExport(e) {
@@ -287,11 +289,13 @@
     const top = $("#top"); if (!top) return;
     const g = S.system.gpu;
     const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="Lectures are transcribed on your NVIDIA graphics card: ${esc(g.name)} · ${g.vram_mb} MB"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
-      : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="Your NVIDIA graphics card could transcribe much faster once its libraries are downloaded: Settings → About → Run setup again."><span class="dot"></span>GPU not set up</span>` : "";
+      : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="Your NVIDIA graphics card could transcribe much faster after a one-time download from NVIDIA: Settings → About → Run setup again."><span class="dot"></span>Graphics card not set up</span>` : "";
     const syncLabel = S.sync.running ? `${SPIN()} ${esc(S.sync.message || "Syncing…")}`
       : S.sync.error ? `${I("alert-circle", "sm")} Sync failed — retry` : `${I("refresh", "sm")} Synced ${rel(S.lastSync)}`;
+    const up = S.update || {};
     top.innerHTML = `<div class="crumbs">${crumbs()}</div>
-      <button class="btn ghost sm" data-act="sync" ${S.sync.running ? "disabled" : ""} title="Check for new recordings (F5)">${syncLabel}</button>
+      ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="IEUStudia ${esc(up.version)} is available: see what's new and update">${I("download", "sm")} Update to ${esc(up.version)}</button>` : ""}
+      <button class="btn ghost sm" data-act="sync" ${S.sync.running ? "disabled" : ""} title="Check IEULearn now for new lectures, files and announcements (F5)">${syncLabel}</button>
       <button class="btn ghost sm" data-act="full-sync" ${S.catchup && S.catchup.running ? "disabled" : ""} title="Sync every course, then transcribe all your untranscribed lectures and download the materials (asks first)">${S.catchup && S.catchup.running ? SPIN() : I("zap", "sm")} Full sync</button>
       ${gpu}
       <button class="btn ghost icon sm" data-act="menu-more" title="More">${I("more")}</button>`;
@@ -526,7 +530,7 @@
           · ${plural(d.parts.length, "part")}</div></div>
         <input class="input find" placeholder="Find in transcript  (Ctrl+F)" data-act="find" value="${esc(S.dayFind)}"></div>
       <div class="toolbar" id="day-actions">${dayActionsHTML()}</div>`;
-    if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>Notes</b><ul>${warns.map((w) => `<li>Part ${w.part}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
+    if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>Transcript quality</b><ul>${warns.map((w) => `<li>Part ${w.part}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
     h += `<div id="notes-slot">${notesHTML()}</div>`;
     if (d.highlights.length) {
       h += `<div class="card hl-card"><h3>${I("star")} Highlights <span class="count">${d.highlights.length}</span></h3>` +
@@ -896,7 +900,7 @@
       <div class="card set-card"><h3>Profiles <span class="dim sm">one per IEULearn account</span></h3>
         ${profs.map((x) => `<div class="set-row prof-row"><div class="avatar">${esc(initials(x.name || x.username))}</div>
           <div class="txt"><div class="t">${esc(x.name || x.username || "New profile")} ${x.active ? `<span class="pill">This profile</span>` : ""}</div>
-            <div class="d">${esc([x.student_number, x.username].filter(Boolean).join(" · ") || "Not signed in yet")}${x.active ? " · password stored encrypted on this PC (Windows DPAPI)" : x.has_login ? "" : " · signed out"}</div></div>
+            <div class="d">${esc([x.student_number, x.username].filter(Boolean).join(" · ") || "Not signed in yet")}${x.active ? " · password stored encrypted on this PC" : x.has_login ? "" : " · signed out"}</div></div>
           <div class="prof-acts">${x.active ? `<button class="btn danger sm" data-act="signout">${I("logout", "sm")} Sign out</button>`
             : `<button class="btn sm" data-act="profile-switch" data-id="${esc(x.id)}">Switch</button>${x.main ? "" : `<button class="btn ghost icon sm" data-act="profile-remove" data-id="${esc(x.id)}" title="Remove this profile from this PC">${I("x", "sm")}</button>`}`}</div></div>`).join("")}
         ${row("Add another account", "Someone else uses this PC, or you have a second IEULearn account? Each profile keeps its own courses, transcripts, notes and settings; switch from the menu at the bottom left.",
@@ -905,16 +909,16 @@
         <div class="presets">${presets || `<div class="skel" style="height:70px"></div>`}</div>
         ${row("Transcribe with", !g ? "Checking…" : s.device === "cpu" && g.available ? `Processor only, as chosen here: your ${esc(g.name || "NVIDIA graphics card")} is not used.`
             : gpuUsed(g) ? `Your NVIDIA graphics card: ${esc(g.name)} (${g.vram_mb} MB)`
-            : gpuFits(g) && !g.libraries ? `Your ${esc(g.name || "NVIDIA graphics card")} needs its libraries before it can transcribe (About → Run setup again, below); until then the processor does it, slower.`
+            : gpuFits(g) && !g.libraries ? `Your ${esc(g.name || "NVIDIA graphics card")} needs a one-time download from NVIDIA before it can transcribe (About → Run setup again, below). Until then the processor does it, more slowly.`
             : g.available ? `Your ${esc(g.name || "NVIDIA graphics card")} can't transcribe (too little graphics memory or an old driver): the processor does it, slower.`
             : "No NVIDIA graphics card found: the processor transcribes (slower).",
           `<select class="input" style="width:170px" data-act="set-sel" data-key="device">${["auto", "cuda", "cpu"].map((v) => `<option value="${v}" ${s.device === v ? "selected" : ""}>${{ auto: "Automatic", cuda: "Graphics card", cpu: "Processor only" }[v]}</option>`).join("")}</select>`)}
         ${row("Languages", "English with Turkish passages: each passage is transcribed in the language actually spoken and tagged [TR].", `<span class="chip">English + Turkish</span>`)}
-        ${row("Capture slides", "Extract the slides / board from Panopto's screen recording and place them next to the transcript (~1 min extra download per lecture).", sw("capture_slides"))}
-        ${row("Hide very short recordings", "False starts shorter than this are greyed out.", `<select class="input" style="width:110px" data-act="set-sel" data-key="min_duration_s">${[30, 60, 120, 300].map((v) => `<option value="${v}" ${+s.min_duration_s === v ? "selected" : ""}>${v < 60 ? v + " s" : v / 60 + " min"}</option>`).join("")}</select>`)}
+        ${row("Capture slides", "Takes the slides and board from Panopto's screen recording and shows them next to the transcript (adds about a minute of downloading per lecture).", sw("capture_slides"))}
+        ${row("Hide very short recordings", "Recordings shorter than this (usually started by mistake) are greyed out.", `<select class="input" style="width:110px" data-act="set-sel" data-key="min_duration_s">${[30, 60, 120, 300].map((v) => `<option value="${v}" ${+s.min_duration_s === v ? "selected" : ""}>${v < 60 ? v + " s" : v / 60 + " min"}</option>`).join("")}</select>`)}
       </div>
       <div class="card set-card"><h3>Files</h3>
-        ${row("Output folder", `<span class="path">${esc(s.output_dir)}</span>`, `<div style="display:flex;gap:6px"><button class="btn sm" data-act="pick-folder">Change…</button><button class="btn ghost sm" data-act="open-output">${I("folder-open", "sm")}</button></div>`)}
+        ${row("Save transcripts and notes in", `<span class="path">${esc(s.output_dir)}</span>`, `<div style="display:flex;gap:6px"><button class="btn sm" data-act="pick-folder">Change…</button><button class="btn ghost sm" data-act="open-output">${I("folder-open", "sm")}</button></div>`)}
         ${row("Subtitles (.srt)", "Also write a subtitle file per recording.", sw("write_srt"))}
         ${row("Keep downloaded audio", "Keep the audio files (≈40 MB per hour) after transcription.", sw("keep_audio"))}
       </div>
@@ -1008,7 +1012,7 @@
     if (!l.length) return `<div class="chat-none">Your chats appear here.</div>`;
     return l.map((c) => `<button class="chat-item ${S.chat.id === c.id && !S.chat.draft ? "on" : ""}" data-act="chat-open" data-id="${esc(c.id)}">
       <span class="t">${c.running ? SPIN() : ""}${esc(c.title)}</span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
-      <span class="s">${esc(rel(c.updated_at))} · ${esc(c.model)}</span></button>`).join("");
+      <span class="s">${esc(rel(c.updated_at))} · ${esc(levelLabel(c.model))}</span></button>`).join("");
   }
   function chatMainHTML() {
     const d = S.chat.draft, c = S.chat.data;
@@ -1016,7 +1020,7 @@
       const ai = S.system.ai || {};
       const [title, text, btn] = ai.provider === "local" ? ["The offline model isn't downloaded yet", "Download it to chat about your lectures on this PC. Everything else in IEUStudia works without it.", "Download it"]
         : ai.label ? [`${ai.label} isn't connected yet`, `Connect your ${ai.label} plan to chat about your lectures. Everything else in IEUStudia works without it.`, `Connect ${ai.label}`]
-        : ["AI is off", "Pick ChatGPT (your ChatGPT Plus/Pro plan), Claude (your Claude Pro/Max plan) or the offline model to chat about your lectures. Everything else in IEUStudia works without it.", "Turn on AI"];
+        : ["AI is off", "Pick ChatGPT (with your ChatGPT plan), Claude (your Claude Pro or Max plan) or the offline model to chat about your lectures. Everything else in IEUStudia works without it.", "Turn on AI"];
       return `<div class="chat-scroll">${emptyHTML("chat", title, text)}<div style="text-align:center"><button class="btn primary" data-act="setup-ai">${I("ai", "sm")} ${btn}</button></div></div>`;
     }
     if (!d && !S.chat.id) {
@@ -1068,7 +1072,7 @@
     const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming) : { text: m.text, html: "" };   // buttons the AI suggested
     const body = acts.text ? mdToHtml(acts.text, { cites: true }) + acts.html : streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "";
     const foot = streaming ? `<span class="dim">${SPIN()} ${esc(aiName())} is answering…</span>`
-      : `${m.status === "stopped" ? `<span class="pill">Stopped</span>` : ""}${tok ? `<span class="tok" title="Tokens this answer used. Text read from the prompt cache is much cheaper than new text.">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} Copy</button>` : ""}`;
+      : `${m.status === "stopped" ? `<span class="pill">Stopped</span>` : ""}${tok ? `<span class="tok" title="How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less.">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} Copy</button>` : ""}`;
     const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} Try again</button></div>` : "";
     const err = m.status === "error" ? `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || `${aiName()} could not answer.`)}${retry}</div></div>` : "";
     return `<div class="msg ai" data-seq="${m.seq}"><div class="ai-av">${I("ai")}</div><div class="ai-body">${body ? `<div class="md">${body}</div>` : ""}${err}<div class="msg-foot">${foot}</div></div></div>`;
@@ -1215,7 +1219,7 @@
       const used = limitsHTML();
       modal(`<div class="cp-scroll">
         <h2>${I("chat")} Ask ${esc(who)} about your lectures</h2>
-        <p class="lead">Pick a course and what ${esc(who)} should read. It reads it once, with your first question; follow-up questions build on it.</p>
+        <p class="lead">Pick a course and what ${esc(who)} should read. It reads it once, with your first question; follow-up questions build on it. Sizes are in tokens: the small pieces of text AI plans count, a word or part of a word each.</p>
         <div class="field"><label>Course</label><select class="input" data-act="cp-course">${cr.courses.map((c) => `<option value="${esc(c.id)}" ${c.id === st.course ? "selected" : ""}>${esc(c.code)} · ${esc(c.name)} (${plural(c.days, "transcribed day")})</option>`).join("")}</select></div>
         <div class="field"><label>What ${esc(who)} reads</label><div class="cp-modes">${modes.map(([v, ic, t, d]) => `<button type="button" class="cp-mode ${st.focus === v ? "on" : ""}" data-act="cp-focus" data-val="${v}">
             <span class="cp-mode-t">${I(ic, "sm")} ${t}</span><span class="cp-mode-d">${d}</span></button>`).join("")}</div></div>
@@ -1316,7 +1320,7 @@
         <button type="button" class="btn ghost icon sm" data-act="peek" title="Show password">${I("eye", "sm")}</button></div></div>
       ${s.error ? `<div class="err">${I("alert-circle", "sm")}<span>${esc(s.error)}</span></div>` : ""}
       <button class="btn primary block" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? SPIN() + " Signing in…" : "Sign in"}</button>
-      <div class="note">${I("lock", "sm")}<span>Your password is sent only to learn.ieu.edu.tr and stored encrypted on this PC (Windows DPAPI). It never goes to any other server — IEUStudia has none.</span></div>
+      <div class="note">${I("lock", "sm")}<span>Your password is sent only to learn.ieu.edu.tr. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: IEUStudia has none.</span></div>
       <div class="note">${I("info", "sm")}<span>IEUStudia is an independent student project, not affiliated with İzmir University of Economics, IEULearn or Panopto. Use it at your own risk.</span></div>
       ${others.length ? `<div class="si-others"><div class="lbl">Or open another profile on this PC</div>${others.map((x) => `<button type="button" class="si-prof" data-act="profile-switch" data-id="${esc(x.id)}">
         <span class="avatar">${esc(initials(x.name || x.username))}</span><span class="who"><b>${esc(x.name || x.username)}</b><span>${esc(x.student_number || x.username)}</span></span>${I("chevron-right", "sm")}</button>`).join("")}</div>` : ""}
@@ -1332,7 +1336,7 @@
       <div class="field"><label for="aa-pass">Password</label><div class="input-wrap"><input id="aa-pass" class="input" type="password" name="password" autocomplete="new-password">
         <button type="button" class="btn ghost icon sm" data-act="peek" data-for="aa-pass" title="Show password">${I("eye", "sm")}</button></div></div>
       ${err ? `<div class="err">${I("alert-circle", "sm")}<span>${esc(err)}</span></div>` : ""}
-      <div class="note">${I("lock", "sm")}<span>The password is stored encrypted on this PC (Windows DPAPI), separately for each profile, and only sent to learn.ieu.edu.tr.</span></div>
+      <div class="note">${I("lock", "sm")}<span>The password is only sent to learn.ieu.edu.tr. On this PC it is stored encrypted for each profile separately, so only this Windows account can read it.</span></div>
       <div class="actions"><button type="button" class="btn" data-act="modal-close">Cancel</button>
         <button class="btn primary" type="submit" ${busy ? "disabled" : ""}>${busy ? SPIN() + " Signing in…" : "Sign in and switch"}</button></div></form>`);
     setTimeout(() => { const f = $(user && !busy ? "#aa-pass" : "#aa-user"); if (f && !busy) f.focus(); }, 30);
@@ -1363,6 +1367,35 @@
   }
   function modal(html) { $("#overlay").innerHTML = `<div class="backdrop" data-act="modal-bg"><div class="modal" role="dialog">${html}</div></div>`; }
   function closeModal() { $("#overlay").innerHTML = ""; }
+
+  // ---- a new version (the top bar's button, Settings → About, or the tray helper's notification)
+  function onUpdate(e) {
+    S.update = { ...S.update, ...e };
+    if (e.state === "downloading" && !$("#update-modal")) updateModal();
+    else if ($("#update-modal")) updateModal();
+    else if (e.state === "error") toast(e.error, "error");
+    renderTop();
+    if (S.view.name === "settings") renderView();
+  }
+  function updateModal() {
+    const u = S.update || {};
+    const pc = u.total ? Math.round((u.done / u.total) * 100) : 0;
+    const body = u.state === "installing"
+      ? `<div class="callout info">${I("info")}<div>Installing. IEUStudia closes now and opens again by itself in about a minute.</div></div>`
+      : u.state === "downloading"
+        ? `<div class="bar ${u.total ? "" : "indet"}"><i style="width:${pc}%"></i></div>
+           <div class="dim sm" style="margin-top:6px">Downloading the new version${u.total ? ` · ${pc}% of ${Math.round(u.total / 1e6)} MB` : "…"}</div>`
+        : `${u.state === "error" ? `<div class="callout error">${I("alert-circle")}<div>${esc(u.error)}</div></div>` : ""}
+           ${u.notes ? `<div class="update-notes md">${mdToHtml(u.notes)}</div>` : ""}`;
+    const busy = u.state === "downloading" || u.state === "installing";
+    modal(`<div id="update-modal"><h2>IEUStudia ${esc(u.version)} is available</h2>
+      <p class="lead">You have ${esc(u.current || (S.boot || {}).version || "")}. Updating keeps your courses, transcripts and settings, and takes about a minute.</p>
+      ${body}
+      <div class="actions">${busy ? (u.state === "downloading" ? `<button class="btn" data-act="update-cancel">Cancel</button>` : "")
+        : `<button class="btn ghost" data-act="update-page">${I("external", "sm")} Release page</button><span class="spacer"></span>
+           <button class="btn" data-act="modal-close">Later</button>
+           ${u.can_install ? `<button class="btn grad" data-act="update-go">${I("download", "sm")} ${u.state === "error" ? "Try again" : "Update now"}</button>` : ""}`}</div></div>`);
+  }
   function menu(anchor, items) {
     closeMenu();
     const r = anchor.getBoundingClientRect();
@@ -1397,10 +1430,10 @@
           ${NOTE_KINDS.map(([k, l]) => `<button class="${tpl === k ? "on" : ""}" data-act="cl-tpl" data-val="${k}">${l}</button>`).join("")}</div></div>
         ${images ? `<div class="set-row" style="border:0;padding:6px 0"><div class="txt"><div class="t">Include slide images</div><div class="d">Lets the AI read the slides and board (more accurate formulas, uses more of your plan).</div></div>
           <input type="checkbox" class="switch" data-act="cl-slides" ${slides ? "checked" : ""} ${d.parts.some((p) => p.slides) ? "" : "disabled"}></div>` : ""}
-        <div class="est">${local ? "" : `<div><b>~${(e.input / 1000).toFixed(1)}k</b><span>input tokens</span></div><div><b>~${(e.output / 1000).toFixed(1)}k</b><span>output tokens</span></div>`}${how}</div>
+        <div class="est">${local ? "" : `<div><b>~${(e.input / 1000).toFixed(1)}k</b><span>tokens it reads</span></div><div><b>~${(e.output / 1000).toFixed(1)}k</b><span>tokens it writes</span></div>`}${how}</div>
         <div class="callout info">${I("info")}<div>${have ? `This lecture already has ${{ notes: "study notes", exam: "exam-focus notes", flashcards: "flashcards" }[tpl]}. Generating them again replaces the saved ones.`
           : local ? "The offline model works on this PC: a lecture takes a few minutes with an NVIDIA graphics card, longer on the processor. The notes are saved next to the transcript."
-          : `Kept small to save your plan: a short instruction, no tools, the compact transcript${slides && images ? ` and ${e.images} downscaled slide images` : ""}. The notes are saved next to the transcript.`}</div></div>
+          : `Kept small to save your plan: a short instruction and a compact text version of the transcript${slides && images ? `, plus ${e.images} smaller copies of the slides` : ""}. Tokens are the small pieces of text AI plans count, a word or part of a word each. The notes are saved next to the transcript.`}</div></div>
         <div class="actions"><button class="btn" data-act="modal-close">Cancel</button>${have ? `<button class="btn" data-act="cl-open">${I("file-text", "sm")} Show them</button>` : ""}
           <button class="btn grad" data-act="cl-go">${I("ai", "sm")} ${have ? "Generate again" : "Generate"}</button></div>`);
     };
@@ -1436,6 +1469,21 @@
     "open-day": (el) => openDay(el.dataset.day),
     "open-hit": async (el) => { await openDay(el.dataset.day); setTimeout(() => jumpTo(null, +el.dataset.t, el.dataset.id), 60); },
     url: (el) => call("open_url", el.dataset.url),
+    "update-open": () => updateModal(),
+    "update-page": () => call("open_url", (S.update || {}).page || "https://github.com/mirzaisi/IEUStudia/releases/latest"),
+    "update-go": async () => {
+      S.update = { ...S.update, state: "downloading", done: 0, total: 0, error: "" }; updateModal();
+      const r = await call("update_install");
+      if (!r.ok) { S.update = { ...S.update, state: "error", error: r.error }; updateModal(); }
+    },
+    "update-cancel": () => call("update_cancel"),
+    "update-check": async (el) => {
+      el.disabled = true;
+      const r = await call("update_check");
+      if (r.ok) { S.update = { ...S.update, ...r, state: "" }; if (!r.available && !r.error) toast("You have the newest version.", "success"); }
+      else toast(r.error, "error");
+      renderTop(); if (S.view.name === "settings") renderView();
+    },
     ts: (el) => call("open_url", `${el.dataset.url}&start=${Math.floor(+el.dataset.t)}`),
     jump: (el) => jumpTo(+el.dataset.part, +el.dataset.t),
     zoom: (el) => { $("#overlay").innerHTML = `<div class="lightbox" data-act="modal-close"><img src="${esc(el.dataset.src)}"></div>`; },
@@ -1537,7 +1585,7 @@
     ]),
     "menu-more": (el) => menu(el, [
       { id: "file", icon: "file-audio", label: "Transcribe a file from this PC…", desc: "Any audio/video file", run: async () => { const r = await call("transcribe_local_file"); if (r.ok && r.queued) toast(`${plural(r.queued, "file")} added to the queue`); } },
-      { id: "out", icon: "folder-open", label: "Open output folder", run: () => A["open-output"]() },
+      { id: "out", icon: "folder-open", label: "Open IEUStudia folder", run: () => A["open-output"]() },
       { id: "set", icon: "settings", label: "Settings", run: () => go({ name: "settings" }) },
     ]),
     set: async (el) => saveSetting({ [el.dataset.key]: el.dataset.val }),
@@ -1563,7 +1611,7 @@
     "profile-switch": (el) => switchProfile(S.profiles.find((x) => x.id === el.dataset.id)),
     "profile-remove": async (el) => {
       const x = S.profiles.find((p) => p.id === el.dataset.id); if (!x) return;
-      if (!confirm(`Remove ${x.name || x.username || "this profile"} from this PC?\n\nIts library, transcripts, chats and stored password on this PC are deleted. Files already saved in its output folder stay.`)) return;
+      if (!confirm(`Remove ${x.name || x.username || "this profile"} from this PC?\n\nIts library, transcripts, chats and stored password on this PC are deleted. Files already saved in its IEUStudia folder stay.`)) return;
       const r = await call("profile_remove", x.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       S.profiles = r.profiles; toast("Profile removed", "success");
@@ -1686,7 +1734,7 @@
     if (!b.ok) { startupError(b.error || "IEUStudia could not start."); return; }
     S.boot = b; S.settings = b.settings || {}; S.profile = b.profile; setCourses(b.courses); S.queue = b.queue || []; S.lastSync = b.last_sync;
     S.profiles = b.profiles || []; S.profileId = b.profile_id || "main";
-    S.limits = b.limits || {};
+    S.limits = b.limits || {}; S.update = b.update || {};
     if (b.system) S.system = { ...S.system, ...b.system };
     applyTheme();
     const needSetup = REAL ? !(b.app && b.app.onboarded) : location.hash.includes("setup");
@@ -1701,11 +1749,21 @@
     if (Studia.onGo[S.view.name]) Studia.onGo[S.view.name](S.view);
     A.sync();
     if (S.boot && S.boot.open) openTarget(S.boot.open);
+    else if (S.boot && S.boot.updated_from) whatsNew();
   }
-  function openTarget(t) {          // "course:<id>" or "home" (from a notification of the tray helper)
+  function whatsNew() {             // the first start after an update
+    const u = S.update || {}, v = S.boot.version;
+    if (!(u.notes && u.version === v)) { toast(`IEUStudia was updated to ${v}.`, "success"); return; }
+    modal(`<h2>IEUStudia ${esc(v)} is installed</h2>
+      <p class="lead">Updated from ${esc(S.boot.updated_from)}. Everything you had is still here.</p>
+      <div class="update-notes md">${mdToHtml(u.notes)}</div>
+      <div class="actions"><button class="btn primary" data-act="modal-close">OK</button></div>`);
+  }
+  function openTarget(t) {          // "course:<id>", "update" or "home" (from a notification of the tray helper)
     if (S.mode !== "app" || !t) return;
     const [kind, id] = String(t).split(":");
     if (kind === "course" && S.courses.some((c) => c.id === id)) go({ name: "course", courseId: id, tab: "announcements" });
+    else if (kind === "update") { go({ name: "home" }); updateModal(); }
     else go({ name: "home" });
   }
   function start() {
@@ -1823,7 +1881,8 @@
         return { ok: true, version: "1.1.0", signed_in: signed, first_run: false, profile: { name: me.name, student_number: me.student_number, username: me.username },
           profiles: profs, profile_id: me.id,
           settings: { output_dir: "C:\\Users\\student\\Documents\\IEUStudia", model: "large-v3-turbo", device: "auto", theme: location.hash.includes("dark") ? "dark" : "light", capture_slides: true, write_srt: true, keep_audio: false, min_duration_s: 60, ai_model: "sonnet", first_run_done: true },
-          last_sync: new Date(Date.now() - 120000).toISOString(), courses: signed ? courses : [], queue: [] };
+          last_sync: new Date(Date.now() - 120000).toISOString(), courses: signed ? courses : [], queue: [],
+          update: Mock.update_check() };
       },
       sync: () => { emit({ type: "sync", phase: "start", message: "Checking IEULearn and Panopto…" }); setTimeout(() => emit({ type: "sync", phase: "done", new_count: 0, message: "Up to date", last_sync: new Date().toISOString() }), 1400); return { ok: true }; },
       transcribe: (ids) => { simulate(ids); return { ok: true, queued: ids.length }; },
@@ -1833,6 +1892,10 @@
       search: (q) => ({ ok: true, results: [{ day_key: "17933|x|lecture", delivery_id: "a", t: 1121, ts: "18:41", snippet: `…the kind of question I will ask in the [${q}], so please be careful…`, course_code: "MATH 240", date: "2026-10-14", time: "08:28" }] }),
       open_file: () => ({ ok: true }), open_output: () => ({ ok: true }), open_course_folder: () => ({ ok: true }),
       open_url: () => ({ ok: true }), open_logs: () => ({ ok: true }),
+      update_check: () => ({ ok: true, current: "2.3.0", available: location.hash.includes("update"), version: "2.4.0", can_install: true,
+        notes: "**Transcription**\n- Faster on laptops without a graphics card.\n- The time left is shown for the whole queue.", checked_at: Date.now() / 1000, error: "" }),
+      update_install: () => { [0, 25, 60, 100].forEach((p, i) => setTimeout(() => emit({ type: "update", state: p < 100 ? "downloading" : "installing", done: p * 750000, total: 75000000 }), 500 * i)); return { ok: true }; },
+      update_cancel: () => ({ ok: true }),
       copy_for_ai: () => ({ ok: true, chars: 41234, tokens: 11450 }), export_pack: (k) => { emit({ type: "export", phase: "start", day_key: k }); setTimeout(() => emit({ type: "export", phase: "done", day_key: k, files: {} }), 1500); return { ok: true }; },
       ai_estimate: (k, s) => ({ ok: true, estimate: { input: s ? 38400 : 11800, output: 3500, images: s ? 33 : 0 }, ai: { available: true }, model: "sonnet" }),
       ai_notes: (k, kind = "notes") => { const label = { notes: "Study notes", exam: "Exam focus", flashcards: "Flashcards" }[kind]; emit({ type: "ai", phase: "start", day_key: k, kind, label }); let i = 0; const txt = "# Overview\nThis lecture covered **conditional probability** and Bayes' theorem.\n\n## Topics\n1. Multiplication rule — $P(A\\cap B)=P(A\\mid B)P(B)$ (Part 1, 00:31)\n2. Screening example (Part 1, 08:00)\n\n## What the lecturer emphasised\n- The denominator in Bayes' theorem — *likely midterm question* (Part 1, 18:41)\n";

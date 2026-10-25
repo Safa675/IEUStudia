@@ -1,5 +1,6 @@
 """Settings of IEUStudia on this PC (not per account): the first-start setup, which AI the app uses, running in
-the background (tray), starting with Windows and notifications. Stored in ``<app data>\\app.json``."""
+the background (tray), starting with Windows, notifications and looking for new versions. Stored in
+``<app data>\\app.json``."""
 
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ class AppConfig:
     notify_announcements: bool = True  # new announcements (assessment news first)
     notify_materials: bool = False     # new files on IEULearn
     sync_minutes: int = 30             # how often the helper checks
+    check_updates: bool = True         # look for a new version of IEUStudia on GitHub about once a day
     version: int = 0                   # 1: "codex" is only the Codex CLI (see migrate)
 
     def to_json(self) -> dict[str, Any]:

@@ -244,7 +244,7 @@ def plan(speech: str, llm: str = "", gpu: bool = False) -> list[dict[str, Any]]:
         out.append({"id": f"speech:{speech}", "label": f"Speech model ({MODEL_PRESETS[speech]['label']})",
                     "size_mb": MODEL_PRESETS[speech]["size_mb"]})
     if gpu and not cuda_ready():
-        out.append({"id": "cuda", "label": "NVIDIA GPU libraries (CUDA 12 cuBLAS)", "size_mb": CUDA_SIZE_MB})
+        out.append({"id": "cuda", "label": "NVIDIA graphics card support (from NVIDIA)", "size_mb": CUDA_SIZE_MB})
     if llm and not llm_ready(llm):
         out.append({"id": f"llm:{llm}", "label": f"Offline AI model ({LLM_PRESETS[llm]['label']})",
                     "size_mb": LLM_PRESETS[llm]["size_mb"]})

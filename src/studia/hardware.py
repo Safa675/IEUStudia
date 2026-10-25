@@ -165,8 +165,8 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
     if int(w.get("build") or 0) < MIN_BUILD:
         blockers.append("IEUStudia needs Windows 10 (version 1809 or newer) or Windows 11.")
     if not cpu.get("avx"):
-        blockers.append("This processor does not support AVX instructions, which the speech recognition needs "
-                        "(processors from about 2011 onwards have them).")
+        blockers.append("This processor is too old for the speech recognition: it lacks the AVX instructions that "
+                        "processors from about 2011 onwards have.")
     if ram and ram < MIN_RAM_GB:
         blockers.append(f"IEUStudia needs at least {MIN_RAM_GB:.0f} GB of memory; this PC has {ram:.1f} GB.")
     free = float(facts.get("disk", {}).get("data_free_gb") or 0)
@@ -174,21 +174,21 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
         blockers.append(f"Not enough free disk space: the downloads need about {need_gb:.1f} GB plus room for your "
                         f"lectures, but drive {Path(facts['disk']['data_dir']).anchor or 'C:'} has {free:.1f} GB free.")
     if not facts.get("webview2"):
-        warnings.append("The Microsoft Edge WebView2 runtime was not found in the registry; IEUStudia's window needs it "
-                        "(it comes with Windows 11 and current Windows 10).")
+        warnings.append("The Microsoft Edge WebView2 Runtime wasn't found. IEUStudia's window needs it (it comes with "
+                        "Windows 11 and up-to-date Windows 10).")
     driver = _driver_number(gpu.get("driver", ""))
     cuda = bool(gpu.get("present")) and driver >= MIN_CUDA_DRIVER and int(gpu.get("vram_mb") or 0) >= 3500
     if gpu.get("present") and not cuda:
         if driver and driver < MIN_CUDA_DRIVER:
-            warnings.append(f"Your NVIDIA driver ({gpu['driver']}) is too old for GPU transcription; update it from "
-                            f"nvidia.com to use the GPU. Until then the processor is used.")
+            warnings.append(f"Your NVIDIA driver ({gpu['driver']}) is too old for transcribing on the graphics card. "
+                            f"Update it from nvidia.com; until then the processor is used.")
         else:
             warnings.append(f"The {gpu['name']} has too little memory for the speech model; the processor is used.")
     if not cuda:
-        warnings.append("Without a suitable NVIDIA GPU, the processor transcribes: with the small model an hour of "
-                        "lecture takes roughly 20 minutes to an hour, depending on the processor.")
+        warnings.append("Without a suitable NVIDIA graphics card, the processor transcribes: with the small model an "
+                        "hour of lecture takes roughly 20 minutes to an hour, depending on the processor.")
     if not cpu.get("avx2") and cpu.get("avx"):
-        warnings.append("This processor has no AVX2: transcription on it will be slow.")
+        warnings.append("This is an older type of processor (no AVX2), so transcription on it will be slow.")
     eight = eight_gb(facts)
     if ram and not eight:
         warnings.append("With less than 8 GB of memory, use the small speech model and close other apps while "
@@ -205,7 +205,7 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
     models = {}
     for key in MODEL_PRESETS:
         ok = cuda or key in ("small", "medium")
-        why = "" if ok else "needs an NVIDIA GPU (on the processor it would take hours per lecture)"
+        why = "" if ok else "needs an NVIDIA graphics card (on the processor it would take hours per lecture)"
         if ok and key == "medium" and not eight:
             ok, why = False, "needs 8 GB of memory"
         models[key] = {"ok": ok, "why": why}
@@ -218,12 +218,12 @@ def _summary(facts: dict[str, Any], cuda: bool) -> list[dict[str, str]]:
     w, cpu, gpu = facts["windows"], facts["cpu"], facts["gpu"]
     rows = [{"label": "Windows", "value": f"{w['name']} {w.get('version') or ''} (build {w['build']})".replace("  ", " "),
              "ok": "yes" if w.get("x64") and w["build"] >= MIN_BUILD else "no"},
-            {"label": "Processor", "value": f"{cpu['name']} · {cpu['cores']} threads" + ("" if cpu.get("avx2") else " · no AVX2"),
+            {"label": "Processor", "value": f"{cpu['name']} · {cpu['cores']} threads" + ("" if cpu.get("avx2") else " · older type, slower"),
              "ok": "yes" if cpu.get("avx2") else ("warn" if cpu.get("avx") else "no")},
             {"label": "Memory", "value": f"{facts.get('ram_installed_gb') or facts['ram_gb']:.0f} GB",
              "ok": "yes" if eight_gb(facts) else ("warn" if facts["ram_gb"] >= MIN_RAM_GB else "no")},
             {"label": "Graphics", "value": (f"{gpu['name']} · {gpu['vram_mb'] / 1024:.0f} GB · driver {gpu['driver']}" if gpu.get("present")
-                                            else "No NVIDIA GPU (the processor transcribes)"),
+                                            else "No NVIDIA graphics card (the processor transcribes)"),
              "ok": "yes" if cuda else "warn"},
             {"label": "Free disk space", "value": f"{facts['disk']['data_free_gb']:.0f} GB on {Path(facts['disk']['data_dir']).anchor}",
              "ok": "yes" if facts["disk"]["data_free_gb"] >= 10 else ("warn" if facts["disk"]["data_free_gb"] >= 4 else "no")}]

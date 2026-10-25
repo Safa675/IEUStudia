@@ -229,7 +229,7 @@ def test_signed_in_without_plan_use_is_said(openai):
     assert _sign_in(openai)["state"] == "done"
     st = chatgpt.status()
     assert st["signed_in"] and not st["plan_allowed"] and not chatgpt.signed_in()
-    with pytest.raises(RuntimeError, match="needs ChatGPT Plus or Pro"):
+    with pytest.raises(RuntimeError, match="may not use your ChatGPT plan yet"):
         chatgpt.access_token()
 
 
@@ -277,7 +277,7 @@ def test_answers_stream_and_errors_are_explained(openai):
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
     openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "par"},
                                         {"type": "response.failed", "response": {"error": {"code": "subscription_sharing_user_not_eligible"}}}))]
-    with pytest.raises(RuntimeError, match="Plus or Pro"):
+    with pytest.raises(RuntimeError, match="Plus and Pro"):
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
     openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "half"}))]   # cut off
     with pytest.raises(RuntimeError, match="ended before"):

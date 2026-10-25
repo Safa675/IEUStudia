@@ -18,9 +18,10 @@
   // ------------------------------------------------------------------ the notice (also in Settings → About)
   const NOTICE = `<ul class="notice">
       <li><b>Independent student project.</b> IEUStudia is not made, endorsed or supported by İzmir University of Economics, IEULearn or Panopto. Use it at your own risk; it comes without any warranty and the authors take no responsibility for how it is used.</li>
-      <li><b>Your EkoID password stays with you.</b> It is sent only to learn.ieu.edu.tr to sign you in and is stored encrypted on this PC (Windows DPAPI). It is never sent to any other server — there is no IEUStudia server.</li>
+      <li><b>Your EkoID password stays with you.</b> It is sent only to learn.ieu.edu.tr to sign you in. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: there is no IEUStudia server.</li>
       <li><b>Your lectures stay on this PC.</b> Audio is transcribed on your own computer. Recordings, slides and materials belong to your lecturers and the university: keep them for your own study and do not share them.</li>
-      <li><b>AI is optional and can make mistakes.</b> Only if you use an AI feature is the lecture text you chose sent to the AI service you picked (Anthropic or OpenAI, under your own account). Always check AI answers against your lectures and materials.</li></ul>`;
+      <li><b>AI is optional and can make mistakes.</b> Nothing is sent to an AI service until you use an AI feature. Then the lectures and course files you chose are sent to the service you picked (OpenAI or Anthropic, under your own account). Always check AI answers against your lectures and materials.</li>
+      <li><b>New versions.</b> About once a day IEUStudia asks GitHub, where it's published, whether there's a new version. That request says nothing about you or your courses. You can turn it off in Settings → About.</li></ul>`;
   St.NOTICE = NOTICE;
 
   // ------------------------------------------------------------------ flow
@@ -103,7 +104,7 @@
   };
   function stepWelcome() {
     return `<div class="su-hero"><img class="su-logo" src="../assets/logo.svg" alt=""><div><h1>Welcome to IEUStudia</h1>
-        <p class="lead">Your IEULearn courses, Panopto lectures, materials and announcements in one place — lectures transcribed on this PC (English with Turkish passages), the lecturer's heads-ups about quizzes and exams, and optional AI help with your own ChatGPT or Claude plan.</p></div></div>
+        <p class="lead">Your IEULearn courses, Panopto lectures, materials and announcements in one place. IEUStudia turns the lectures into text on this PC (English with Turkish passages) and picks out what the lecturer says about quizzes, exams and homework. AI help is optional and uses your own ChatGPT or Claude plan.</p></div></div>
       <div class="card su-notice"><h3>${I("shield", "sm")} Before you start</h3>${NOTICE}
         <label class="su-accept"><input type="checkbox" class="check" data-act="su-accept" ${U.accepted ? "checked" : ""}> I have read this and want to continue</label></div>`;
   }
@@ -115,7 +116,7 @@
       ${v.blockers.length ? `<div class="callout error su-block">${I("x-circle")}<div><b>IEUStudia cannot run on this PC.</b><ul>${v.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>
         <div class="dim">Nothing was installed or changed. You can close IEUStudia and uninstall it from Windows Settings → Apps.</div></div></div>` : ""}
       ${v.warnings.length ? `<div class="callout warning">${I("alert")}<div><ul>${v.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div></div>` : ""}
-      ${!v.blockers.length ? `<div class="callout info">${I("check-circle")}<div>${v.gpu ? `Your NVIDIA GPU will transcribe lectures quickly.` : `Everything works; transcription runs on the processor, so it is slower.`}</div></div>` : ""}`;
+      ${!v.blockers.length ? `<div class="callout info">${I("check-circle")}<div>${v.gpu ? `Your NVIDIA graphics card will transcribe lectures quickly.` : `Everything works; transcription runs on the processor, so it is slower.`}</div></div>` : ""}`;
   }
   function stepSpeech() {
     const v = U.st.verdict, gpu = v.gpu;
@@ -125,9 +126,9 @@
         <div class="n">${esc(m.label)} ${m.id === v.recommended_model ? `<span class="pill now">Recommended</span>` : ""}<span class="sz">${gb(m.size_mb)}${m.ready ? " · on this PC" : ""}</span></div>
         <div class="d">${esc(m.description)}</div><div class="d su-speed">${ok ? `${I("clock", "xs")} ${speedHint(m.id, gpu)}` : esc(v.models[m.id].why)}</div></button>`;
     }).join("");
-    return `<h2>Transcription</h2><p class="lead">Lectures are transcribed on this PC by an open speech model (Whisper). It is downloaded once; you can change it later in Settings.</p>
+    return `<h2>Transcription</h2><p class="lead">A speech recognition model turns your lectures into text, right here on this PC. The Recommended one suits this PC. It is downloaded once, and you can change it later in Settings.</p>
       <div class="presets su-presets">${cards}</div>
-      ${gpu && !U.st.catalog.cuda.ready ? `<div class="callout info">${I("cpu")}<div>To use your NVIDIA GPU, IEUStudia also downloads NVIDIA's CUDA libraries (${gb(U.st.catalog.cuda.size_mb)}, from NVIDIA's official package).</div></div>` : ""}
+      ${gpu && !U.st.catalog.cuda.ready ? `<div class="callout info">${I("cpu")}<div>To use your NVIDIA graphics card, IEUStudia also downloads the support files it needs (${gb(U.st.catalog.cuda.size_mb)}, from NVIDIA's official CUDA package).</div></div>` : ""}
       <div class="set-row"><div class="txt"><div class="t">Save transcripts and notes in</div><div class="d"><span class="path">${esc(S.settings.output_dir || U.st.output_dir)}</span></div></div>
         <button class="btn sm" data-act="pick-folder">Change…</button></div>`;
   }
@@ -138,11 +139,11 @@
   // ------------------------------------------------------------------ connecting ChatGPT or Claude, one step at a time
   const VENDOR = {
     chatgpt: { name: "ChatGPT", maker: "OpenAI",
-      intro: "You sign in on OpenAI's own page and allow IEUStudia to use your ChatGPT Plus or Pro plan. There's nothing to install, and IEUStudia never sees your password. In ChatGPT's settings you can see what it uses, set a limit, or disconnect it." },
+      intro: "You sign in on OpenAI's own page and allow IEUStudia to use your ChatGPT plan. Plus and Pro can be used; for Free and Go, OpenAI decides, and the test message shows it. There's nothing to install, and IEUStudia never sees your password. In ChatGPT's settings you can see what it uses, set a limit, or disconnect it." },
     claude: { name: "Claude", tool: "Claude Code", maker: "Anthropic", plans: "Claude Pro or Max", upgrade: "https://claude.ai/upgrade",
-      intro: "IEUStudia talks to Claude through <b>Claude Code</b>, Anthropic's official command-line tool. It's free to install and works with your Claude Pro or Max subscription. It isn't the Claude desktop app, and you won't need to open it yourself.",
+      intro: "IEUStudia connects to Claude through <b>Claude Code</b>, a free program from Anthropic that IEUStudia can install for you. It works with your Claude Pro or Max subscription. It isn't the Claude desktop app, and you never have to open it yourself.",
       manual: [["Install Claude Code (in PowerShell)", "irm https://claude.ai/install.ps1 | iex"], ["Sign in", "claude auth login"]] },
-    codex: { name: "ChatGPT", tool: "Codex CLI", maker: "OpenAI", plans: "ChatGPT Plus or Pro", upgrade: "https://chatgpt.com/pricing",
+    codex: { name: "ChatGPT", tool: "Codex CLI", maker: "OpenAI", plans: "a ChatGPT plan with Codex", upgrade: "https://chatgpt.com/pricing",
       intro: "IEUStudia talks to ChatGPT through OpenAI's <b>Codex CLI</b>, signed in with your ChatGPT account. Pick this if you already use the Codex CLI; IEUStudia can also install it for you. Otherwise plain ChatGPT is simpler, with nothing to install.",
       manual: [["Install the Codex CLI (needs Node.js)", "npm install -g @openai/codex"], ["Sign in", "codex login"]] },
   };
@@ -151,17 +152,17 @@
     const si = a.sign_in || {}, t = a.test || {}, ready = a.signed_in && a.plan_allowed;
     const waiting = si.state === "waiting" || (U.busy["login:chatgpt"] && !a.signed_in && si.state !== "error");
     const noPlanUse = a.signed_in && !a.plan_allowed;
-    const notEligible = t.ok === false && /Plus or Pro/.test(t.error || "");
+    const notEligible = t.ok === false && /Plus (and|or) Pro/.test(t.error || "");
     return [
       { id: "signin", ok: ready, title: "Continue with ChatGPT", okText: `Signed in${a.email ? ` as ${esc(a.email)}` : ""}`,
         text: "Opens OpenAI's sign-in page in your browser. Sign in, then allow IEUStudia to use your ChatGPT plan.",
         busy: waiting && !noPlanUse ? "Finish on the page that opened in your browser. This list notices when you're done." : "",
-        error: si.state === "error" ? esc(si.error) : noPlanUse ? "You're signed in, but IEUStudia may not use your ChatGPT plan. That needs ChatGPT Plus or Pro (the free plan can't be used in apps). If you have one, click Allow it and accept on OpenAI's page." : "",
+        error: si.state === "error" ? esc(si.error) : noPlanUse ? "You're signed in, but IEUStudia may not use your ChatGPT plan yet. Click Allow it and accept on OpenAI's page." : "",
         btn: noPlanUse ? `<button class="btn sm" data-act="ai-login" data-id="chatgpt" data-consent="1">Allow it</button>`
           : `<button class="btn sm" data-act="ai-login" data-id="chatgpt">Continue with ChatGPT</button>` },
       { id: "plan", ok: t.ok === true, title: "Your plan", okText: "It works with your plan",
-        text: "Needs ChatGPT Plus or Pro.", error: notEligible ? esc(t.error) : "",
-        unknown: (ready && t.ok !== true && !notEligible) ? "Plus or Pro is needed. The test message shows whether your plan can be used in apps." : "",
+        text: "Plus and Pro can be used. For Free and Go, OpenAI decides.", error: notEligible ? esc(t.error) : "",
+        unknown: (ready && t.ok !== true && !notEligible) ? "The test message shows whether your plan can be used in apps." : "",
         btn: notEligible ? `<button class="btn sm" data-act="url" data-url="https://chatgpt.com/pricing">${I("external", "sm")} See plans</button>` : "" },
       { id: "test", ok: t.ok === true, title: "Test message", okText: `ChatGPT answered in ${t.seconds} s`,
         text: "One short message to check that everything works. It uses a little of your plan.",
@@ -188,7 +189,7 @@
       text: `Needs ${v.plans}.`, error: ps.ok === false ? esc(ps.note) : "", unknown: ps.ok == null && a.logged_in && t.ok !== true ? esc(ps.note || "") : "",
       btn: ps.ok === false ? `<button class="btn sm" data-act="url" data-url="${v.upgrade}">${I("external", "sm")} See plans</button>` : "" });
     out.push({ id: "test", ok: t.ok === true, title: "Test message", okText: `${v.name} answered in ${t.seconds} s`,
-      text: "One short message to check that everything works. It uses a few tokens of your plan.",
+      text: "One short message to check that everything works. It uses a little of your plan.",
       busy: U.busy["test:" + key] ? "Sending a short test message…" : "", error: t.ok === false ? esc(t.error) : "",
       btn: `<button class="btn sm" data-act="ai-test" data-id="${key}">${t.ok === false ? "Try again" : "Send a test message"}</button>` });
     return out;
@@ -237,12 +238,12 @@
     const rec = U.st.verdict.recommended_llm;
     const llmBody = rec ? `<div class="presets">${loc.map((m) => `<button class="preset ${U.ch.llm === m.id ? "on" : ""}" data-act="su-llm" data-id="${m.id}" ${m.id === "qwen3-4b" && rec !== "qwen3-4b" ? "disabled" : ""}>
         <div class="n">${esc(m.label)} ${m.id === rec ? `<span class="pill now">Fits this PC</span>` : ""}<span class="sz">${gb(m.size_mb)}${m.ready ? " · on this PC" : ""}</span></div><div class="d">${esc(m.description)}</div></button>`).join("")}</div>
-        <div class="dim su-note">Runs entirely on this PC. Fine for short notes and simple questions; study plans and prep packs need ChatGPT or Claude.${U.st.verdict.gpu ? "" : " Without an NVIDIA GPU it writes slowly (notes for a lecture take several minutes)."}</div>`
+        <div class="dim su-note">Runs entirely on this PC. Fine for short notes and simple questions; study plans and prep packs need ChatGPT or Claude.${U.st.verdict.gpu ? "" : " Without an NVIDIA graphics card it writes slowly (notes for a lecture take several minutes)."}</div>`
       : `<div class="callout warning">${I("alert")}<div>This PC has too little memory for an offline model (8 GB needed).</div></div>`;
     return `<h2>AI help (optional)</h2><p class="lead">Study notes, chat about your lectures, video study plans and exam prep packs. Pick what you have — everything else in IEUStudia works without AI.</p>
-      ${aiCard("chatgpt", "ChatGPT", "Needs a ChatGPT Plus or Pro subscription.", connectHTML("chatgpt"))}
+      ${aiCard("chatgpt", "ChatGPT", "Uses your ChatGPT plan. Plus and Pro work; Free and Go may, with smaller limits.", connectHTML("chatgpt"))}
       ${aiCard("claude", "Claude", "Needs a Claude Pro or Max subscription.", connectHTML("claude"))}
-      ${aiCard("codex", "ChatGPT through the Codex CLI", "If you already use OpenAI's Codex CLI. Needs ChatGPT Plus or Pro.", connectHTML("codex"))}
+      ${aiCard("codex", "ChatGPT through the Codex CLI", "Pick this only if you already use OpenAI's Codex CLI (a tool for programmers) with your ChatGPT plan. Otherwise choose ChatGPT above.", connectHTML("codex"))}
       ${aiCard("local", "Offline model", "No subscription: a small model on this PC — basic notes and questions.", llmBody,
         rec || llmHere(U.st, U.ch.llm) ? "" : "Not on this PC: it needs 8 GB of memory.")}
       ${aiCard("none", "No AI", "Transcripts, heads-ups, search, calendar and everything else still work.", "")}
@@ -251,14 +252,14 @@
   function stepBackground() {
     const sw = (key, label, d, dis) => `<div class="set-row"><div class="txt"><div class="t">${label}</div><div class="d">${d}</div></div>
       <input type="checkbox" class="switch" data-act="su-bool" data-key="${key}" ${U.ch[key] ? "checked" : ""} ${dis ? "disabled" : ""}></div>`;
-    return `<h2>In the background</h2><p class="lead">A small helper can stay in the notification area (tray) and tell you when something new appears on IEULearn — even when the IEUStudia window is closed.</p>
-      <div class="card set-card">${sw("tray", "Keep the helper running in the tray", "About 50 MB of memory. Checks IEULearn every 30 minutes; it never transcribes or downloads anything by itself.")}
-        ${sw("startup", "Start it when I sign in to Windows", "So notifications arrive without opening IEUStudia first.", !U.ch.tray)}</div>
+    return `<h2>In the background</h2><p class="lead">IEUStudia can keep checking IEULearn after you close its window and tell you when something new appears. Its icon then stays at the bottom right of the screen, next to the clock (or under the ^ arrow there).</p>
+      <div class="card set-card">${sw("tray", "Keep checking after I close IEUStudia", "Uses about 50 MB of memory. Checks IEULearn every 30 minutes. It never transcribes or downloads anything on its own.")}
+        ${sw("startup", "Start checking when I sign in to Windows", "So notifications arrive without opening IEUStudia first.", !U.ch.tray)}</div>
       <div class="card set-card"><h3>Notify me about</h3>
         ${sw("notify_recordings", "New lecture recordings", "Of your own section.", !U.ch.tray)}
         ${sw("notify_announcements", "New announcements", "Quiz, exam and homework news is marked as a heads-up.", !U.ch.tray)}
         ${sw("notify_materials", "New files", "Slides and PDFs added to a course.", !U.ch.tray)}</div>
-      <div class="dim su-note">${I("info", "xs")} You can change all of this later in Settings, or from the tray icon's menu.</div>`;
+      <div class="dim su-note">${I("info", "xs")} You can change all of this later in Settings, or by right-clicking the IEUStudia icon next to the clock.</div>`;
   }
   function stepDownload() {
     const p = U.plan;
@@ -285,7 +286,7 @@
       <div class="card su-summary">${[["Transcription", (U.st.catalog.speech.find((m) => m.id === U.ch.speech) || {}).label || U.ch.speech],
         ["AI", { chatgpt: "ChatGPT", claude: "Claude", codex: "ChatGPT (Codex CLI)", local: "Offline model", none: "No AI", "": "No AI" }[U.ch.ai]
           + (VENDOR[U.ch.ai] && !(U.ai && U.ai[U.ch.ai] && aiSignedIn(U.ch.ai, U.ai[U.ch.ai])) ? " — not connected yet (Settings → AI)" : "")],
-        ["Background helper", U.ch.tray ? `On${U.ch.startup ? ", starts with Windows" : ""}` : "Off"]].map(([k, v]) => `<div class="su-row"><span class="grow">${k}</span><b>${esc(v)}</b></div>`).join("")}</div>`;
+        ["Background checks", U.ch.tray ? `On${U.ch.startup ? ", starts with Windows" : ""}` : "Off"]].map(([k, v]) => `<div class="su-row"><span class="grow">${k}</span><b>${esc(v)}</b></div>`).join("")}</div>`;
   }
 
   // ------------------------------------------------------------------ frame
@@ -331,7 +332,7 @@
       if (k === "ai" && VENDOR[U.ch.ai] && !(el && el.dataset.anyway) && !(U.ai && U.ai[U.ch.ai] && aiSignedIn(U.ch.ai, U.ai[U.ch.ai]))) {
         const v = VENDOR[U.ch.ai];
         St.modal(`<h2>${esc(v.name)} isn't connected yet</h2>
-          <p class="lead">Until it is, Ask, study notes and plans won't work. Everything else does. You can connect it later in Settings → AI.</p>
+          <p class="lead">Until it is, chatting about your lectures, study notes and study plans won't work. Everything else does. You can connect it later in Settings → AI.</p>
           <div class="actions"><button class="btn" data-act="modal-close">Connect it now</button><button class="btn primary" data-act="su-next" data-anyway="1">Continue without it ${I("arrow-right", "sm")}</button></div>`);
         return;
       }
@@ -436,12 +437,12 @@
     const app = (S.boot || {}).app || {};
     const a = U.ai;
     if (!a) { setTimeout(loadAi, 0); }
-    const label = { chatgpt: "ChatGPT (Plus or Pro plan)", claude: "Claude (Pro or Max plan)", codex: "ChatGPT through the Codex CLI", local: "Offline model on this PC", none: "No AI" };
+    const label = { chatgpt: "ChatGPT (your ChatGPT plan)", claude: "Claude (Pro or Max plan)", codex: "ChatGPT through the Codex CLI", local: "Offline model on this PC", none: "No AI" };
     const p = app.ai_provider, x = (a && a[p]) || {};
     const status = p === "chatgpt" ? (x.signed_in && x.plan_allowed ? `Signed in with ChatGPT${x.email ? ` as ${x.email}` : ""}.` : "Not connected yet.")
       : p === "claude" ? (x.logged_in ? `Claude Code ${x.version} · signed in${x.plan ? ` (${x.plan})` : ""}` : x.available ? "Claude Code is installed but not signed in." : "Claude Code is not installed.")
       : p === "codex" ? (x.logged_in ? `Codex CLI ${x.version} · signed in with ChatGPT` : x.available ? "The Codex CLI is installed but not signed in." : "The Codex CLI is not installed.")
-      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? "The offline model is on this PC." : "The offline model is not downloaded yet." : "AI is off: the AI buttons stay greyed out. Choose an AI service in the list on the right to use Ask, study notes and plans.";
+      : p === "local" ? ((x.models || []).find((m) => m.id === app.local_model) || {}).ready ? "The offline model is on this PC." : "The offline model is not downloaded yet." : "AI is off, so the AI buttons are greyed out. To chat about your lectures or make study notes and plans, choose an AI service on the right.";
     const needs = a && a.local && p === "local" && !(a.local.models.find((m) => m.id === app.local_model) || {}).ready;
     const steps = VENDOR[p] && a && a[p];
     if (steps && !U.timer) pollAi(true);
@@ -459,21 +460,32 @@
     const sw = (key, dis) => `<input type="checkbox" class="switch" data-act="app-bool" data-key="${key}" ${app[key] ? "checked" : ""} ${dis ? "disabled" : ""}>`;
     const st = U.storage;
     if (!st) setTimeout(loadStorage, 0);
-    const use = st ? Object.entries({ speech_models: "Speech models", gpu_libraries: "NVIDIA GPU libraries", offline_ai: "Offline AI model", library: "Library and transcripts", cache: "Caches", your_files: "Your files (output folder)" })
+    const use = st ? Object.entries({ speech_models: "Speech models", gpu_libraries: "NVIDIA graphics card files", offline_ai: "Offline AI model", library: "Library and transcripts", cache: "Temporary files", your_files: "Your files (IEUStudia folder)" })
       .filter(([k]) => st.usage[k]).map(([k, l]) => `<div class="su-row"><span class="grow">${l}</span><b>${bytes(st.usage[k])}</b></div>`).join("") : St.skeleton();
     const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, `Speech model “${m.label}”`, m.size_mb]),
       ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, `Offline model “${m.label}”`, m.size_mb])] : [];
     return `<div class="card set-card"><h3>Background and notifications</h3>
-        ${row("Keep running in the background", "A small helper in the notification area (tray) keeps going when the window is closed (about 50 MB of memory), checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads by itself.", sw("tray"))}
-        ${row("Start with Windows", "Start the helper when you sign in to Windows.", sw("start_with_windows", !app.tray))}
+        ${row("Keep running in the background", "After you close the window, IEUStudia stays as a small icon next to the clock (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own.", sw("tray"))}
+        ${row("Start with Windows", "Start the background checks when you sign in to Windows.", sw("start_with_windows", !app.tray))}
         ${row("New lecture recordings", "Of your own section.", sw("notify_recordings", !app.tray))}
         ${row("New announcements", "Quiz, exam and homework news is marked as a heads-up.", sw("notify_announcements", !app.tray))}
         ${row("New files", "Slides and PDFs added to a course.", sw("notify_materials", !app.tray))}</div>
       <div class="card set-card"><h3>Storage</h3>${use}
         ${removable.map(([id, l, mb]) => row(l, `${gb(mb)} · not in use`, `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}">${I("x", "sm")} Remove</button>`)).join("")}</div>
       <div class="card set-card"><h3>About</h3>
-        ${row(`IEUStudia ${esc((S.boot || {}).version || "")}`, "Open source (MIT). Transcription runs on this PC with faster-whisper; AI only through the service you chose.",
+        ${row(`IEUStudia ${esc((S.boot || {}).version || "")}`, "Free and open source (MIT License). Lectures are transcribed on this PC. AI runs only through the service you chose, and only when you ask.",
           `<div style="display:flex;gap:6px"><button class="btn ghost sm" data-act="logs">${I("terminal", "sm")} Logs</button><button class="btn sm" data-act="setup-again">${I("refresh", "sm")} Run setup again</button></div>`)}
+        ${(() => {
+          const up = S.update || {};
+          const when = up.checked_at ? St.rel(new Date(up.checked_at * 1000).toISOString()) : "";
+          const said = up.available ? `IEUStudia ${esc(up.version)} is available. Updating keeps everything you have.`
+            : up.error && !up.checked_at ? `Couldn't look for a new version: ${esc(up.error)}`
+            : when ? `You have the newest version (checked ${esc(when)}).` : "Not checked yet.";
+          return row("New versions", said, up.available
+            ? `<button class="btn sm update-btn" data-act="update-open">${I("download", "sm")} Update to ${esc(up.version)}</button>`
+            : `<button class="btn ghost sm" data-act="update-check">${I("refresh", "sm")} Check now</button>`)
+            + row("Look for new versions by itself", "About once a day IEUStudia asks GitHub, where it's published, whether there's a new version. You decide when to update.", sw("check_updates"));
+        })()}
         <div class="su-notice-small">${NOTICE}</div></div>`;
   };
   async function loadStorage() {
@@ -496,7 +508,7 @@
       const r = await call("app_config", patch);
       if (!r.ok) { toast(r.error, "error"); return; }
       S.boot.app = r.app; St.renderView();
-      if (el.dataset.key === "tray") toast(el.checked ? "The helper is now in the tray (bottom right)." : "The helper was turned off.", "info");
+      if (el.dataset.key === "tray") toast(el.checked ? "Background checks are on: the IEUStudia icon is next to the clock, bottom right." : "Background checks are off.", "info");
     },
     "setup-ai": () => { St.startSetup().then(() => go(STEPS.findIndex((s) => s[0] === "ai"))); },
     "del-component": async (el) => {
@@ -529,12 +541,12 @@
   St.mocks.ai_status = (which) => {
     const all = { ok: true, provider: "none", chosen: "",
       chatgpt: { signed_in: M.login.chatgpt, email: M.login.chatgpt ? "student@example.com" : "", plan_allowed: M.login.chatgpt, registered: M.login.chatgpt, sign_in: {},
-        model: "", models: M.login.chatgpt ? ["gpt-6.1-sol", "gpt-6-sol-mini"] : [], needs: "ChatGPT Plus or Pro subscription", test: M.test.chatgpt || {} },
+        model: "", models: M.login.chatgpt ? ["gpt-6.1-sol", "gpt-6-sol-mini"] : [], needs: "a ChatGPT plan that apps may use (Plus or Pro)", test: M.test.chatgpt || {} },
       claude: { available: M.claude, version: M.claude ? "2.1.290" : "", logged_in: M.login.claude, plan: M.login.claude ? "pro" : "", email: M.login.claude ? "student@example.com" : "",
         needs: "Claude Pro or Max subscription", plan_status: M.login.claude ? { ok: true, label: "Claude Pro", note: "" } : { ok: null, label: "", note: "" },
         job: mockJob("claude"), test: M.test.claude || {} },
       codex: { available: M.codex, version: M.codex ? "0.157.0" : "", logged_in: M.login.codex, plan: M.login.codex ? "chatgpt" : "", email: "", ours: M.codex, model: "",
-        models: M.login.codex ? ["gpt-6.1-sol", "gpt-6-sol-mini"] : [], needs: "ChatGPT Plus or Pro subscription",
+        models: M.login.codex ? ["gpt-6.1-sol", "gpt-6-sol-mini"] : [], needs: "a ChatGPT plan with Codex",
         plan_status: M.login.codex ? { ok: null, label: "ChatGPT", note: "Codex does not show your plan; the test message below shows whether it works." } : { ok: null, label: "", note: "" },
         job: mockJob("codex"), test: M.test.codex || {} },
       local: { model: "qwen3-1.7b", models: [{ id: "qwen3-1.7b", label: "Basic", description: "Short notes and simple questions; runs on most PCs with 8 GB of memory (Qwen3 1.7B).", size_mb: 1745, ready: false },

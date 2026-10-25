@@ -174,6 +174,14 @@ def acquire_single_instance(name: str = "Local\\Studia-SingleInstance", wait_s: 
         time.sleep(0.2)
 
 
+def release_single_instance() -> None:
+    """Let go of the lock before this process ends (the installer of an update checks that IEUStudia isn't running)."""
+    global _mutex
+    if _mutex:
+        ctypes.WinDLL("kernel32").CloseHandle(wt.HANDLE(_mutex))
+        _mutex = None
+
+
 def _main_window(title: str) -> int:
     """The app's WinForms main window (pywebview also creates small helper windows with the same title)."""
     user32 = ctypes.WinDLL("user32")

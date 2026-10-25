@@ -16,6 +16,10 @@ AppId={{8E1B7D57-5C2A-4F07-9E33-3C9A1D2B7F11}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
+VersionInfoVersion={#AppVersion}
+VersionInfoProductName={#AppName}
+VersionInfoProductTextVersion={#AppVersion}
+VersionInfoCompany=IEUStudia contributors
 AppPublisher=IEUStudia contributors
 AppPublisherURL={#RepoUrl}
 AppSupportURL={#RepoUrl}
@@ -58,11 +62,18 @@ Name: "{autodesktop}\IEUStudia"; Filename: "{app}\IEUStudia.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\IEUStudia.exe"; Description: "{cm:LaunchProgram,IEUStudia}"; Flags: nowait postinstall skipifsilent
+; an update started from the app (/SILENT /RELAUNCH=1, see updates.py): open IEUStudia again when it's done
+Filename: "{app}\IEUStudia.exe"; Flags: nowait; Check: Relaunch
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/c taskkill /f /im IEUStudia.exe"; Flags: runhidden; RunOnceId: "StopIEUStudia"
 
 [Code]
+function Relaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 function WebView2Installed(): Boolean;
 var
   v: String;

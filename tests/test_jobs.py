@@ -61,7 +61,7 @@ class FakePanopto:
             FakePanopto.gate.wait(10)
         FakePanopto.downloads.append(src.kind)
         progress(5, 10)
-        dest.write_text("silent" if "silent" in src.url else "loud")
+        dest.write_text("silent" if "silent" in src.url else "mute" if "mute" in src.url else "loud")
         progress(10, 10)
         return dest
 
@@ -151,6 +151,30 @@ def test_silent_podcast_falls_back_to_loud_camera_stream(env):
     assert wait_for(lambda: finals(env["events"], "r1"))
     assert FakePanopto.downloads == ["audio_podcast", "hls"]   # the video podcast is never fetched
     assert env["state"]["engine"].audio_seen == [0.5]
+
+
+def test_a_stream_without_any_sound_track_falls_back_to_the_next_one(env):
+    from studia.audio import NoAudioTrack
+
+    fake = jobs_mod.decode_audio
+
+    def decode(path, cancel=None):
+        if open(path).read() == "mute":              # a video-only stream (made from the screen recording)
+            raise NoAudioTrack("This file has no audio track.")
+        return fake(path, cancel)
+
+    env["mp"].setattr(jobs_mod, "decode_audio", decode)
+    FakePanopto.sources = [MediaSource("video_podcast", "https://x/mute"), MediaSource("hls", "https://x/dv.m3u8")]
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    assert finals(env["events"], "r1")[0]["stage"] == "done" and FakePanopto.downloads == ["video_podcast", "hls"]
+    FakePanopto.sources = [MediaSource("video_podcast", "https://x/mute")]   # no stream with sound: said plainly
+    jm.enqueue(["r2"])
+    assert wait_for(lambda: finals(env["events"], "r2"))
+    rec = env["lib"].get_recording("r2")
+    assert rec.status == "failed" and "no sound for this recording" in rec.error
+    assert not list(audio_cache_dir().glob("r2.*"))
 
 
 def test_no_speech_is_reported_with_a_warning(env):

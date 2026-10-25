@@ -175,7 +175,7 @@ class Helper:
                 (CMD_PAUSE, "Pause notifications", self.paused, True),
                 (CMD_STARTUP, "Start with Windows", launch.startup_enabled(), True),
                 (0, "", False, False),
-                (CMD_QUIT, "Quit the helper", False, True)]
+                (CMD_QUIT, "Stop background checks", False, True)]
 
     def _command(self, cmd: int) -> None:
         from . import appconfig, launch
@@ -218,7 +218,22 @@ class Helper:
                     self._check()
                 except Exception:  # noqa: BLE001
                     log.exception("Helper: check failed")
+                self._check_update()
             self.wake.wait(self.cfg.sync_minutes * 60)
+
+    def _check_update(self) -> None:
+        """A new version of IEUStudia: said once, and opening the app shows how to update."""
+        from . import updates
+
+        try:
+            if not self.cfg.check_updates or not updates.installed():
+                return
+            st = updates.check()
+            if st["available"] and not self.paused and updates.tell_once(st["version"]):
+                self.tray.notify(f"IEUStudia {st['version']} is available",
+                                 "Open IEUStudia to update. It takes about a minute.", "update")
+        except Exception:  # noqa: BLE001
+            log.debug("Helper: update check failed", exc_info=True)
 
     def _check(self) -> None:
         from . import __version__

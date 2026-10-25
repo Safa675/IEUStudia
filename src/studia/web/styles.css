@@ -1219,3 +1219,23 @@ button.link:hover { text-decoration-color: currentColor; }
 .composer-inner { position: relative; }
 .chat-tools { display: flex; gap: 6px; flex-wrap: wrap; max-width: 820px; margin: 0 auto 8px; }
 .chat-tools .btn { height: 28px; font-size: 12.5px; }
+
+/* a new version: the top bar's button and its dialog */
+.btn.update-btn { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, transparent); background: var(--blue-soft); }
+.btn.update-btn:hover:not(:disabled) { border-color: var(--blue); }
+.modal .actions .spacer { flex: 1; }
+.update-notes { max-height: 300px; overflow-y: auto; margin: 4px 0 0; padding: 4px 14px; border-radius: 10px; background: var(--surface-2);
+  font-size: 13.5px; }
+.update-notes p { margin: 8px 0; }
+.update-notes ul { margin: 4px 0 8px; padding-left: 18px; }
+
+/* Home, the first days: how IEUStudia works */
+.howto { padding: 16px 18px; margin: 0 0 18px; border-color: color-mix(in srgb, var(--blue) 35%, var(--border)); }
+.howto-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.howto-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.howto-step { display: flex; gap: 10px; align-items: flex-start; }
+.howto-step b { display: block; margin-bottom: 2px; }
+.howto-step span:not(.howto-n) { color: var(--text-2); font-size: 13px; line-height: 1.45; }
+.howto-n { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 600 12.5px var(--font);
+  background: var(--blue-soft); color: var(--blue); }
+@media (max-width: 900px) { .howto-steps { grid-template-columns: 1fr; } }

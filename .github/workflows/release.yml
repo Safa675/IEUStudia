@@ -41,7 +41,10 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DRepoUrl=${{ github.server_url }}/${{ github.repository }}" packaging\IEUStudia.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
           Compress-Archive -Path build\dist\IEUStudia -DestinationPath "build\installer\IEUStudia-$version-portable.zip"
-          $files = @(Get-ChildItem build\installer -File | Where-Object { $_.Name -like "IEUStudia-*$version*" })
+          # the same installer under a name without the version: releases/latest/download/IEUStudia-Setup.exe
+          # always gets the newest one (the link in the README and the one to share)
+          Copy-Item "build\installer\IEUStudia-Setup-$version.exe" "build\installer\IEUStudia-Setup.exe"
+          $files = @(Get-ChildItem build\installer -File | Where-Object { $_.Name -like "IEUStudia-*$version*" -or $_.Name -eq "IEUStudia-Setup.exe" })
           $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
             Set-Content build\installer\SHA256SUMS.txt -Encoding ascii
           Get-Content build\installer\SHA256SUMS.txt
@@ -52,5 +55,6 @@ jobs:
           generate_release_notes: true
           files: |
             build/installer/IEUStudia-Setup-*.exe
+            build/installer/IEUStudia-Setup.exe
             build/installer/IEUStudia-*-portable.zip
             build/installer/SHA256SUMS.txt

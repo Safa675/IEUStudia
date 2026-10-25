@@ -389,7 +389,7 @@
     "plan-resume": async (el) => { const r = await call("plan_resume", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-file": async (el) => { const r = await call("plan_open_file", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-delete": async (el) => {
-      if (!confirm("Delete this study plan? (Its Markdown file in your output folder stays.)")) return;
+      if (!confirm("Delete this study plan? (Its Markdown file in your IEUStudia folder stays.)")) return;
       await call("plan_delete", el.dataset.id);
       delete S.planCache[el.dataset.id];
       S.plans = (S.plans || []).filter((p) => p.id !== el.dataset.id);

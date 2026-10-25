@@ -161,7 +161,8 @@ def test_plan_verdicts():
     assert p("claude", "free", True)["ok"] is False and "Pro or Max" in p("claude", "free", True)["note"]
     assert p("claude", "api", True)["ok"] and "billed per use" in p("claude", "api", True)["note"]
     assert p("claude", "", True)["ok"] is None and p("claude", "pro", False)["ok"] is None
-    assert p("codex", "plus", True)["label"] == "ChatGPT Plus" and p("codex", "free", True)["ok"] is False
+    assert p("codex", "plus", True)["label"] == "ChatGPT Plus"
+    assert p("codex", "free", True)["ok"] is None and "test message" in p("codex", "go", True)["note"]   # OpenAI decides
     assert p("codex", "chatgpt", True) == {"ok": None, "label": "ChatGPT",
                                            "note": "Codex does not show your plan; the test message below shows whether it works."}
 

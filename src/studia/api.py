@@ -56,6 +56,9 @@ class Api:
         self._open_target = ""            # --open course:<id> (a notification was clicked)
         self._setup_cancel: Optional[threading.Event] = None
         self._setup_running = False
+        self._update_cancel: Optional[threading.Event] = None
+        self._update_running = False
+        self._update_installer: Optional[Any] = None    # downloaded: app.py runs it once the window has closed
         threading.Thread(target=self._dispatch, name="ui-events", daemon=True).start()
         if services is not None:
             self._set_services(services)
@@ -71,6 +74,25 @@ class Api:
         self._ready.set()
         threading.Thread(target=self._auto_sync_loop, name="auto-sync", daemon=True).start()
         threading.Thread(target=self._watch_open_requests, name="open-requests", daemon=True).start()
+        threading.Thread(target=self._update_loop, name="update-check", daemon=True).start()
+
+    def _update_loop(self) -> None:
+        """About once a day (and shortly after the start), if allowed: is there a new version? The page shows it."""
+        from . import appconfig, updates
+
+        if not updates.installed():               # run from source or the portable zip: nothing to update with
+            return
+        time.sleep(20)
+        updates.cleanup()
+        while True:
+            try:
+                if appconfig.load().check_updates and updates.due():
+                    st = updates.check()
+                    if st["available"]:
+                        self._push({"type": "update", **st})
+            except Exception:  # noqa: BLE001
+                log.debug("Update check failed", exc_info=True)
+            time.sleep(3 * 3600)
 
     def _auto_sync_loop(self) -> None:
         """A quiet sync every AUTO_SYNC_S while the app is open, so new lectures, materials and announcements (and
@@ -177,13 +199,14 @@ class Api:
             cached_system = json.loads(self._s.lib.get_meta("system_info") or "null")
         except ValueError:
             cached_system = None
-        from . import appconfig
+        from . import appconfig, updates
         from .ai import usage_limits
 
         target, self._open_target = self._open_target, ""
         return {
             "ok": True, "version": __version__, "signed_in": signed_in, "system": cached_system,
-            "limits": usage_limits(), "app": appconfig.load().to_json(), "open": target,
+            "limits": usage_limits(), "app": appconfig.load().to_json(), "open": target, "update": updates.status(),
+            "updated_from": updates.note_version(),
             "first_run": not self._s.settings.first_run_done,
             "profile": profile.__dict__ if profile else None,
             "settings": self._s.settings.to_json(), "last_sync": self._s.lib.get_meta("last_sync"),
@@ -298,6 +321,81 @@ class Api:
     def setup_cancel(self) -> dict[str, Any]:
         if self._setup_cancel is not None:
             self._setup_cancel.set()
+        return {"ok": True}
+
+    # ------------------------------------------------------------------ new versions
+    @safe
+    def update_check(self) -> dict[str, Any]:
+        """Look for a new version now (Settings → About)."""
+        from . import updates
+
+        st = updates.check(force=True)
+        self._push({"type": "update", **st})
+        return {"ok": True, **st}
+
+    @safe
+    def update_install(self) -> dict[str, Any]:
+        """Download the new version, check it, then close: app.py runs its installer, which opens IEUStudia again."""
+        from . import updates
+        from .cancel import Cancelled
+        from .net import plain_error
+
+        st = updates.status()
+        if self._update_running:
+            return {"ok": True, "running": True}
+        if not st["available"]:
+            return {"ok": False, "error": "You already have the newest version."}
+        if not st["can_install"]:
+            return {"ok": False, "error": "This copy of IEUStudia can't update itself (it wasn't installed with the "
+                                          "installer). Download the new version from its release page."}
+        if self._s.jobs.busy():
+            return {"ok": False, "error": "A transcription is still running. Update when it has finished, or cancel "
+                                          "it first."}
+        if self._setup_running:
+            return {"ok": False, "error": "IEUStudia is still downloading what it needs. Update when that's done."}
+        self._update_running = True
+        cancel = self._update_cancel = threading.Event()
+
+        def run() -> None:
+            last = [0.0]
+
+            def progress(done: int, total: int) -> None:
+                now = time.monotonic()
+                if now - last[0] > 0.25 or done >= total:
+                    last[0] = now
+                    self._push({"type": "update", "state": "downloading", "done": done, "total": total})
+
+            try:
+                self._push({"type": "update", "state": "downloading", "done": 0, "total": 0})
+                path = updates.download(progress, cancel)
+                if self._s.jobs.busy():                # a transcription was started meanwhile: it isn't cut off
+                    self._push({"type": "update", "state": "error", "error": "A transcription started while the "
+                                "update downloaded. Update when it has finished (the download is kept)."})
+                    return
+                self._update_installer = path
+                self._push({"type": "update", "state": "installing"})
+                time.sleep(1.5)                        # long enough to read that the window closes now
+                if self._s.jobs.busy():                # started in that moment: closing would cut it off
+                    self._update_installer = None
+                    self._push({"type": "update", "state": "error", "error": "A transcription started. Update when "
+                                "it has finished (the download is kept)."})
+                    return
+                self._window.destroy()
+            except Cancelled:
+                self._push({"type": "update", "state": "cancelled"})
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Update failed")
+                self._push({"type": "update", "state": "error", "error": plain_error(exc)})
+            finally:
+                self._update_running = False
+
+        threading.Thread(target=run, name="update", daemon=True).start()
+        return {"ok": True}
+
+    @safe
+    def update_cancel(self) -> dict[str, Any]:
+        if self._update_cancel is not None:
+            self._update_cancel.set()
         return {"ok": True}
 
     @safe
@@ -801,7 +899,7 @@ class Api:
         except OSError as exc:
             from .net import plain_error
 
-            return {"ok": False, "error": f"The output folder {self._s.output_root} can't be created. "
+            return {"ok": False, "error": f"The folder for your transcripts ({self._s.output_root}) can't be created. "
                                           f"{plain_error(exc)} You can choose another folder in Settings → Files."}
         open_path(self._s.output_root)
         return {"ok": True}
