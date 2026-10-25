@@ -407,7 +407,13 @@ def _main(argv: Optional[list[str]] = None) -> None:
         from .winutil import release_single_instance
 
         release_single_instance()
-        updates.run_installer(api._update_installer)
+        if not updates.run_installer(api._update_installer):       # blocked by an antivirus, say
+            from .winutil import message_box
+
+            message_box("IEUStudia couldn't start the update: Windows or your antivirus didn't let the installer "
+                        "run. IEUStudia opens again. You can also download the new version from its release page.",
+                        APP_NAME, 0x30)
+            _relaunch(argv)
 
 
 if __name__ == "__main__":

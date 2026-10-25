@@ -190,7 +190,9 @@ class Helper:
             on = not launch.startup_enabled()
             launch.set_startup(on)
             appconfig.update({"start_with_windows": on})
-        elif cmd == CMD_QUIT:
+        elif cmd == CMD_QUIT:            # off until it's turned on again in Settings, not just until the app opens
+            appconfig.update({"tray": False, "start_with_windows": False})
+            launch.set_startup(False)
             self.stop.set()
             self.wake.set()
             self.tray.stop()
@@ -214,11 +216,13 @@ class Helper:
                 self.tray.stop()
                 return
             if not ui_running():
+                told = False
                 try:
-                    self._check()
+                    told = self._check()
                 except Exception:  # noqa: BLE001
                     log.exception("Helper: check failed")
-                self._check_update()
+                if not told:            # one notification at a time: a click opens what the last one was about
+                    self._check_update()
             self.wake.wait(self.cfg.sync_minutes * 60)
 
     def _check_update(self) -> None:
@@ -235,7 +239,8 @@ class Helper:
         except Exception:  # noqa: BLE001
             log.debug("Helper: update check failed", exc_info=True)
 
-    def _check(self) -> None:
+    def _check(self) -> bool:
+        """Check IEULearn; True if a notification was shown."""
         from . import __version__
         from .accounts import activate
         from .config import load_settings
@@ -259,9 +264,10 @@ class Helper:
                         self.tray.notify("IEULearn didn't accept your saved password",
                                          "Did you change it? Open IEUStudia and sign in again; until then there are "
                                          "no notifications.")
-                    return
+                        return True
+                    return False
                 self.tray.set_tooltip("IEUStudia · sign in in the app to get notifications")
-                return
+                return False
             self.told_rejected = False
             res = sync.sync()
             content = sync.sync_content()
@@ -271,10 +277,12 @@ class Helper:
             _save_seen(seen)
             self.last = time.strftime("%H:%M")
             self.tray.set_tooltip(f"IEUStudia · checked {self.last}")
-            if note and not self.paused:
+            told = bool(note) and not self.paused
+            if told:
                 self.tray.notify(*note)
             log.info("Helper: checked IEULearn (%d new recordings, %d announcements, %d files)",
                      len(res.new_ids), len(content["new_announcements"]), len(content["new_materials"]))
+            return told
         finally:
             lib.close()
 

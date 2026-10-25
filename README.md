@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/home.png" width="880" alt="The IEUStudia home screen with this week's quizzes and the course cards">
+  <img src="docs/demo.gif" width="880" alt="A short tour with made-up data: the home screen, a course with what's coming up, a transcribed lecture with its slides, a search across all lectures and a chat about them">
 </p>
 
 > [!NOTE]
@@ -57,9 +57,9 @@ change in the schedule, it shows up on the course page. Before a quiz, *Get read
 the files to download and what the lecturer said about it. Quizzes and exams can go into your calendar, and a weekly
 digest sums up what happened.
 
-**Get a notification when something new appears.** If you want, a small helper stays in the notification area,
-checks IEULearn every half hour and shows a Windows notification for new recordings, announcements and files. It can
-start with Windows. It never transcribes or downloads anything on its own.
+**Get a notification when something new appears.** If you want, IEUStudia keeps checking IEULearn every half hour
+after you close its window (its icon stays next to the clock) and shows a Windows notification for new recordings,
+announcements and files. It can start with Windows. It never transcribes or downloads anything on its own.
 
 **Use AI with your own subscription.** With ChatGPT or Claude you can chat about your lectures (answers point to the
 exact moment they come from), write study notes or flashcards, put together an exam prep pack, or make a video study
@@ -106,7 +106,7 @@ to learn.ieu.edu.tr, the same as when you sign in on the website.
    - a check of your PC (if it can't run IEUStudia, it tells you why and stops there),
    - the speech model for transcription,
    - AI, if you want it,
-   - the background helper and notifications,
+   - background checks and notifications,
    - the downloads, with their sizes shown before anything starts,
    - and signing in to IEULearn.
 

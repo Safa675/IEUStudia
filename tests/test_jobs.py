@@ -3,6 +3,7 @@
 import datetime as dt
 import threading
 import time
+import types
 
 import numpy as np
 import pytest
@@ -175,6 +176,37 @@ def test_a_stream_without_any_sound_track_falls_back_to_the_next_one(env):
     rec = env["lib"].get_recording("r2")
     assert rec.status == "failed" and "no sound for this recording" in rec.error
     assert not list(audio_cache_dir().glob("r2.*"))
+
+
+def test_a_stream_without_sound_hides_no_download_error_and_isnt_fetched_again(env):
+    import requests
+
+    from studia.audio import NoAudioTrack
+
+    fake, tried = jobs_mod.decode_audio, []
+
+    def decode(path, cancel=None):
+        if open(path).read() == "mute":
+            raise NoAudioTrack("This file has no audio track.")
+        return fake(path, cancel)
+
+    def download(self, src, dest, progress, cancel=None, prefer="audio"):
+        tried.append(src.kind)
+        if "broken" in src.url:
+            raise requests.ConnectionError("Can't reach panopto.ieu.edu.tr.")
+        dest.write_text("mute")
+        return dest
+
+    env["mp"].setattr(jobs_mod, "decode_audio", decode)
+    env["mp"].setattr(FakePanopto, "download", download)
+    env["mp"].setattr(jobs_mod.threading, "Timer", lambda s, fn, args=(): types.SimpleNamespace(start=lambda: fn(*args)))
+    FakePanopto.sources = [MediaSource("audio_podcast", "https://x/broken"), MediaSource("video_podcast", "https://x/mute")]
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    rec = env["lib"].get_recording("r1")
+    assert rec.status == "failed" and rec.error.startswith("The download failed")     # the real problem, retried
+    assert tried == ["audio_podcast", "video_podcast", "audio_podcast", "audio_podcast"]  # the mute one only once
 
 
 def test_no_speech_is_reported_with_a_warning(env):

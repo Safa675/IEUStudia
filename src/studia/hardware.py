@@ -165,8 +165,9 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
     if int(w.get("build") or 0) < MIN_BUILD:
         blockers.append("IEUStudia needs Windows 10 (version 1809 or newer) or Windows 11.")
     if not cpu.get("avx"):
-        blockers.append("This processor is too old for the speech recognition: it lacks the AVX instructions that "
-                        "processors from about 2011 onwards have.")
+        blockers.append("This processor can't run the speech recognition: it lacks the AVX instructions it needs "
+                        "(most processors since about 2011 have them, but some low-cost Celeron and Pentium ones "
+                        "don't).")
     if ram and ram < MIN_RAM_GB:
         blockers.append(f"IEUStudia needs at least {MIN_RAM_GB:.0f} GB of memory; this PC has {ram:.1f} GB.")
     free = float(facts.get("disk", {}).get("data_free_gb") or 0)
@@ -218,7 +219,7 @@ def _summary(facts: dict[str, Any], cuda: bool) -> list[dict[str, str]]:
     w, cpu, gpu = facts["windows"], facts["cpu"], facts["gpu"]
     rows = [{"label": "Windows", "value": f"{w['name']} {w.get('version') or ''} (build {w['build']})".replace("  ", " "),
              "ok": "yes" if w.get("x64") and w["build"] >= MIN_BUILD else "no"},
-            {"label": "Processor", "value": f"{cpu['name']} · {cpu['cores']} threads" + ("" if cpu.get("avx2") else " · older type, slower"),
+            {"label": "Processor", "value": f"{cpu['name']} · {cpu['cores']} threads" + ("" if cpu.get("avx2") else " · older type, slower" if cpu.get("avx") else " · can't transcribe (no AVX)"),
              "ok": "yes" if cpu.get("avx2") else ("warn" if cpu.get("avx") else "no")},
             {"label": "Memory", "value": f"{facts.get('ram_installed_gb') or facts['ram_gb']:.0f} GB",
              "ok": "yes" if eight_gb(facts) else ("warn" if facts["ram_gb"] >= MIN_RAM_GB else "no")},

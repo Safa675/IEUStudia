@@ -112,8 +112,11 @@ def _latest(s: Any) -> dict[str, Any]:
     is per address, which a campus network shares), from where github.com's "latest" link points."""
     feed = os.environ.get("STUDIA_UPDATE_FEED") or f"https://api.github.com/repos/{REPO}/releases/latest"   # (tests)
     r = s.get(feed, timeout=(10, 20), headers={"Accept": "application/vnd.github+json"})
-    if r.status_code == 200:
-        d = r.json()
+    try:
+        d = r.json() if r.status_code == 200 else None
+    except ValueError:                                  # a Wi-Fi sign-in page or a network filter, not GitHub
+        d = None
+    if isinstance(d, dict) and d.get("tag_name"):
         tag = str(d.get("tag_name") or "")
         assets: Optional[dict[str, str]] = {str(a.get("name")): str(a.get("browser_download_url"))
                                             for a in d.get("assets") or [] if a.get("browser_download_url")}
@@ -122,7 +125,8 @@ def _latest(s: Any) -> dict[str, Any]:
         r = s.get(f"{RELEASES}/latest", timeout=(10, 20), allow_redirects=False)
         m = re.search(r"/releases/tag/([^/?#]+)", r.headers.get("Location") or "")
         if not m:
-            raise RuntimeError(f"GitHub didn't say which version is the newest (HTTP {r.status_code}).")
+            raise RuntimeError("GitHub didn't answer as expected (a Wi-Fi sign-in page or a network filter can do "
+                               f"this). Try again later. (HTTP {r.status_code})")
         tag, assets, notes, page = m.group(1), None, "", ""
     version = tag.lstrip("v")
     if not _parse(version):

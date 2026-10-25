@@ -99,6 +99,35 @@ def test_closing_asks_every_question_before_it_cancels_anything(isolated_home, m
     assert seen["download_cancelled"] == closes and seen.get("jobs_cancelled", False) == closes
 
 
+def test_an_update_windows_wont_start_is_said_and_the_app_opens_again(isolated_home, monkeypatch, tmp_path):
+    from studia import app, updates, winutil
+
+    seen, shown, calls = {}, [], []
+    fake = types.ModuleType("webview")
+
+    def create_window(title, url=None, js_api=None, **kw):
+        seen["window"] = FakeWindow(js_api)
+        return seen["window"]
+
+    def start(**kw):
+        api = seen["window"].api
+        assert api._ready.wait(30)
+        api._update_installer = tmp_path / "IEUStudia-Setup-9.9.0.exe"
+        seen["window"].destroy()
+
+    fake.create_window, fake.start = create_window, start
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(winutil, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(app, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(app, "set_app_id", lambda *a, **k: None)
+    monkeypatch.setattr(updates, "run_installer", lambda path: False)          # an antivirus blocked it
+    monkeypatch.setattr(winutil, "message_box", lambda text, title="", flags=0: shown.append(text) or 1)
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: calls.append(cmd))
+    app._main([])
+    assert shown and "couldn't start the update" in shown[0]
+    assert [c for c in calls if c[1:3] == ["-m", "studia.app"]]                 # opened again
+
+
 @pytest.mark.parametrize("area,size", [((0, 0, 1440, 852), (1280, 820, False, 80, 16)),    # fits: centred
                                        ((0, 0, 1366, 720), (1280, 704, True, 43, 8)),      # 1366 x 768: maximized
                                        ((0, 0, 1280, 672), (1264, 656, True, 8, 8)),       # 1920 x 1080 at 150 %

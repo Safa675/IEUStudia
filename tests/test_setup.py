@@ -193,6 +193,21 @@ def test_helper_notifications(tmp_path):
     assert summarize(lib, s, cfg, ["s1"], [], [], {}) is None                          # another section's lecture
 
 
+def test_stop_background_checks_in_the_tray_menu_stays_off(monkeypatch):
+    import types
+
+    from studia import agent
+
+    calls = []
+    monkeypatch.setattr(launch, "set_startup", lambda on: calls.append(on))
+    appconfig.update({"tray": True, "start_with_windows": True})
+    helper = types.SimpleNamespace(stop=threading.Event(), wake=threading.Event(),
+                                   tray=types.SimpleNamespace(stop=lambda: calls.append("tray stopped")))
+    agent.Helper._command(helper, agent.CMD_QUIT)
+    cfg = appconfig.load()
+    assert not cfg.tray and not cfg.start_with_windows and calls == [False, "tray stopped"] and helper.stop.is_set()
+
+
 class _FakeProc:
     def __init__(self, lines, rc=0):
         self.stdin = io.BytesIO()

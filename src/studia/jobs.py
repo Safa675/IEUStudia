@@ -70,6 +70,7 @@ class Job:
     slides: Optional[Future] = None
     attempts: int = 0
     holds_audio: bool = False        # one of the DECODED_MAX places for decoded audio
+    no_audio: set = dc.field(default_factory=set)    # Panopto streams found without sound: not fetched again
     unwritten: bool = False          # done, but its files in the output folder could not be written yet
     prev_status: str = "available"
     started: float = dc.field(default_factory=time.monotonic)
@@ -402,6 +403,8 @@ class JobManager:
         last_exc: Optional[BaseException] = None
         silent: Optional[np.ndarray] = None
         for i, src in enumerate(sources):
+            if src.url in job.no_audio:
+                continue
             if silent is not None:
                 # the first audio was silent: only fetch a camera (HLS) stream that demonstrably has sound
                 if src.kind != "hls":
@@ -441,8 +444,10 @@ class JobManager:
                     raise
                 # a stream Panopto made without sound (from the screen recording, say): the next one may have it
                 self.log.info("%s: %s has no audio track; trying another stream", job.id, src.kind)
-                last_exc = NoAudioTrack("Panopto has no sound for this recording (only a picture), so there's "
-                                        "nothing to transcribe.")
+                job.no_audio.add(src.url)
+                if last_exc is None or isinstance(last_exc, NoAudioTrack):     # a failed download says more
+                    last_exc = NoAudioTrack("Panopto has no sound for this recording (only a picture), so there's "
+                                            "nothing to transcribe.")
                 job.audio_path = None
                 try:
                     dest.unlink()
@@ -539,9 +544,9 @@ class JobManager:
             if job.local_path is None:
                 self.lib.set_warnings(job.id, warnings + [{
                     "code": "not_written", "level": "warning",
-                    "message": f"Transcribed, but its files in your output folder could not be written. "
+                    "message": f"Transcribed, but its files in your IEUStudia folder could not be written. "
                                f"{plain_error(exc)} IEUStudia tries again the next time it starts; you can also "
-                               f"choose another output folder in Settings → Files."}])
+                               f"choose another folder in Settings → Files."}])
         if job.audio_path and not settings.keep_audio:
             for p in (job.audio_path,):
                 try:

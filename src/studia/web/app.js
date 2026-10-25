@@ -530,7 +530,7 @@
           · ${plural(d.parts.length, "part")}</div></div>
         <input class="input find" placeholder="Find in transcript  (Ctrl+F)" data-act="find" value="${esc(S.dayFind)}"></div>
       <div class="toolbar" id="day-actions">${dayActionsHTML()}</div>`;
-    if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>Transcript quality</b><ul>${warns.map((w) => `<li>Part ${w.part}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
+    if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>${warns.some((w) => w.code === "not_written") ? "Notes" : "Transcript quality"}</b><ul>${warns.map((w) => `<li>Part ${w.part}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
     h += `<div id="notes-slot">${notesHTML()}</div>`;
     if (d.highlights.length) {
       h += `<div class="card hl-card"><h3>${I("star")} Highlights <span class="count">${d.highlights.length}</span></h3>` +
@@ -1012,7 +1012,7 @@
     if (!l.length) return `<div class="chat-none">Your chats appear here.</div>`;
     return l.map((c) => `<button class="chat-item ${S.chat.id === c.id && !S.chat.draft ? "on" : ""}" data-act="chat-open" data-id="${esc(c.id)}">
       <span class="t">${c.running ? SPIN() : ""}${esc(c.title)}</span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
-      <span class="s">${esc(rel(c.updated_at))} · ${esc(levelLabel(c.model))}</span></button>`).join("");
+      <span class="s">${esc(rel(c.updated_at))} · ${esc((S.system.ai || {}).provider === "local" ? aiName() : levelLabel(c.model))}</span></button>`).join("");
   }
   function chatMainHTML() {
     const d = S.chat.draft, c = S.chat.data;
@@ -1370,9 +1370,9 @@
 
   // ---- a new version (the top bar's button, Settings → About, or the tray helper's notification)
   function onUpdate(e) {
+    const was = (S.update || {}).state;
     S.update = { ...S.update, ...e };
-    if (e.state === "downloading" && !$("#update-modal")) updateModal();
-    else if ($("#update-modal")) updateModal();
+    if ($("#update-modal") || e.state === "installing" || (e.state === "downloading" && was !== "downloading")) updateModal();
     else if (e.state === "error") toast(e.error, "error");
     renderTop();
     if (S.view.name === "settings") renderView();
@@ -1480,7 +1480,11 @@
     "update-check": async (el) => {
       el.disabled = true;
       const r = await call("update_check");
-      if (r.ok) { S.update = { ...S.update, ...r, state: "" }; if (!r.available && !r.error) toast("You have the newest version.", "success"); }
+      if (r.ok) {
+        S.update = { ...S.update, ...r, state: "" };
+        if (r.error) toast(`Couldn't look for a new version: ${r.error}`, "error");
+        else if (!r.available) toast("You have the newest version.", "success");
+      }
       else toast(r.error, "error");
       renderTop(); if (S.view.name === "settings") renderView();
     },
@@ -1801,7 +1805,7 @@
       const all = days.flatMap((d) => d.recordings.filter((r) => !r.duplicate && !r.too_short));
       return { id, code, name, display_name: name, instructor: inst, term: "2026-2027 Fall Undergrad", section: o.section || "1", has_panopto: o.has_panopto !== false, cover: "", lms_progress: o.progress ?? null,
         show_mode: o.sections ? "mine" : "all", my_section: o.sections ? "1" : null, available_sections: o.sections || [],
-        counts: { total: all.length, new: all.filter((r) => r.is_new).length, done: all.filter((r) => r.status === "done").length, processing: all.filter((r) => r.status === "processing").length }, days };
+        counts: { total: all.length, new: all.filter((r) => r.is_new).length, done: all.filter((r) => r.status === "done").length, done_any: all.filter((r) => r.status === "done").length, processing: all.filter((r) => r.status === "processing").length }, days };
     };
     const quiet = [{ level: "warning", message: "There is a lot of background noise; the transcript may contain errors." }];
     const mockProfiles = [

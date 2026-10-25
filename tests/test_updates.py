@@ -56,6 +56,17 @@ def test_without_the_api_the_latest_link_still_tells_the_version(monkeypatch):
     assert st["available"] and st["version"] == "9.9.0" and st["can_install"] and st["notes"] == ""
 
 
+def test_a_page_that_isnt_githubs_answer_falls_back_too(monkeypatch):
+    class Portal(Site):                                # a Wi-Fi sign-in page answers in GitHub's place
+        def get(self, url, **kw):
+            if "api.github.com" in url:
+                return types.SimpleNamespace(status_code=200, json=lambda: json.loads("<html>"), headers={})
+            return super().get(url, **kw)
+
+    monkeypatch.setattr(updates, "installed", lambda: True)
+    assert updates.check(force=True, session=Portal())["version"] == "9.9.0"
+
+
 def test_a_failed_look_is_tried_again_after_an_hour_not_at_once(monkeypatch):
     class Offline:
         def get(self, url, **kw):
@@ -111,6 +122,7 @@ def test_updating_waits_for_a_running_transcription(monkeypatch):
     from studia.services import Services
 
     monkeypatch.setattr(updates, "installed", lambda: True)
+    monkeypatch.setattr(Api, "_update_loop", lambda self: None)       # no real look on GitHub meanwhile
     updates.check(force=True, session=Site())
     api = Api(Services())
     monkeypatch.setattr(api._s.jobs, "busy", lambda: True)
