@@ -320,3 +320,21 @@ def test_setup_api(monkeypatch):
 
     monkeypatch.setattr(chatgpt, "sign_out", lambda: {"revoked": True})
     assert api.ai_sign_out("chatgpt")["revoked"] and checked.wait(5)
+
+
+def test_a_setup_download_error_reads_as_one_sentence(monkeypatch):
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    pushed, idle = [], threading.Event()
+    monkeypatch.setattr(api, "_system_info", lambda: None)
+    monkeypatch.setattr(api, "_push", lambda e: pushed.append(e) or (e.get("state") == "idle" and idle.set()))
+
+    def gone(cid, progress, cancel):                 # an antivirus took a part away
+        raise FileNotFoundError(2, "The system cannot find the file specified", r"C:\x\model.bin.part0")
+
+    monkeypatch.setattr(components, "download", gone)
+    assert api.setup_download(["speech-small"])["ok"] and idle.wait(10)
+    (error,) = [e["error"] for e in pushed if e.get("state") == "error"]
+    assert error.endswith("? (Downloading again continues where it stopped.)"), error

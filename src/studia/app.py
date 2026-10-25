@@ -374,18 +374,19 @@ def _main(argv: Optional[list[str]] = None) -> None:
         services = started.get("services")
         if api._restart:          # switching profiles: the user already confirmed
             return True
-        if api._setup_running:
-            if not window.create_confirmation_dialog(
-                    "Download in progress", "IEUStudia is still downloading what it needs. Quit anyway? Next time "
-                    "the download continues where it stopped."):
-                return False
-            if api._setup_cancel is not None:
-                api._setup_cancel.set()
-        if services is not None and services.jobs.busy():
-            ok = window.create_confirmation_dialog(
-                "Transcription in progress", "A transcription is still running. Quit and cancel it?")
-            if not ok:
-                return False
+        # every question first: whoever keeps the window open at the second one has nothing cancelled
+        setup = api._setup_running
+        if setup and not window.create_confirmation_dialog(
+                "Download in progress", "IEUStudia is still downloading what it needs. Quit anyway? Next time "
+                "the download continues where it stopped."):
+            return False
+        busy = services is not None and services.jobs.busy()
+        if busy and not window.create_confirmation_dialog(
+                "Transcription in progress", "A transcription is still running. Quit and cancel it?"):
+            return False
+        if setup and api._setup_cancel is not None:
+            api._setup_cancel.set()
+        if busy:
             services.jobs.cancel(None)
         return True
 

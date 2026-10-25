@@ -64,6 +64,41 @@ def test_switching_profiles_restarts_into_the_other_account(isolated_home, monke
     assert splashes[0][6:8] == ["--python", restarts[0][0]]             # a restart from it uses the app's Python
 
 
+@pytest.mark.parametrize("answers,closes", [([True, False], False), ([False], False), ([True, True], True)])
+def test_closing_asks_every_question_before_it_cancels_anything(isolated_home, monkeypatch, answers, closes):
+    from studia import app, winutil
+
+    seen = {}
+    fake = types.ModuleType("webview")
+
+    def create_window(title, url=None, js_api=None, **kw):
+        seen["window"] = FakeWindow(js_api)
+        return seen["window"]
+
+    def start(**kw):
+        w = seen["window"]
+        api = w.api
+        assert api._ready.wait(30)
+        monkeypatch.setattr(api._s.jobs, "busy", lambda: True)                        # a transcription runs
+        monkeypatch.setattr(api._s.jobs, "cancel", lambda job_id=None: seen.update(jobs_cancelled=True))
+        api._setup_running, api._setup_cancel = True, threading.Event()              # and the setup downloads
+        asked = iter(answers)
+        w.create_confirmation_dialog = lambda title, text: next(asked)
+        w.destroy()
+        seen["download_cancelled"] = api._setup_cancel.is_set()
+        api._setup_running = False
+
+    fake.create_window, fake.start = create_window, start
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(winutil, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(app, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(app, "set_app_id", lambda *a, **k: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: None)
+    app._main([])
+    assert seen["window"].closing_result == [closes]
+    assert seen["download_cancelled"] == closes and seen.get("jobs_cancelled", False) == closes
+
+
 @pytest.mark.parametrize("area,size", [((0, 0, 1440, 852), (1280, 820, False, 80, 16)),    # fits: centred
                                        ((0, 0, 1366, 720), (1280, 704, True, 43, 8)),      # 1366 x 768: maximized
                                        ((0, 0, 1280, 672), (1264, 656, True, 8, 8)),       # 1920 x 1080 at 150 %

@@ -207,6 +207,19 @@ def test_an_edited_announcement_brings_its_new_text(tmp_path):
     assert [(e["name"], e["week"]) for e in course_alerts(lib, "c")["plan"]] == [("Quiz 2", 5)]
 
 
+def test_the_same_post_in_two_courses_is_kept_in_both(tmp_path):
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c1", title="t", code="MATH 240", name="P"),
+                        Course(id="c2", title="t", code="MATH 250", name="L")])
+    when = dt.datetime(2026, 10, 1, 9)                 # same title, author and minute: the same id from IEULearn
+    for _ in range(2):
+        for cid, body in (("c1", "Quiz 2\n7. hafta"), ("c2", "Quiz 2\n9. hafta")):
+            lib.merge_announcements(cid, [Announcement("a1", "Quiz 2", "Dr X", when, body)], first_sync=False)
+    assert [a["body"] for a in lib.announcements("c1")] == ["Quiz 2\n7. hafta"]
+    assert [a["body"] for a in lib.announcements("c2")] == ["Quiz 2\n9. hafta"]
+    assert [e["week"] for e in course_alerts(lib, "c1")["plan"]] == [7]
+
+
 def _course_with_lecture(tmp_path):
     lib = Library(tmp_path / "lib.db")
     lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="P", term="T")])
@@ -401,3 +414,41 @@ def test_more_ways_of_writing_quiz_and_midterm_numbers():
     assert plan(table, hashes) == [("Quiz 1", 4), ("Quiz 2", 7), ("Quiz 3", 10), ("Quiz 4", 12)]
     assert plan(_ann("p", "Exams", "Midterm I will announce later.\nMidterm\nWeek 8")) == [("Midterm", 8)]
     assert plan(_ann("x", "Exams", "Midterm 2 hours\nWeek 8")) == [("Midterm", 8)]          # a duration, no number
+
+
+@pytest.mark.parametrize("body", ["Quizzes 1 to 4 will be held in weeks 3, 6, 9 and 12.",
+                                  "Quizzes 1 through 4 will be held in weeks 3, 6, 9 and 12.",
+                                  "Four quizzes (Quiz 1 to Quiz 4) will be given in weeks 3, 6, 9 and 12."])
+def test_quiz_numbers_written_as_a_range_in_words(body):
+    assert [(e["name"], e["week"]) for e in assessment_plan([_ann("q", "Quizzes", body)])] == \
+        [("Quiz 1", 3), ("Quiz 2", 6), ("Quiz 3", 9), ("Quiz 4", 12)]
+
+
+def test_the_day_of_a_date_is_no_midterm_or_quiz_number():
+    plan = lambda *anns: [(e["name"], e["week"]) for e in assessment_plan(list(anns))]   # noqa: E731
+    old = _ann("o", "Exams", "Midterm\nWeek 8")
+    moved = _ann("n", "Midterm moved", "Midterm Exam - 2 December (Week 11)", "2026-10-20T09:00")
+    assert plan(old, moved) == [("Midterm", 11)]                                   # one midterm, at its new week
+    assert plan(_ann("v", "Sınav", "Vize Sınavı 2 Aralık\n11. hafta")) == [("Midterm", 11)]
+    assert plan(_ann("d", "Exams", "Midterm - 2 May (Week 12)")) == [("Midterm", 12)]
+    assert plan(_ann("m", "Update", "Midterm 2 may be moved to week 13.")) == [("Midterm 2", 13)]
+    assert plan(_ann("u", "Exams", "Midterm 1 Nov 3\nWeek 7")) == [("Midterm 1", 7)]          # the day after the month
+    assert plan(_ann("k", "Sınavlar", "Vize 2 Aralıkta\n10. hafta")) == [("Midterm", 10)]
+    table = _ann("t", "Quizzes", "Quiz 1\nWeek 4\nQuiz 2\nWeek 7\nQuiz 3\nWeek 10\nQuiz 4\nWeek 13")
+    dash = _ann("x", "Quiz 2", "Dear students, Quiz 2 - 3 November - will cover the topics of weeks 5 and 6",
+                "2026-10-20T09:00")
+    assert plan(table, dash) == [("Quiz 1", 4), ("Quiz 2", 7), ("Quiz 3", 10), ("Quiz 4", 13)]
+
+
+def test_turkish_and_longer_midterm_names():
+    plan = lambda *anns: [(e["name"], e["week"]) for e in assessment_plan(list(anns))]   # noqa: E731
+    assert plan(_ann("a", "Ara Sınavı", "Ara Sınavı: 8. hafta")) == [("Midterm", 8)]     # the ı is no Roman I
+    assert plan(_ann("b", "Sınavlar", "Ara Sınavı 1\n7. hafta\nAra Sınavı 2\n12. hafta")) == \
+        [("Midterm 1", 7), ("Midterm 2", 12)]
+    assert plan(_ann("e", "Exams", "Midterm Examination 2\nWeek 12")) == [("Midterm 2", 12)]
+    table = _ann("t", "Exams", "Midterm 1\nWeek 7\nMidterm 2\nWeek 12")
+    guide = _ann("g", "Midterm 1 study guide", "It covers LO1-LO3.", "2026-10-20T09:00")
+    assert {e["name"]: (e["week"], e["los"]) for e in assessment_plan([table, guide])} == \
+        {"Midterm 1": (7, [1, 2, 3]), "Midterm 2": (12, [])}
+    second = _ann("s", "EEE 215 Ara Sınavı", "Konular: LO5-LO8", "2026-10-20T09:00")
+    assert all(5 not in e["los"] for e in assessment_plan([table, second]) if e["name"] == "Midterm 1")

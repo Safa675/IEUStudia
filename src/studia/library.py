@@ -544,16 +544,21 @@ class Library:
         new_ids: list[str] = []
         with self._lock:
             for a in items:
+                aid = a.id                             # title, author and minute: the same in each course it went to
+                held = self.db.execute("SELECT course_id FROM announcements WHERE id=?", (aid,)).fetchone()
+                if held and held[0] != course_id:
+                    aid = f"{a.id}-{course_id}"
                 cur = self.db.execute("INSERT OR IGNORE INTO announcements(id, course_id, title, author, posted_at, body, "
                                       "first_seen, is_new) VALUES(?,?,?,?,?,?,?,?)",
-                                      (a.id, course_id, a.title, a.author,
+                                      (aid, course_id, a.title, a.author,
                                        a.posted_at.isoformat(timespec="minutes") if a.posted_at else "", a.body, now,
                                        0 if first_sync else 1))
                 if cur.rowcount and not first_sync:
-                    new_ids.append(a.id)
+                    new_ids.append(aid)
                 elif not cur.rowcount and a.body:      # known: an edited post keeps its id, so take its new text
-                    self.db.execute("UPDATE announcements SET title=?, body=? WHERE id=? AND (title IS NOT ? OR "
-                                    "body IS NOT ?)", (a.title, a.body, a.id, a.title, a.body))
+                    self.db.execute("UPDATE announcements SET title=?, body=? WHERE id=? AND course_id=? AND "
+                                    "(title IS NOT ? OR body IS NOT ?)", (a.title, a.body, aid, course_id, a.title,
+                                                                          a.body))
             self.db.commit()
         return new_ids
 

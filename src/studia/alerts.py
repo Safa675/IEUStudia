@@ -200,11 +200,18 @@ def course_alerts(lib: Any, course_id: str, recordings: Optional[Iterable[Any]] 
 # Lecturers post it as a table (cells become lines: "Quiz 1" / "5. hafta" / "LO1–LO2"), as list items, as prose
 # ("quizzes … in weeks 3, 5, 10 and 12") or in a note about one quiz ("About Quiz 1": "… Learning Outcome 2 …").
 # The text is folded first (_fold), so the patterns spell ı as i.
-# a midterm and its number: "Midterm 1", "Midterm Exam 2", "Midterm-1", "Midterm II", "1. vize", "ara sınav 2"
-# (a Roman numeral only where it ends the name, so "the midterm I will…" is no "Midterm 1"; "2 hours" is no number)
-_MID = (r"(?:([1-3])\s*\.\s*)?(ara sinav|midterm|vize)(?:\s*(?:exam|sinavi))?"
-        r"(?:\s*[#-]?\s*([1-3]\b(?!\s*\.?\s*(?:hafta|th|st|nd|rd|hours?|saat))"
-        r"|i{1,3}\b(?=\s*(?:$|[:,./()–—-]|week|hafta))))?")
+# a month after a day ("Midterm - 2 December", "Quiz 2 - 3 Kasım"): that day is no midterm or quiz number (in
+# "Midterm 1 Nov 3" the day comes after the month; "may" only where it can't be the verb: "Midterm 2 may be…")
+_MONTH = (r"(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+          r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|may\b(?=\s*(?:$|[^\w\s]|\d|(?:at|in|on)\b))|"
+          r"ocak|[sş]ubat|mart|nisan|mayis|haziran|temmuz|a[gğ]ustos|eyl[uü]l|ekim|kasim|aralik)"
+          r"(?!\s*\.?\s*\d{1,2}(?![\d:.]))")
+# a midterm and its number: "Midterm 1", "Midterm Exam 2", "Midterm-1", "Midterm II", "1. vize", "ara sınavı 2"
+# (a Roman numeral only where it ends the name, so "the midterm I will…" is no "Midterm 1" and the ı of "Ara Sınavı"
+# no I; "2 hours" and "Midterm 1 study guide" are no number for something else)
+_MID = (r"(?:([1-3])\s*\.\s*)?(ara sinavi?|midterm|vize)(?:\s*(?:exam(?:ination)?|sinavi))?"
+        r"(?:\s*[#-]?\s*([1-3]\b(?!\s*\.?\s*(?:hafta|(?:th|st|nd|rd|hours?|saat)\b|" + _MONTH + r"))"
+        r"|(?<=[\s#-])i{1,3}\b(?=\s*(?:$|[:,./()–—-]|week|hafta))))?")
 _A_NAME = re.compile(r"^(?:(quiz|kisa sinav|küçük sinav)\s*#?\s*(\d{1,2})\b|" + _MID + r"|(final)\b)")
 _A_ANY = re.compile(r"\b(?:(quiz)\s*#?\s*(\d{1,2})\b|" + _MID + r"|(final)(?= exam| sinav))")
 # "week 5" (not "weeks 1-4": that is what it covers, not when it is held)
@@ -212,15 +219,17 @@ _WEEK = re.compile(r"\b(\d{1,2})\s*\.\s*hafta|\bweek\s*(\d{1,2})\b|\bhafta\s*(\d
 _LO_RANGE = re.compile(r"\blo\s*(\d{1,2})\s*[–—-]\s*(?:lo\s*)?(\d{1,2})\b")
 _LO_ONE = re.compile(r"\b(?:los?|learning outcomes?|öğrenme çiktisi)\s*(\d{1,2})\b")
 _QUIZ_WEEKS = re.compile(r"\bquiz\w*\b[^.]{0,200}?\bweeks?\s+((?:\d{1,2}\s*(?:,|and|&)\s*)+\d{1,2})\b")
-_QUIZ_NOS = re.compile(r"\bquiz(?:zes)?\s*#?\s*(\d{1,2}(?:\s*(?:,|and|&|ve|-|–)\s*(?:quiz\s*)?#?\s*\d{1,2})*)\b")
+_QUIZ_NOS = re.compile(r"\bquiz(?:zes)?\s*#?\s*(\d{1,2}(?:\s*(?:,|and|&|ve|-|–|to|through)\s*(?:quiz\s*)?#?\s*"
+                       r"\d{1,2}\b(?!\s*" + _MONTH + r"))*)\b")
 _ROMAN = {"i": 1, "ii": 2, "iii": 3}
 
 
 def _quiz_numbers(text: str) -> list[int]:
-    """The quiz numbers a sentence names: "Quiz 3 and Quiz 4" → [3, 4], "quizzes 2-4" → [2, 3, 4]."""
+    """The quiz numbers a sentence names: "Quiz 3 and Quiz 4" → [3, 4], "quizzes 2-4" and "Quizzes 2 to 4" →
+    [2, 3, 4]; not the day of "Quiz 2 - 3 November"."""
     out: list[int] = []
     for q in _QUIZ_NOS.findall(text):
-        for a, b in re.findall(r"(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?", q):
+        for a, b in re.findall(r"(\d{1,2})(?:\s*(?:[-–]|to|through)\s*(?:quiz\s*)?#?\s*(\d{1,2}))?", q):
             lo, hi = int(a), int(b or a)
             out += list(range(lo, hi + 1)) if 0 <= hi - lo <= 12 else [lo]
     return out

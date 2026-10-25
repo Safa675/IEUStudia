@@ -123,14 +123,16 @@ class IEULearn:
                                "maintenance). Your password was not rejected: try again later.")
         r = self.s.post(f"{BASE}/login", data={"csrf_token": token, "email": username.strip(),
                                                "password": password, "remember": "1"})
-        _not_down(r, signing_in=True)
         if r.ok and "/student" in r.url and "loginForm" not in r.text:
             return
-        if not any("password" in f.fields or f.id == "loginForm" for f in parse_forms(r.text)):
+        form_again = any("password" in f.fields or f.id == "loginForm" for f in parse_forms(r.text))
+        msg = self._login_error(r.text) if form_again else ""
+        if not msg:                 # after a server error, only IEULearn's own words on its sign-in form are a refusal
+            _not_down(r, signing_in=True)
+        if not form_again:
             # no sign-in form came back: a throttle, a firewall or a maintenance page, not a refused password
             raise NetworkError("IEULearn didn't finish signing you in (it may be busy or under maintenance). "
                                "Your password was not rejected: try again later.")
-        msg = self._login_error(r.text)
         raise AuthError(msg or "Sign-in failed. Check your EkoID username and password.")
 
     @staticmethod

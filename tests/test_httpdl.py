@@ -76,3 +76,24 @@ def test_parts_of_a_file_that_changed_since_are_not_reused(server, tmp_path):
     dest.with_name("a.m4a.parts.json").write_text('{"total": 123, "version": ""}', encoding="utf-8")
     httpdl.download(server, dest, session=requests.Session(), parts=4)
     assert dest.read_bytes() == _Ranged.data and sorted(p.name for p in tmp_path.iterdir()) == ["a.m4a"]
+
+
+def test_a_part_left_over_is_not_taken_for_part_of_the_file_once_it_changed(server, tmp_path, monkeypatch):
+    from pathlib import Path
+
+    dest, unlink = tmp_path / "a.m4a", Path.unlink
+
+    def held(self, missing_ok=False):                                # an antivirus still holds one part
+        if self.name == "a.m4a.part2":
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        return unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held)
+    httpdl.download(server, dest, session=requests.Session(), parts=4)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert dest.read_bytes() == _Ranged.data
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.m4a", "a.m4a.part2", "a.m4a.parts.json"]
+    dest.unlink()                                                    # its audio is deleted once transcribed,
+    _Ranged.data = os.urandom(21 * 1024 * 1024)                      # then the lecturer edits the recording
+    httpdl.download(server, dest, session=requests.Session(), parts=4)
+    assert dest.read_bytes() == _Ranged.data and sorted(p.name for p in tmp_path.iterdir()) == ["a.m4a"]

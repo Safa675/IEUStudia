@@ -191,12 +191,13 @@ def download(url: str, dest: Path, *, session: Optional[requests.Session] = None
             pf.unlink(missing_ok=True)
         raise IOError(f"Download size mismatch for {dest.name}; please retry.")
     os.replace(tmp, dest)
-    for pf in part_files:                            # the download is complete: leftovers don't matter
+    for pf in part_files:                            # the download is complete: a part left over doesn't matter now
         try:
             pf.unlink(missing_ok=True)
         except OSError:
             pass
-    marker.unlink(missing_ok=True)
+    if not any(pf.exists() for pf in part_files):    # one left over keeps the stamp, so a changed file won't reuse it
+        marker.unlink(missing_ok=True)
     if progress:
         size = dest.stat().st_size
         progress(size, total or size)

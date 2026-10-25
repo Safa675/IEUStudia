@@ -281,7 +281,8 @@ class Api:
                         log.exception("Download of %s failed", cid)
                         failed = plain_error(exc)
                         if isinstance(exc, (requests.RequestException, OSError)):   # its parts are kept for the next try
-                            failed = failed.rstrip(".") + ". (Downloading again continues where it stopped.)"
+                            failed = ((failed if failed.endswith((".", "?", "!")) else failed + ".")
+                                      + " (Downloading again continues where it stopped.)")
                         self._push({"type": "setup", "id": cid, "state": "error", "error": failed})
                         return
             finally:

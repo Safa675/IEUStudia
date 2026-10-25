@@ -65,6 +65,12 @@ def test_no_sign_in_page_is_not_a_refused_password_either():
         IEULearn(Site((429, "<h1>Too Many Requests</h1>", "/login"), (200, "", "/login"))).login("student", "right")
 
 
-def test_a_refusal_answered_with_an_error_status_still_counts_when_the_form_comes_back():
+@pytest.mark.parametrize("status", [422, 500, 503])
+def test_a_refusal_answered_with_an_error_status_still_counts_when_the_form_comes_back(status):
     with pytest.raises(AuthError, match="Wrong password"):
-        IEULearn(Site((200, FORM, "/login"), (422, FORM + '<p class="error">Wrong password.</p>', "/login"))).login("s", "x")
+        IEULearn(Site((200, FORM, "/login"), (status, FORM + '<p class="error">Wrong password.</p>', "/login"))).login("s", "x")
+
+
+def test_the_sign_in_form_after_a_server_error_without_a_word_of_refusal_is_not_one():
+    with pytest.raises(NetworkError, match="isn't responding right now.*not rejected"):
+        IEULearn(Site((200, FORM, "/login"), (500, FORM, "/login"))).login("student", "right")
