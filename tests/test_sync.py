@@ -26,7 +26,7 @@ def _rec(cid, n):
 def site(monkeypatch):
     st = types.SimpleNamespace(profile=Profile(name="Ali Veli", student_number="20250001"), courses=list(COURSES),
                                logged_in=True, password="right", logins=[], panopto=True, folders={"a": "fa", "b": "fb"},
-                               listing={"a": [_rec("a", 0)], "b": [_rec("b", 0)]}, launches=[])
+                               listing={"a": [_rec("a", 0)], "b": [_rec("b", 0)]}, launches=[], server_error=False)
 
     class FakeLearn:
         def __init__(self, s):
@@ -42,6 +42,8 @@ def site(monkeypatch):
 
         def login(self, user, password):
             st.logins.append(password)
+            if st.server_error:
+                raise AuthError("Kimlik doğrulama servisine ulaşılamadı.", server_error=True)
             if password != st.password:
                 raise AuthError("Invalid credentials.")
             st.logged_in = True
@@ -113,6 +115,17 @@ def test_a_changed_password_is_tried_once_then_the_app_asks(site, tmp_path):
     assert site.logins == ["old-password"]               # never tried again in the background
     secrets_store.set_credentials("ali", "right")        # signing in again clears it
     assert not secrets_store.rejected() and sync.has_credentials()
+
+
+def test_ieulearns_words_along_with_a_server_error_dont_lock_out_the_saved_password(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    secrets_store.set_credentials("ali", "right")
+    site.logged_in, site.server_error = False, True     # the sign-in service is down and says so on the form
+    with pytest.raises(AuthError, match="ulaşılamadı"):
+        sync.sync()
+    assert not secrets_store.rejected() and sync.has_credentials()
+    site.server_error = False                            # back up: the next background sync signs in by itself
+    assert sync.sync().errors == [] and site.logins == ["right", "right"]
 
 
 def test_a_page_without_your_name_keeps_who_you_are(site, tmp_path):

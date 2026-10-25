@@ -138,8 +138,9 @@ class SyncService:
             self.log.info("IEULearn session expired; signing in again")
             try:
                 learn.login(*creds)
-            except AuthError:              # the password was changed: never try it again in the background
-                secrets_store.mark_rejected(creds[1])
+            except AuthError as exc:       # the password was changed: never try it again in the background
+                if not exc.server_error:   # (IEULearn's words along with a server error may be about the server)
+                    secrets_store.mark_rejected(creds[1])
                 raise
             self._save_cookies()
 

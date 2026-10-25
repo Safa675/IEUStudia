@@ -546,14 +546,16 @@ class Library:
             for a in items:
                 aid = a.id                             # title, author and minute: the same in each course it went to
                 held = self.db.execute("SELECT course_id FROM announcements WHERE id=?", (aid,)).fetchone()
-                if held and held[0] != course_id:
+                copy = held is not None and held[0] != course_id
+                if copy:                               # kept here too, but it is no news: another course has it
                     aid = f"{a.id}-{course_id}"
+                news = not first_sync and not copy
                 cur = self.db.execute("INSERT OR IGNORE INTO announcements(id, course_id, title, author, posted_at, body, "
                                       "first_seen, is_new) VALUES(?,?,?,?,?,?,?,?)",
                                       (aid, course_id, a.title, a.author,
                                        a.posted_at.isoformat(timespec="minutes") if a.posted_at else "", a.body, now,
-                                       0 if first_sync else 1))
-                if cur.rowcount and not first_sync:
+                                       1 if news else 0))
+                if cur.rowcount and news:
                     new_ids.append(aid)
                 elif not cur.rowcount and a.body:      # known: an edited post keeps its id, so take its new text
                     self.db.execute("UPDATE announcements SET title=?, body=? WHERE id=? AND course_id=? AND "

@@ -20,6 +20,10 @@ BASE = "https://learn.ieu.edu.tr"
 class AuthError(Exception):
     """Wrong or missing credentials (message is shown to the user)."""
 
+    def __init__(self, message: str, server_error: bool = False) -> None:
+        super().__init__(message)
+        self.server_error = server_error     # said along with a server error: maybe about the server, not the password
+
 
 class NeedLogin(Exception):
     """The session expired and there are no stored credentials to sign in again."""
@@ -127,13 +131,14 @@ class IEULearn:
             return
         form_again = any("password" in f.fields or f.id == "loginForm" for f in parse_forms(r.text))
         msg = self._login_error(r.text) if form_again else ""
-        if not msg:                 # after a server error, only IEULearn's own words on its sign-in form are a refusal
+        if not msg:                 # after a server error, only IEULearn's own words on its sign-in form are shown
             _not_down(r, signing_in=True)
         if not form_again:
             # no sign-in form came back: a throttle, a firewall or a maintenance page, not a refused password
             raise NetworkError("IEULearn didn't finish signing you in (it may be busy or under maintenance). "
                                "Your password was not rejected: try again later.")
-        raise AuthError(msg or "Sign-in failed. Check your EkoID username and password.")
+        raise AuthError(msg or "Sign-in failed. Check your EkoID username and password.",
+                        server_error=r.status_code >= 500)
 
     @staticmethod
     def _login_error(page: str) -> str:

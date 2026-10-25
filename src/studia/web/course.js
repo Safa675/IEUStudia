@@ -412,7 +412,11 @@
     const anns = courses.flatMap((c) => ((S.cd[c.id] || {}).announcements || []).map((a) => ({ a, c })))
       .sort((x, y) => (y.a.posted_at || "").localeCompare(x.a.posted_at || ""));
     const newAnns = anns.filter((x) => x.a.is_new);
-    const latest = (newAnns.length ? newAnns : anns).slice(0, 3);
+    const once = new Set();      // a post sent to several of your courses: one card
+    const latest = (newAnns.length ? newAnns : anns).filter(({ a }) => {
+      const k = `${a.title}|${a.author}|${a.posted_at}`;
+      return !once.has(k) && once.add(k);
+    }).slice(0, 3);
     const recs = St.newHTML({ embedded: true });
     const soon = courses.flatMap((c) => {
       const d = S.cd[c.id];

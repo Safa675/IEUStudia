@@ -212,11 +212,11 @@ def test_the_same_post_in_two_courses_is_kept_in_both(tmp_path):
     lib.upsert_courses([Course(id="c1", title="t", code="MATH 240", name="P"),
                         Course(id="c2", title="t", code="MATH 250", name="L")])
     when = dt.datetime(2026, 10, 1, 9)                 # same title, author and minute: the same id from IEULearn
-    for _ in range(2):
-        for cid, body in (("c1", "Quiz 2\n7. hafta"), ("c2", "Quiz 2\n9. hafta")):
-            lib.merge_announcements(cid, [Announcement("a1", "Quiz 2", "Dr X", when, body)], first_sync=False)
-    assert [a["body"] for a in lib.announcements("c1")] == ["Quiz 2\n7. hafta"]
-    assert [a["body"] for a in lib.announcements("c2")] == ["Quiz 2\n9. hafta"]
+    news = [lib.merge_announcements(cid, [Announcement("a1", "Quiz 2", "Dr X", when, body)], first_sync=False)
+            for _ in range(2) for cid, body in (("c1", "Quiz 2\n7. hafta"), ("c2", "Quiz 2\n9. hafta"))]
+    assert news == [["a1"], [], [], []]                # one post, one piece of news
+    assert [(a["body"], a["is_new"]) for a in lib.announcements("c1")] == [("Quiz 2\n7. hafta", 1)]
+    assert [(a["body"], a["is_new"]) for a in lib.announcements("c2")] == [("Quiz 2\n9. hafta", 0)]
     assert [e["week"] for e in course_alerts(lib, "c1")["plan"]] == [7]
 
 
@@ -433,7 +433,22 @@ def test_the_day_of_a_date_is_no_midterm_or_quiz_number():
     assert plan(_ann("d", "Exams", "Midterm - 2 May (Week 12)")) == [("Midterm", 12)]
     assert plan(_ann("m", "Update", "Midterm 2 may be moved to week 13.")) == [("Midterm 2", 13)]
     assert plan(_ann("u", "Exams", "Midterm 1 Nov 3\nWeek 7")) == [("Midterm 1", 7)]          # the day after the month
+    assert plan(_ann("f", "Exams", "Midterm 1 November 5.\nWeek 7\nMidterm 2 December 10.\nWeek 12")) == \
+        [("Midterm 1", 7), ("Midterm 2", 12)]
     assert plan(_ann("k", "Sınavlar", "Vize 2 Aralıkta\n10. hafta")) == [("Midterm", 10)]
+    one = _ann("o", "Sınav takvimi", "Ara Sınav\n8. hafta")
+    for title, body in (("Ara Sınavı Ertelendi", "Ara Sınavı 2.12.2026\n10. hafta"),
+                        ("Sınav", "Ara Sınavı 3 Ara\n10. hafta"), ("Exams", "Midterm - 2.12.2026 (Week 10)")):
+        assert plan(one, _ann("n", title, body, "2026-10-20T09:00")) == [("Midterm", 10)], body
+    for title, body in (("Ara Sınavı 3. Şube Sınıf Listesi", "LO1-LO4"), ("Sınav", "Vize 2 saatlik olacak\nLO1-LO4")):
+        assert [(e["name"], e["los"]) for e in assessment_plan([one, _ann("n", title, body)])] == \
+            [("Midterm", [1, 2, 3, 4])], title
+    table = _ann("q", "Quizzes", "Quiz 1\nWeek 4\nQuiz 2\nWeek 7\nQuiz 3\nWeek 10\nQuiz 4\nWeek 13")
+    for body in ("Quizzes 1 to 4 will cover the topics of weeks 2, 4, 6 and 8 respectively.",
+                 "Quiz 2 - 12 May will cover the topics of weeks 5 and 6.",
+                 "Quiz 2 - 13:30, Room D-201, in weeks 5 and 6"):
+        assert plan(table, _ann("x", "Quizzes", body, "2026-10-20T09:00")) == \
+            [("Quiz 1", 4), ("Quiz 2", 7), ("Quiz 3", 10), ("Quiz 4", 13)], body
     table = _ann("t", "Quizzes", "Quiz 1\nWeek 4\nQuiz 2\nWeek 7\nQuiz 3\nWeek 10\nQuiz 4\nWeek 13")
     dash = _ann("x", "Quiz 2", "Dear students, Quiz 2 - 3 November - will cover the topics of weeks 5 and 6",
                 "2026-10-20T09:00")

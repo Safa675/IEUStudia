@@ -67,8 +67,9 @@ def test_no_sign_in_page_is_not_a_refused_password_either():
 
 @pytest.mark.parametrize("status", [422, 500, 503])
 def test_a_refusal_answered_with_an_error_status_still_counts_when_the_form_comes_back(status):
-    with pytest.raises(AuthError, match="Wrong password"):
+    with pytest.raises(AuthError, match="Wrong password") as err:
         IEULearn(Site((200, FORM, "/login"), (status, FORM + '<p class="error">Wrong password.</p>', "/login"))).login("s", "x")
+    assert err.value.server_error == (status >= 500)     # shown, but the saved password isn't locked out for it
 
 
 def test_the_sign_in_form_after_a_server_error_without_a_word_of_refusal_is_not_one():
