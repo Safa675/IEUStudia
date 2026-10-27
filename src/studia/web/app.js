@@ -64,6 +64,7 @@
     try { localStorage.setItem("studia-theme", t); } catch (e) { /* storage may be unavailable */ }
     const dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
+    document.documentElement.style.setProperty("--read", String((+S.settings.text_size || 100) / 100));   // reading text
   }
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 
@@ -76,7 +77,7 @@
         else if (["course", "new"].includes(S.view.name)) renderView();
         break;
       case "job": onJob(e); break;
-      case "queue": S.queue = e.jobs || []; S.batch = e.batch || {}; renderQueue(); break;
+      case "queue": S.queue = e.jobs || []; S.batch = e.batch || {}; S.paused = !!e.paused; renderQueue(); break;
       case "engine": S.engine = e.phase === "ready" ? null : e; renderQueue(); break;
       case "sync": onSync(e); break;
       case "system":
@@ -124,16 +125,27 @@
       const r = hit.r;
       if (e.final) {
         r.progress = null; r.detail = null;
-        if (e.stage === "done") { r.status = "done"; r.is_new = false; toast(`Transcribed: ${e.title}`, "success"); }
+        if (e.stage === "done") {
+          r.status = "done"; r.is_new = false;
+          const parts = hit.d.recordings.filter((x) => x.part && !x.hidden && ownRec(hit.c, x));   // its parts (your section's)
+          if (!parts.some((x) => ["queued", "downloading", "transcribing"].includes(x.status))) {   // its last one
+            const all = parts.every((x) => x.status === "done");
+            const kind = hit.d.kind === "lab" ? "lab" : "lecture";
+            toast(`${hit.c.code} · ${shortDate(hit.d.date)}: ${all || !r.part ? `the ${kind}` : `part ${r.part} of the ${kind}`} is ready to read`,
+              "success", { label: "Read", act: "open-day", data: { day: hit.d.day_key } });
+          }
+        }
         else if (e.stage === "failed" && e.status === "done") { r.status = "done"; toast(`${e.title} could not be transcribed again: ${(e.error || "it failed").replace(/[.\s]+$/, "")}. The earlier transcript is kept.`, "warning"); }
         else if (e.stage === "failed") { r.status = "failed"; r.error = e.error; toast(`${e.title}: ${e.error || "failed"}`, "error"); }
         else if (e.stage === "processing") { r.status = "processing"; r.error = e.error; toast(e.error || "Not ready on Panopto yet", "warning"); }
         if (S.view.name === "day" && S.day && S.view.dayKey === hit.d.day_key) openDay(S.view.dayKey, true);
+        refreshNewDay(hit, false);
       } else {
         const before = r.status;
         r.status = { queued: "queued", downloading: "downloading", transcribing: "transcribing", writing: "transcribing" }[e.stage] || r.status;
         r.progress = e.progress; r.detail = e.detail; r.eta_s = e.eta_s;
         const busy = (s) => ["queued", "downloading", "transcribing"].includes(s);
+        refreshNewDay(hit, busy(r.status) === busy(before));
         if (busy(r.status) !== busy(before)) {   // day buttons depend on it: redraw the whole card once
           const card = document.querySelector(`.day[data-day="${CSS.escape(hit.d.day_key)}"]`);
           if (card) { card.outerHTML = dayCardHTML(hit.d, hit.c); syncChecks(); }
@@ -157,7 +169,7 @@
     else if (e.phase === "done") {
       S.ai = { running: false, text: "", dayKey: e.day_key, kind: e.kind, label: e.label };
       toast(`${e.label || "Study notes"} saved next to the transcript.`, "success");
-      if (S.day && S.day.day_key === e.day_key) { S.day.notes = [{ kind: e.kind, label: e.label, md: e.text }, ...(S.day.notes || []).filter((n) => n.kind !== e.kind)]; S.notesKind = e.kind; }
+      if (S.day && S.day.day_key === e.day_key) { S.day.notes = [{ kind: e.kind, label: e.label, md: e.text, cards: e.cards }, ...(S.day.notes || []).filter((n) => n.kind !== e.kind)]; S.notesKind = e.kind; }
     } else if (e.phase === "error") { S.ai.running = false; if (e.cancelled) toast("Stopped.", "info"); else toast(e.message || "The AI could not finish", "error"); }
     if (S.view.name === "day") renderNotes();
   }
@@ -295,7 +307,7 @@
     const up = S.update || {};
     top.innerHTML = `<div class="crumbs">${crumbs()}</div>
       ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="IEUStudia ${esc(up.version)} is available: see what's new and update">${I("download", "sm")} Update to ${esc(up.version)}</button>` : ""}
-      <button class="btn ghost sm" data-act="sync" ${S.sync.running ? "disabled" : ""} title="Check IEULearn now for new lectures, files and announcements (F5)">${syncLabel}</button>
+      <button class="btn ghost sm ${S.sync.error && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running ? "disabled" : ""} title="${S.sync.error && !S.sync.running ? `${esc(S.sync.error)} Click to try again.` : "Check IEULearn now for new lectures, files and announcements (F5)"}">${syncLabel}</button>
       <button class="btn ghost sm" data-act="full-sync" ${S.catchup && S.catchup.running ? "disabled" : ""} title="Sync every course, then transcribe all your untranscribed lectures and download the materials (asks first)">${S.catchup && S.catchup.running ? SPIN() : I("zap", "sm")} Full sync</button>
       ${gpu}
       <button class="btn ghost icon sm" data-act="menu-more" title="More">${I("more")}</button>`;
@@ -310,7 +322,7 @@
     else if (v.name === "course") el.innerHTML = courseHTML(findCourse(v.courseId));
     else if (v.name === "new") el.innerHTML = newHTML();
     else if (v.name === "day") el.innerHTML = dayHTML();
-    else if (v.name === "library") el.innerHTML = libraryHTML();
+    else if (v.name === "library") { el.innerHTML = libraryHTML(); renderSearchResults(); }
     else if (v.name === "settings") el.innerHTML = settingsHTML();
     else if (v.name === "chat") el.innerHTML = chatHTML();
     el.classList.toggle("chat-mode", v.name === "chat");
@@ -423,13 +435,11 @@
     const days = c.days.filter((d) => !mineMode || d.mine !== false);
     const otherDays = mineMode ? c.days.filter((d) => d.mine === false) : [];
     const exp = S.expanded.has(c.id);
+    const sections = c.available_sections.length > 1 && c.my_section;     // the header's chip picks your section
     let h = `
       <div class="toolbar">
-        ${c.available_sections.length ? `<div class="seg" role="tablist">
-          <button class="${mineMode ? "on" : ""}" data-act="show-mode" data-mode="mine" data-id="${c.id}">My section${c.my_section ? ` (${esc(c.my_section)})` : ""}</button>
-          <button class="${mineMode ? "" : "on"}" data-act="show-mode" data-mode="all" data-id="${c.id}">All sections</button></div>
-          <select class="input" style="width:auto;height:30px" data-act="my-section" data-id="${c.id}" title="Your section">
-            ${c.available_sections.map((s) => `<option value="${esc(s)}" ${s === c.my_section ? "selected" : ""}>Section ${esc(s)}</option>`).join("")}</select>` : ""}
+        ${sections ? `<span class="dim sm">${mineMode ? `Section ${esc(c.my_section)}'s lectures` : "Every section's lectures"}</span>
+          <button class="btn ghost sm" data-act="show-mode" data-mode="${mineMode ? "all" : "mine"}" data-id="${c.id}">${mineMode ? "Show all sections" : "Only my section"}</button>` : ""}
         <span class="spacer"></span>
         ${c.counts.new ? `<button class="btn ghost sm" data-act="mark-seen" data-id="${c.id}">Mark as seen</button>` : ""}
         <button class="btn sm" data-act="select-new" data-id="${c.id}" ${c.counts.new ? "" : "disabled"}>${I("list-checks", "sm")} Select new</button>
@@ -454,14 +464,54 @@
         ${c.counts.new ? `<div class="stat"><b>${c.counts.new}</b>new</div>` : ""}${c.counts.processing ? `<div class="stat"><b>${c.counts.processing}</b>processing</div>` : ""}</div>
       </div><div class="hero-acts">${ask}<button class="btn sm" data-act="open-folder" data-id="${c.id}" title="Open this course's transcript folder">${I("folder-open", "sm")} Folder</button></div></div>`;
   }
-  function newHTML(opts = {}) {   // opts.embedded: only the toolbar and day cards (inside Home), "" if nothing is new
-    const groups = S.courses.map((c) => ({ c, days: c.days.filter((d) => d.recordings.some((r) => r.is_new && !r.duplicate && !r.too_short)) })).filter((g) => g.days.length);
+  const otherSection = (c, d) => c.show_mode === "mine" && d.mine === false;
+  const ownRec = (c, r) => !(c.show_mode === "mine" && r.mine === false);   // not another section's (when you follow yours)
+  const newOwn = (c, d) => d.recordings.filter((r) => r.is_new && !r.duplicate && !r.too_short && ownRec(c, r));
+  function newRecs() {   // the class days with new recordings of your section (other sections' stay on the course page)
+    return S.courses.map((c) => {
+      const days = c.days.filter((d) => d.recordings.some((r) => r.is_new && !r.duplicate && !r.too_short));
+      const own = days.filter((d) => !otherSection(c, d) && newOwn(c, d).length);
+      return { c, days: own, others: days.length - own.length };
+    }).filter((g) => g.days.length);
+  }
+  const newToDo = (g) => g.days.flatMap((d) => newOwn(g.c, d).filter((r) => selectable(r) && r.status !== "done" && !r.hidden).map((r) => r.id));
+  function newDayStateHTML(d) {
+    const busy = d.recordings.find((r) => ["queued", "downloading", "transcribing"].includes(r.status));
+    return busy ? statusHTML(busy) : d.transcribed ? `<span class="pill done">${I("check")}Transcribed</span>`
+      : d.any_done ? `<span class="pill">Partly transcribed</span>` : `<span class="pill new">${I("sparkle")}New</span>`;
+  }
+  function newDayRowHTML(d, c) {   // Home: one row per class day
+    const busy = d.recordings.some((r) => ["queued", "downloading", "transcribing"].includes(r.status));
+    const todo = d.recordings.some((r) => ownRec(c, r) && selectable(r) && !["done", "processing"].includes(r.status) && !r.hidden && !r.no_sound);
+    return `<div class="new-day" data-day="${esc(d.day_key)}"><span class="nd-date">${shortDate(d.date)}</span>
+      <span class="nd-what">${d.kind === "lab" ? "Lab" : "Lecture"} · ${plural(d.parts, "part")} · ${fmtDur(d.duration_s)}</span>
+      <span class="nd-state">${newDayStateHTML(d)}</span><span class="nd-acts">
+      ${d.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(d.day_key)}">${I("file-text", "sm")} Read</button>` : ""}
+      ${todo && !busy ? `<button class="btn sm" data-act="tx-day" data-day="${esc(d.day_key)}">${I("wave", "sm")} Transcribe</button>` : ""}</span></div>`;
+  }
+  function refreshNewDay(hit, stateOnly) {    // stateOnly: progress, so the row's buttons stay where they are
+    const row = document.querySelector(`.new-day[data-day="${CSS.escape(hit.d.day_key)}"]`);
+    if (!row) return;
+    if (stateOnly) row.querySelector(".nd-state").innerHTML = newDayStateHTML(hit.d);
+    else row.outerHTML = newDayRowHTML(hit.d, hit.c);
+  }
+  function newHTML(opts = {}) {   // opts.embedded: only the toolbar and day rows (inside Home), "" if nothing is new
+    const groups = newRecs();
     if (opts.embedded && !groups.length) return "";
-    const tools = `<div class="toolbar"${opts.embedded ? ` style="margin-top:4px"` : ""}><span class="spacer"></span>
+    if (opts.embedded) {
+      const ids = groups.flatMap(newToDo);
+      const days = groups.reduce((n, g) => n + g.days.filter((d) => d.recordings.some((r) => ids.includes(r.id))).length, 0);
+      return `<div class="toolbar" style="margin-top:4px"><span class="spacer"></span><button class="btn ghost sm" data-act="mark-seen">Mark all as seen</button>
+          ${ids.length ? `<button class="btn primary sm" data-act="tx-new" title="${plural(ids.length, "recording")}">${I("wave", "sm")} Transcribe all ${days > 1 ? plural(days, "class day") : ""}</button>` : ""}</div>
+        <div class="card new-days">${groups.map((g) => `<div class="nd-course"><span class="pill new">${esc(g.c.code)}</span> ${esc(g.c.display_name)}
+          ${g.others ? `<span class="dim sm">· +${plural(g.others, "class day")} of other sections on the course page</span>` : ""}</div>
+          ${g.days.map((d) => newDayRowHTML(d, g.c)).join("")}`).join("")}</div>`;
+    }
+    const tools = `<div class="toolbar"><span class="spacer"></span>
         ${groups.length ? `<button class="btn ghost sm" data-act="mark-seen">Mark all as seen</button>
         <button class="btn sm" data-act="select-new">${I("list-checks", "sm")} Select all new</button>` : ""}
         <button class="btn primary sm" data-act="tx-selected" id="tx-sel" disabled>${I("wave", "sm")} Transcribe selected</button></div>`;
-    let h = opts.embedded ? tools : `<div class="view-inner"><div class="card hero"><div class="badge">${I("sparkle", "lg")}</div><div class="grow">
+    let h = `<div class="view-inner"><div class="card hero"><div class="badge">${I("sparkle", "lg")}</div><div class="grow">
       <h1>New recordings</h1><div class="meta"><span>Recordings that appeared since your last visit. Nothing is transcribed until you choose it.</span></div></div></div>
       ${tools}`;
     if (!groups.length) h += emptyHTML("check-circle", S.sync.running ? "Checking for new recordings…" : "You're all caught up",
@@ -470,7 +520,7 @@
       h += `<div class="course-group-title"><span class="pill new">${esc(g.c.code)}</span> ${esc(g.c.display_name)}</div>`;
       h += g.days.map((d) => dayCardHTML(d, g.c)).join("");
     }
-    return opts.embedded ? h : h + `</div>`;
+    return h + `</div>`;
   }
   function emptyHTML(icon, title, text) {
     return `<div class="empty"><div class="art">${I(icon)}</div><h3>${esc(title)}</h3><div>${esc(text)}</div></div>`;
@@ -497,7 +547,7 @@
   async function openDay(dayKey, refresh = false) {
     if (!refresh) {
       saveChatScroll();
-      S.view = { name: "day", dayKey, from: S.view.name === "day" ? S.view.from : { ...S.view } }; S.day = null; S.dayFind = "";
+      S.view = { name: "day", dayKey, from: S.view.name === "day" ? S.view.from : { ...S.view, scroll: $("#view").scrollTop } }; S.day = null; S.dayFind = "";
       renderTop(); renderSidebar(); $("#view").classList.remove("chat-mode"); $("#view").innerHTML = `<div class="view-inner">${skeleton()}</div>`;
     }
     const res = await call("get_day", dayKey);
@@ -534,8 +584,8 @@
     h += `<div id="notes-slot">${notesHTML()}</div>`;
     if (d.highlights.length) {
       h += `<div class="card hl-card"><h3>${I("star")} Highlights <span class="count">${d.highlights.length}</span></h3>` +
-        d.highlights.map((x) => `<div class="hl-item" data-act="jump" data-part="${x.part}" data-t="${x.t}"><span class="when">Part ${x.part} · ${esc(x.ts)}</span>
-          <span class="tags">${esc(x.tags.join(", "))}</span><span class="para-text" style="font-size:13.5px">${esc(x.text)}</span></div>`).join("") + `</div>`;
+        d.highlights.map((x) => `<div class="hl-item" data-act="jump" data-part="${x.part}" data-t="${x.t}" tabindex="0" role="button"><span class="when">Part ${x.part} · ${esc(x.ts)}</span>
+          <span class="tags">${esc(x.tags.join(", "))}</span><span class="para-text">${esc(x.text)}</span></div>`).join("") + `</div>`;
     }
     for (const p of d.parts) {
       h += `<div class="part-h" id="part-${p.index}"><h2>Part ${p.index}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${plural(p.slides, "slide")}` : ""}</span>
@@ -546,22 +596,42 @@
         if (para.slide_image && para.slide !== slide) {
           slide = para.slide;
           const size = para.slide_w ? ` width="${+para.slide_w}" height="${+para.slide_h}"` : "";   // space reserved before it loads
-          h += `<div class="slide" data-act="zoom" data-src="${esc(para.slide_image)}"><img loading="lazy" src="${esc(para.slide_image)}"${size} alt="Slide ${para.slide}"><span class="cap">Slide ${para.slide}</span></div>`;
+          h += `<div class="slide" data-act="zoom" data-src="${esc(para.slide_image)}" tabindex="0" role="button" title="Show it larger"><img loading="lazy" src="${esc(para.slide_image)}"${size} alt="Slide ${para.slide}"><span class="cap">Slide ${para.slide}</span></div>`;
         }
         h += paraHTML(para, p);
       }
     }
-    return h + `<div style="height:45vh"></div></div>`;   // room to centre the last paragraphs on a jump
+    return h + dayNavHTML() + `<div style="height:45vh"></div></div>`;   // room to centre the last paragraphs on a jump
+  }
+  function dayNavHTML() {   // the course's lectures before and after this one (your section's)
+    const d = S.day, c = d && findCourse(d.course.id);
+    if (!c) return "";
+    const days = c.days.filter((x) => x.parts && !otherSection(c, x)).sort((a, b) => (a.date + a.kind).localeCompare(b.date + b.kind));
+    const i = days.findIndex((x) => x.day_key === d.day_key);
+    if (i < 0 || days.length < 2) return "";
+    const what = (x) => `${shortDate(x.date)} ${x.kind === "lab" ? "lab" : "lecture"}`;
+    const btn = (x, back) => !x ? "<span></span>" : x.any_done
+      ? `<button class="btn ghost" data-act="open-day" data-day="${esc(x.day_key)}">${back ? I("arrow-left", "sm") : ""} ${what(x)} ${back ? "" : I("arrow-right", "sm")}</button>`
+      : `<button class="btn ghost" data-act="tx-day" data-day="${esc(x.day_key)}" title="Not transcribed yet">${I("wave", "sm")} Transcribe the ${what(x)}</button>`;
+    return `<div class="day-nav">${btn(days[i - 1], true)}${btn(days[i + 1], false)}</div>`;
+  }
+  // lower case for finding, with the Turkish i's as one letter ("İşte" = "işte", "SINAV" = "sınav"); same length
+  const fold = (s) => s.replace(/[İIı]/g, "i").toLowerCase();
+  function markFind(text, q) {
+    const f = fold(text), k = fold(q);
+    let out = "", i = 0, j;
+    while ((j = f.indexOf(k, i)) >= 0) { out += esc(text.slice(i, j)) + `<mark>${esc(text.slice(j, j + k.length))}</mark>`; i = j + k.length; }
+    return out + esc(text.slice(i));
   }
   function paraHTML(para, p) {
     const q = S.dayFind.trim();
-    let text = esc(para.text);
-    if (q.length > 1) { const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"); text = text.replace(re, (m) => `<mark>${m}</mark>`); }
-    const hidden = q.length > 1 && !para.text.toLowerCase().includes(q.toLowerCase());
+    const text = q.length > 1 ? markFind(para.text, q) : esc(para.text);
+    const hidden = q.length > 1 && !fold(para.text).includes(fold(q));
     const marks = [para.tag ? `<span class="pill tr">${esc(para.tag)}</span>` : "", para.star ? `<span class="pill processing" title="${esc((para.tags || []).join(", "))}">${I("star")}</span>` : "",
       para.uncertain ? `<span class="pill" title="Unclear audio — check the recording">${I("alert")}unclear</span>` : ""].join("");
     return `<div class="para ${para.tag ? "tr" : ""} ${para.star ? "star" : ""} ${para.uncertain ? "uncertain" : ""}" data-part="${p.index}" data-t="${para.t}" data-e="${para.e ?? para.t}" ${hidden ? 'style="display:none"' : ""}>
-      <span class="ts" data-act="ts" data-url="${esc(p.viewer_url)}" data-t="${para.t}" title="Open in Panopto at this moment">${esc(para.ts)}</span>
+      <span class="ts-col"><span class="ts" data-act="ts" data-url="${esc(p.viewer_url)}" data-t="${para.t}" tabindex="0" role="button" title="Open in Panopto at this moment">${esc(para.ts)}</span>
+        <button class="ts-link" data-act="copy-moment" data-part="${p.index}" data-t="${para.t}" title="Copy a link to this moment (for classmates: they open it with their own IEU login)">${I("link", "xs")}</button></span>
       <div class="para-text">${marks ? `<span class="marks">${marks}</span>` : ""}${text}</div></div>`;
   }
   function dayActionsHTML() {
@@ -586,8 +656,10 @@
     const shown = writing ? { kind: S.ai.kind, label: S.ai.label, md: S.ai.text } : notes.find((n) => n.kind === S.notesKind) || notes[0];
     if (!shown) return "";
     const kinds = !writing && notes.length > 1 ? `<span class="seg sm">${notes.map((n) => `<button class="${n.kind === shown.kind ? "on" : ""}" data-act="notes-kind" data-val="${n.kind}">${esc(n.label)}</button>`).join("")}</span>` : "";
+    const cards = !writing && shown.kind === "flashcards" ? (shown.cards || []).length : 0;
     return `<div class="card notes-card"><h3>${I("ai")} ${esc(shown.label || "Study notes")} ${writing ? `<span class="pill active">${SPIN()} ${esc(aiName())} is writing…</span>
       <button class="btn ghost sm" data-act="ai-cancel">Stop</button>` : `<span class="pill done">${I("check")}Saved</span>${kinds}
+      ${cards >= 3 ? `<button class="btn sm" data-act="cards-practise" title="One card at a time: think of the answer, then check it">${I("list-checks", "sm")} Practise ${cards} cards</button>` : ""}
       <button class="btn ghost sm" data-act="file" data-what="notes:${esc(shown.kind)}">${I("file-text", "sm")} Open file</button>`}</h3>
       <div class="notes-body md">${shown.md ? mdToHtml(shown.md, { cites: true }) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
   }
@@ -859,30 +931,34 @@
     if (q.trim().length < 2) { S.search.results = null; renderSearchResults(); return; }
     searchTimer = setTimeout(async () => {
       const res = await call("search", q);
-      if (res.ok && S.search.q === q) { S.search.results = res.results; renderSearchResults(); }
+      if (res.ok && S.search.q === q) { S.search.results = res.results; S.search.materials = res.materials || []; renderSearchResults(); }
     }, 220);
   }
   function libraryHTML() {
-    let h = `<div class="view-inner"><div class="search-big">${I("search")}<input class="input" placeholder="Search everything that was said in your lectures… (English or Turkish)" data-act="search" value="${esc(S.search.q)}"></div>
+    let h = `<div class="view-inner"><div class="search-big">${I("search")}<input class="input" placeholder="Search your lectures and course files… (English or Turkish)" data-act="search" value="${esc(S.search.q)}"></div>
       <div id="search-results"></div>`;
     if (S.lib == null) h += skeleton();
     else if (!S.lib.length) h += emptyHTML("library", "No transcripts yet", "Transcribed lectures appear here, grouped by course.");
     else for (const c of S.lib) {
       const ask = (S.system.ai || {}).available ? `<span class="spacer"></span><button class="btn ghost sm" data-act="ask-course" data-id="${esc(c.course_id)}">${I("chat", "sm")} Ask ${esc(aiName())}</button>` : "";
       h += `<div class="course-group-title"><span class="pill new">${esc(c.code)}</span> ${esc(c.name)}${ask}</div><div class="lib-grid">` +
-        c.days.map((d) => `<div class="card lib-day" data-act="open-day" data-day="${esc(d.day_key)}"><div class="t">${esc(d.label)}</div>
+        c.days.map((d) => `<div class="card lib-day" data-act="open-day" data-day="${esc(d.day_key)}" tabindex="0" role="button"><div class="t">${esc(d.label)}</div>
           <div class="s">${esc(d.kind_label)} · ${plural(d.parts, "part")} · ${fmtDur(d.duration_s)} ${d.transcribed ? "" : "· partly"}</div></div>`).join("") + `</div>`;
     }
     return h + `</div>`;
   }
   function renderSearchResults() {
     const el = $("#search-results"); if (!el) return;
-    const r = S.search.results;
+    const r = S.search.results, m = S.search.materials || [];
     if (r == null) { el.innerHTML = ""; return; }
-    if (!r.length) { el.innerHTML = `<div class="card" style="padding:16px;margin-bottom:16px;color:var(--text-2)">No matches for “${esc(S.search.q)}”.</div>`; return; }
-    el.innerHTML = `<div class="card" style="margin-bottom:18px">` + r.map((x) => `<div class="result" data-act="open-hit" data-day="${esc(x.day_key)}" data-id="${esc(x.delivery_id)}" data-t="${x.t}">
-      <div class="where"><b>${esc(x.course_code)}</b> ${esc(x.date)} · ${esc(x.time)} · at ${esc(x.ts)}</div>
-      <div class="snippet">${esc(x.snippet).replace(/\[([^\]]+)\]/g, "<em>$1</em>")}</div></div>`).join("") + `</div>`;
+    if (!r.length && !m.length) { el.innerHTML = `<div class="card" style="padding:16px;margin-bottom:16px;color:var(--text-2)">No matches for “${esc(S.search.q)}”.</div>`; return; }
+    const snip = (s) => esc(s).replace(/\u0002([^\u0003]*)\u0003/g, "<em>$1</em>");     // the words found
+    el.innerHTML = (r.length ? `<div class="section-title">${I("wave")} In your lectures <span class="dim sm">${r.length}</span></div><div class="card" style="margin-bottom:18px">` + r.map((x) => `<button class="result" data-act="open-hit" data-day="${esc(x.day_key)}" data-id="${esc(x.delivery_id)}" data-t="${x.t}">
+      <span class="where"><b>${esc(x.course_code)}</b> ${esc(shortDate(x.date))} · ${esc(x.time)} · at ${esc(x.ts)}</span>
+      <span class="snippet">${snip(x.snippet)}</span></button>`).join("") + `</div>` : "") +
+      (m.length ? `<div class="section-title">${I("layers")} In your course files <span class="dim sm">${m.length}</span></div><div class="card" style="margin-bottom:18px">` + m.map((x) => `<button class="result" data-act="open-mat-hit" data-id="${esc(x.resource_id)}" title="Open the file">
+      <span class="where"><b>${esc(x.course_code)}</b> ${esc(x.title)} · page ${x.page}</span>
+      <span class="snippet">${snip(x.snippet)}</span></button>`).join("") + `</div>` : "");
   }
 
   // ---- settings
@@ -939,8 +1015,11 @@
       ${Studia.settingsMore ? Studia.settingsMore() : ""}
       <div class="card set-card"><h3>Appearance</h3>
         ${row("Theme", "", `<div class="seg">${["system", "light", "dark"].map((t) => `<button class="${s.theme === t ? "on" : ""}" data-act="set" data-key="theme" data-val="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div>`)}
+        ${row("Reading text", "Transcripts, notes and chat. Ctrl and + or − change it too, anywhere in IEUStudia.", `<div class="seg">${TEXT_SIZES.map(([v, l]) => `<button class="${+(s.text_size || 100) === v ? "on" : ""}" data-act="set-size" data-val="${v}">${l}</button>`).join("")}</div>`)}
       </div></div>`;
   }
+
+  const TEXT_SIZES = [[90, "Smaller"], [100, "Normal"], [115, "Larger"], [130, "Largest"]];
 
   // ---- chat with Claude
   const SUGGEST_ONE = [
@@ -1246,7 +1325,7 @@
       if (st.course !== course) return;                 // the course was changed again meanwhile
       st.scope = r.ok ? r : { days: [], max_tokens: 150000 };
       if (st.keep) st.keep = false; else pickDefault();
-      if ($(".cp-days")) draw();
+      if ($(".modal.cp")) draw();                      // still open
     };
     window.__cp = {
       course: (v) => { st.course = v; st.keep = false; st.slides = false; load(); },
@@ -1278,22 +1357,27 @@
     const eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
     if (!jobs.length && !eng) { el.classList.add("hidden"); el.innerHTML = ""; return; }
     el.classList.remove("hidden");
-    const cur = jobs.find((j) => ["downloading", "transcribing", "writing"].includes(j.stage)) || jobs[0];
+    const cur = jobs.find((j) => ["transcribing", "writing"].includes(j.stage)) || jobs.find((j) => j.stage === "downloading") || jobs[0];
     S.queueShown = eng ? null : cur && cur.id;
     const label = (j) => ({ queued: "Waiting", downloading: "Downloading", transcribing: "Transcribing", writing: "Finishing" }[j.stage] || j.stage);
     const open = el.classList.contains("open");
-    let title = cur ? `${label(cur)} · ${esc(cur.title)}` : "Preparing";
+    const paused = !!S.paused;
+    el.classList.toggle("paused", paused);
+    let title = cur ? `${paused ? "Paused" : label(cur)} · ${esc(cur.title)}` : "Preparing";
     let detail = cur ? esc(jobDetail(cur)) : "";
     let p = cur ? cur.progress : 0;
     if (eng) { title = eng.phase === "download" ? "Downloading the speech model (one time)" : "Loading the speech model"; detail = esc(eng.message || ""); p = eng.progress || 0; }
     const more = jobs.length > 1 ? `<button class="btn ghost sm" data-act="queue-toggle">${open ? "Hide" : `+${jobs.length - 1} more`}</button>` : "";
     const b = S.batch || {};
     const batch = b.total > 1 ? `<span class="q-batch" title="Lectures finished in this batch">${b.finished} of ${b.total} done${b.left_s ? ` · about ${fmtDur(b.left_s)} left` : ""}</span>` : "";
-    el.innerHTML = `<div class="q-main"><div class="q-icon">${SPIN()}</div><div class="q-text"><div class="q-title">${title}</div><div class="q-detail">${detail}</div></div>
-      ${batch}<div class="bar ${p ? "" : "indet"}"><i style="width:${pct(p)}"></i></div>${more}
-      ${cur ? `<button class="btn ghost sm" data-act="cancel-all" title="Cancel everything">${I("stop", "sm")} Cancel</button>` : ""}</div>
-      ${open && jobs.length > 1 ? `<div class="q-list">${jobs.map((j) => `<div class="q-item" data-id="${esc(j.id)}"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
-        <div class="bar"><i style="width:${pct(j.progress)}"></i></div><button class="btn ghost icon sm" data-act="cancel" data-id="${j.id}">${I("x", "sm")}</button></div>`).join("")}</div>` : ""}`;
+    el.innerHTML = `<div class="q-main"><div class="q-icon">${paused ? I("pause") : SPIN()}</div><div class="q-text"><div class="q-title">${title}</div><div class="q-detail">${paused ? "Your PC may sleep until you continue." : detail}</div></div>
+      ${batch}<div class="bar ${p || paused ? "" : "indet"}"><i style="width:${pct(p)}"></i></div>${more}
+      ${cur && !eng ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause" title="${paused ? "Go on transcribing" : "Pause: the lecture being transcribed stops after the passages it is on. Nothing is lost."}">${I(paused ? "play" : "pause", "sm")}<span class="lbl"> ${paused ? "Continue" : "Pause"}</span></button>` : ""}
+      ${cur ? `<button class="btn ghost sm" data-act="cancel-all" title="Cancel everything in the queue">${I("stop", "sm")}<span class="lbl"> Cancel</span></button>` : ""}</div>
+      ${open && jobs.length > 1 ? `<div class="q-list">${jobs.map((j, i) => `<div class="q-item" data-id="${esc(j.id)}"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
+        <div class="bar"><i style="width:${pct(j.progress)}"></i></div>
+        ${j.stage === "queued" && !j.local && i > 1 ? `<button class="btn ghost sm" data-act="queue-first" data-id="${esc(j.id)}" title="Transcribe this one before the others still waiting">Do next</button>` : j.first ? `<span class="dim sm">next</span>` : ""}
+        <button class="btn ghost icon sm" data-act="cancel" data-id="${j.id}" title="Cancel this one">${I("x", "sm")}</button></div>`).join("")}</div>` : ""}`;
   }
 
   // A job's progress between stage changes: only the text and the bars change, the buttons stay where they are.
@@ -1301,7 +1385,7 @@
     const el = $("#queue"); if (!el) return;
     if (S.queueShown === j.id) {
       const d = el.querySelector(".q-main .q-detail"), bar = el.querySelector(".q-main > .bar");
-      if (d) d.textContent = jobDetail(j);
+      if (d && !S.paused) d.textContent = jobDetail(j);
       if (bar) { bar.classList.toggle("indet", !j.progress); bar.firstElementChild.style.width = pct(j.progress); }
     }
     const item = el.querySelector(`.q-item[data-id="${CSS.escape(j.id)}"] .bar i`);
@@ -1358,15 +1442,35 @@
   }
 
   // ------------------------------------------------------------------ overlays
-  function toast(msg, level = "info") {
+  function toast(msg, level = "info", action) {   // action: {label, act, data}: a button (the toast then stays longer)
     const icon = { success: "check-circle", error: "x-circle", warning: "alert", info: "info" }[level] || "info";
     const t = document.createElement("div");
-    t.className = `toast ${level}`; t.innerHTML = `${I(icon)}<div>${esc(msg)}</div>`;
+    const attrs = action ? Object.entries(action.data || {}).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" ") : "";
+    t.className = `toast ${level}`;
+    t.innerHTML = `${I(icon)}<div>${esc(msg)}</div>${action ? `<button class="btn sm" data-act="${esc(action.act)}" ${attrs}>${esc(action.label)}</button>` : ""}`;
+    if (action) t.querySelector("button").addEventListener("click", () => t.remove());
     $("#toasts").appendChild(t);
-    setTimeout(() => { t.style.transition = "opacity .3s"; t.style.opacity = "0"; setTimeout(() => t.remove(), 320); }, level === "error" ? 7000 : 4200);
+    setTimeout(() => { t.style.transition = "opacity .3s"; t.style.opacity = "0"; setTimeout(() => t.remove(), 320); }, action ? 12000 : level === "error" ? 7000 : 4200);
   }
-  function modal(html) { $("#overlay").innerHTML = `<div class="backdrop" data-act="modal-bg"><div class="modal" role="dialog">${html}</div></div>`; }
-  function closeModal() { $("#overlay").innerHTML = ""; }
+  let modalFrom = null;            // what had the focus before a dialog opened: it gets it back
+  const focusKey = (el) => el && el.dataset && el.dataset.act      // the same control after the dialog is drawn again
+    ? Object.entries(el.dataset).map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}="${CSS.escape(v)}"]`).join("") : "";
+  function modal(html) {
+    const old = $("#overlay .modal"), inside = !!old && old.contains(document.activeElement);
+    const again = inside ? focusKey(document.activeElement) : "";
+    if (!old) modalFrom = document.activeElement;
+    $("#overlay").innerHTML = `<div class="backdrop" data-act="modal-bg"><div class="modal" role="dialog" aria-modal="true" tabindex="-1">${html}</div></div>`;
+    const m = $("#overlay .modal"), same = again ? m.querySelectorAll(again) : [];
+    const el = m.querySelector("[autofocus]") || (same.length === 1 ? same[0] : null);
+    if (el) el.focus({ preventScroll: true });
+    else if (!old || inside) m.focus({ preventScroll: true });     // Tab goes on inside the dialog, not in the page behind
+  }
+  function closeModal() {
+    const had = $("#overlay").innerHTML;
+    $("#overlay").innerHTML = "";
+    if (had && modalFrom && modalFrom.isConnected) modalFrom.focus({ preventScroll: true });
+    modalFrom = null;
+  }
 
   // ---- a new version (the top bar's button, Settings → About, or the tray helper's notification)
   function onUpdate(e) {
@@ -1394,7 +1498,7 @@
       <div class="actions">${busy ? (u.state === "downloading" ? `<button class="btn" data-act="update-cancel">Cancel</button>` : "")
         : `<button class="btn ghost" data-act="update-page">${I("external", "sm")} Release page</button><span class="spacer"></span>
            <button class="btn" data-act="modal-close">Later</button>
-           ${u.can_install ? `<button class="btn grad" data-act="update-go">${I("download", "sm")} ${u.state === "error" ? "Try again" : "Update now"}</button>` : ""}`}</div></div>`);
+           ${u.can_install ? `<button class="btn primary" data-act="update-go">${I("download", "sm")} ${u.state === "error" ? "Try again" : "Update now"}</button>` : ""}`}</div></div>`);
   }
   function menu(anchor, items) {
     closeMenu();
@@ -1443,13 +1547,46 @@
     await draw();
   }
 
+  function practise() {   // the lecture's flashcards one at a time; the ones you didn't know come back at the end
+    const n = S.day && (S.day.notes || []).find((x) => x.kind === "flashcards");
+    if (!n || !(n.cards || []).length) return;
+    const st = { order: n.cards.map((_, i) => i), pos: 0, shown: false, again: new Set() };
+    const draw = () => {
+      if (st.pos >= st.order.length) {
+        const missed = st.again.size;
+        modal(`<div class="fc"><h2>${I("check-circle")} All ${plural(n.cards.length, "card")} done</h2>
+          <p class="lead">${missed ? `${plural(missed, "card")} needed another look. Going through them once more tomorrow helps them stick.` : "You knew every one of them."}</p>
+          <div class="actions"><button class="btn" data-act="modal-close">Close</button><button class="btn primary" data-act="fc-restart" autofocus>${I("retry", "sm")} Start again</button></div></div>`);
+        return;
+      }
+      const c = n.cards[st.order[st.pos]];
+      modal(`<div class="fc"><div class="fc-top"><b>${I("list-checks", "sm")} ${esc(S.day.title)} · flashcards</b><span class="dim sm">${st.pos + 1} of ${st.order.length}</span></div>
+        <div class="fc-bar"><i style="width:${Math.round((100 * st.pos) / st.order.length)}%"></i></div>
+        <div class="fc-q md">${mdToHtml(c.q, { cites: true })}</div>
+        ${st.shown ? `<div class="fc-a md">${mdToHtml(c.a, { cites: true })}</div>` : `<div class="fc-hint dim sm">Think of the answer first.</div>`}
+        <div class="actions">${st.shown ? `<button class="btn" data-act="fc-again">${I("retry", "sm")} Again later</button><button class="btn primary" data-act="fc-knew" autofocus>${I("check", "sm")} I knew it</button>`
+          : `<button class="btn ghost" data-act="modal-close">Stop</button><button class="btn primary" data-act="fc-show" autofocus>Show the answer</button>`}</div></div>`);
+    };
+    window.__fc = {
+      show: () => { st.shown = true; draw(); },
+      knew: () => { st.pos++; st.shown = false; draw(); },
+      again: () => { st.again.add(st.order[st.pos]); st.order.push(st.order[st.pos]); st.pos++; st.shown = false; draw(); },
+      restart: () => { st.order = n.cards.map((_, i) => i); st.pos = 0; st.shown = false; st.again = new Set(); draw(); },
+    };
+    draw();
+  }
+
   window.LSRender = { md: mdToHtml, tex: texToHtml };   // renderer hooks (used by the UI tests)
 
   // ------------------------------------------------------------------ actions
   const A = {
     go: (el) => { S.navigated = true; go(el.dataset.view === "course" ? { name: "course", courseId: el.dataset.id, tab: el.dataset.tab || undefined } : { name: el.dataset.view }); },
-    back: () => { const f = S.view.from || { name: "home" }; go(f); },
-    sync: () => { S.sync.running = true; S.sync.error = ""; renderTop(); call("sync"); },
+    back: () => {               // where you came from, scrolled where you were
+      const f = S.view.from || { name: "home" };
+      go({ ...f, jumpWeek: false });
+      if (f.scroll) $("#view").scrollTo({ top: f.scroll, behavior: "instant" });
+    },
+    sync: () => { S.sync = { running: true, message: "", error: "" }; renderTop(); if (S.view.name === "home") renderView(); call("sync"); },
     sel: (el) => { el.checked ? S.selected.add(el.dataset.id) : S.selected.delete(el.dataset.id); updateSelectionUI(); },
     "sel-day": (el) => { const card = el.closest(".day"); $$(".rec .check:not(:disabled)", card).forEach((cb) => { cb.checked = el.checked; el.checked ? S.selected.add(cb.dataset.id) : S.selected.delete(cb.dataset.id); }); updateSelectionUI(); },
     "select-new": (el) => {
@@ -1462,12 +1599,25 @@
     },
     "tx-selected": async () => { const ids = [...S.selected]; if (!ids.length) return; S.selected.clear(); syncChecks(); const r = await call("transcribe", ids); if (!r.ok) toast(r.error, "error"); else toast(`${plural(r.queued, "recording")} added to the queue`, "info"); },
     "tx-day": async (el) => { const r = await call("transcribe_day", el.dataset.day); if (!r.ok) toast(r.error, "error"); else if (!r.queued) toast("Nothing left to transcribe for this day.", "info"); },
+    "tx-new": async () => {     // Home: every new recording of your sections
+      const ids = newRecs().flatMap(newToDo);
+      if (!ids.length) return;
+      const r = await call("transcribe", ids);
+      if (!r.ok) toast(r.error, "error"); else toast(`${plural(r.queued, "recording")} added to the queue`, "info");
+    },
     retry: (el) => call("transcribe", [el.dataset.id]),
     cancel: (el) => call("cancel", el.dataset.id),
-    "cancel-all": () => call("cancel", null),
+    "cancel-all": () => {
+      const n = new Set((S.queue || []).map((j) => j.day || j.id)).size;          // lectures, not their parts
+      if (n > 1 && !confirm(`Cancel all ${n} lectures in the queue? To stop for a while instead, use Pause.`)) return;
+      call("cancel", null);
+    },
+    "queue-pause": async () => { const r = await call("queue_pause", !S.paused); if (r.ok) { S.paused = r.paused; renderQueue(); } },
+    "queue-first": async (el) => { const r = await call("queue_first", el.dataset.id); if (r.ok) toast("Moved to the front of the queue.", "info"); },
     "queue-toggle": () => { $("#queue").classList.toggle("open"); renderQueue(); },
     "open-day": (el) => openDay(el.dataset.day),
     "open-hit": async (el) => { await openDay(el.dataset.day); setTimeout(() => jumpTo(null, +el.dataset.t, el.dataset.id), 60); },
+    "open-mat-hit": (el) => call("material_open", el.dataset.id).then((r) => { if (!r.ok) toast(r.error, "error"); }),
     url: (el) => call("open_url", el.dataset.url),
     "update-open": () => updateModal(),
     "update-page": () => call("open_url", (S.update || {}).page || "https://github.com/mirzaisi/IEUStudia/releases/latest"),
@@ -1489,6 +1639,14 @@
       renderTop(); if (S.view.name === "settings") renderView();
     },
     ts: (el) => call("open_url", `${el.dataset.url}&start=${Math.floor(+el.dataset.t)}`),
+    "copy-moment": async (el) => {     // for a study group: each classmate opens it on Panopto with their own login
+      const d = S.day; if (!d) return;
+      const p = d.parts.find((x) => x.index === +el.dataset.part) || {};
+      const t = Math.floor(+el.dataset.t), ts = `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+      const iso = d.day_key.split("|")[1] || "";
+      const r = await call("copy_text", `${d.course.code} · ${/^\d{4}-\d{2}-\d{2}$/.test(iso) ? shortDate(iso) : d.date_label}${d.parts.length > 1 ? ` · Part ${p.index}` : ""}, ${ts}: ${p.viewer_url}&start=${t}`);
+      toast(r.ok ? "Link copied. Classmates open it on Panopto with their own IEU login." : r.error || "Copy failed", r.ok ? "success" : "error");
+    },
     jump: (el) => jumpTo(+el.dataset.part, +el.dataset.t),
     zoom: (el) => { $("#overlay").innerHTML = `<div class="lightbox" data-act="modal-close"><img src="${esc(el.dataset.src)}"></div>`; },
     "show-mode": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { show_mode: el.dataset.mode }); if (r.ok) { setCourses(r.courses); renderView(); } },
@@ -1505,6 +1663,9 @@
     "cl-go": () => window.__cl.go(),
     "cl-open": () => window.__cl.open(),
     "notes-kind": (el) => { S.notesKind = el.dataset.val; renderNotes(); },
+    "cards-practise": () => practise(),
+    "fc-show": () => window.__fc.show(), "fc-knew": () => window.__fc.knew(), "fc-again": () => window.__fc.again(),
+    "fc-restart": () => window.__fc.restart(),
     "ask-day": () => {
       const d = S.day; if (!d) return;
       const iso = d.day_key.split("|")[1] || "";
@@ -1566,7 +1727,7 @@
     ]),
     cite: async (el) => {
       const t = +el.dataset.t, part = +el.dataset.p || 1, L = +el.dataset.l || 1;
-      if (S.view.name === "day") { jumpTo(part, t); return; }        // timestamps in study notes
+      if (S.view.name === "day") { closeModal(); jumpTo(part, t); return; }   // timestamps in study notes and flashcards
       const c = S.chat.data; if (!c) return;
       const day = c.days[L - 1] || c.days[0];
       if (!day || day.gone) { toast("That class day is no longer in your library.", "warning"); return; }
@@ -1593,6 +1754,7 @@
       { id: "set", icon: "settings", label: "Settings", run: () => go({ name: "settings" }) },
     ]),
     set: async (el) => saveSetting({ [el.dataset.key]: el.dataset.val }),
+    "set-size": (el) => saveSetting({ text_size: +el.dataset.val }),
     "set-bool": async (el) => saveSetting({ [el.dataset.key]: el.checked }),
     "set-sel": async (el) => saveSetting({ [el.dataset.key]: el.dataset.key === "min_duration_s" ? +el.value : el.value }),
     "my-section": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { my_section: el.value, show_mode: "mine" }); if (r.ok) { setCourses(r.courses); renderView(); } },
@@ -1632,7 +1794,8 @@
   Object.assign(Studia, { S, call, esc, I, SPIN, plural, fmtDur, rel, pct, toast, modal, closeModal, menu, go, render,
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, MONTHS, WD, fmtK, limitsHTML, isReal: () => REAL,
-    aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub });
+    aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub,
+    otherSection });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -1722,8 +1885,37 @@
     S.view = { name: "home" }; render();
     if (Studia.onGo.home) Studia.onGo.home(S.view);
   });
+  let textSizeTimer = null;
+  function textSize(step) {        // Ctrl and +, − or 0: the reading text, a step at a time
+    const sizes = TEXT_SIZES.map(([v]) => v), cur = +(S.settings.text_size || 100);
+    const i = sizes.indexOf(cur) < 0 ? 1 : sizes.indexOf(cur);
+    const next = step === 0 ? 100 : sizes[Math.max(0, Math.min(sizes.length - 1, i + step))];
+    if (next === cur) return;
+    S.settings.text_size = next; applyTheme();       // at once: the next press steps on from here
+    clearTimeout(textSizeTimer);                     // saved once the presses stop (answers may come in any order)
+    textSizeTimer = setTimeout(() => saveSetting({ text_size: S.settings.text_size }), 400);
+    toast(`Reading text: ${TEXT_SIZES.find(([v]) => v === next)[1].toLowerCase()} (Settings → Appearance)`, "info");
+  }
+  function trapTab(e, m) {         // Tab and Shift+Tab go round inside an open dialog
+    const items = $$("button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])", m)
+      .filter((x) => x.offsetParent !== null);
+    if (!items.length) { e.preventDefault(); m.focus(); return; }
+    const first = items[0], last = items[items.length - 1], at = document.activeElement;
+    if (!m.contains(at) || at === m) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+    else if (e.shiftKey && at === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+  }
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.id === "chat-input") { e.preventDefault(); sendChat(); return; }
+    if (e.key === "Enter" && e.target && ["si-user", "aa-user"].includes(e.target.id)) {    // on to the password first
+      const pass = $(e.target.id === "si-user" ? "#si-pass" : "#aa-pass");
+      if (pass && !pass.value) { e.preventDefault(); pass.focus(); return; }
+    }
+    if ((e.key === "Enter" || e.key === " ") && e.target && e.target.matches && e.target.matches("[data-act][role=button]:not(button)")) {
+      e.preventDefault(); e.target.click(); return;          // a result, a slide, a highlight… with the keyboard
+    }
+    if (e.key === "Tab") { const m = $("#overlay .modal"); if (m) trapTab(e, m); }
+    if (e.ctrlKey && !e.altKey && S.mode === "app" && ["+", "=", "-", "0"].includes(e.key)) { e.preventDefault(); textSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return; }
     if (e.key === "Escape") { closeMenu(); if ($("#overlay").innerHTML) closeModal(); }
     if (e.key === "F5" || (e.ctrlKey && e.key.toLowerCase() === "r")) { e.preventDefault(); if (S.mode === "app") A.sync(); }
     if (e.ctrlKey && e.key.toLowerCase() === "f" && S.view.name === "day") { e.preventDefault(); const f = $("[data-act='find']"); if (f) f.focus(); }
@@ -1738,7 +1930,7 @@
     if (!b.ok) { startupError(b.error || "IEUStudia could not start."); return; }
     S.boot = b; S.settings = b.settings || {}; S.profile = b.profile; setCourses(b.courses); S.queue = b.queue || []; S.lastSync = b.last_sync;
     S.profiles = b.profiles || []; S.profileId = b.profile_id || "main";
-    S.limits = b.limits || {}; S.update = b.update || {};
+    S.limits = b.limits || {}; S.update = b.update || {}; S.paused = !!b.paused; S.resume = b.resume || null;
     if (b.system) S.system = { ...S.system, ...b.system };
     applyTheme();
     const needSetup = REAL ? !(b.app && b.app.onboarded) : location.hash.includes("setup");
@@ -1763,10 +1955,18 @@
       <div class="update-notes md">${mdToHtml(u.notes)}</div>
       <div class="actions"><button class="btn primary" data-act="modal-close">OK</button></div>`);
   }
-  function openTarget(t) {          // "course:<id>", "update" or "home" (from a notification of the tray helper)
+  // what a notification opens: "course:<id>[:<tab>]", "day:<class day>", "ready:<course id>:<assessment>" (Get
+  // ready), "week:<course id>:<week>", "update" or "home"
+  function openTarget(t) {
     if (S.mode !== "app" || !t) return;
-    const [kind, id] = String(t).split(":");
-    if (kind === "course" && S.courses.some((c) => c.id === id)) go({ name: "course", courseId: id, tab: "announcements" });
+    const [kind, id, ...rest] = String(t).split(":");
+    if (kind === "course" && findCourse(id)) {
+      go({ name: "course", courseId: id, tab: rest[0] || "announcements" });
+      const tabs = $(".tabs");
+      if (tabs) tabs.scrollIntoView({ block: "start", behavior: "instant" });        // what it's about, in view
+    } else if (kind === "day") openDay(String(t).slice(4));
+    else if (kind === "week" && findCourse(id)) go({ name: "course", courseId: id, jumpWeek: +rest[0] || "now" });
+    else if (kind === "ready" && findCourse(id) && Studia.openReady) { go({ name: "course", courseId: id }); Studia.openReady(id, rest.join(":")); }
     else if (kind === "update") { go({ name: "home" }); updateModal(); }
     else go({ name: "home" });
   }
@@ -1858,16 +2058,18 @@
       ], files: { folder: "C:\\Users\\student\\Documents\\IEUStudia\\MATH 240", md: "x.md", pack: "pack.md", pdf: "", zip: "", notes: "" }, notes: [],
     };
     const emit = (e) => setTimeout(() => window.__lsEvent(e), 0);
+    let paused = false;
     function simulate(ids) {
       ids.forEach((id, k) => {
         let p = 0, stage = "downloading";
         setTimeout(() => {
           const iv = setInterval(() => {
+            if (paused) return;
             p += stage === "downloading" ? 0.2 : 0.08;
             if (p >= 1 && stage === "downloading") { stage = "transcribing"; p = 0; }
             if (p >= 1 && stage === "transcribing") { clearInterval(iv); emit({ type: "job", id, title: "MATH 250 · lecture", stage: "done", final: true, progress: 1 }); emit({ type: "queue", jobs: [] }); return; }
             emit({ type: "job", id, title: "Lecture", stage, progress: p, detail: stage === "downloading" ? `Downloading audio ${Math.round(p * 30)}/30 MB` : `Transcribing passage ${Math.round(p * 300)} of 300`, eta_s: stage === "transcribing" ? Math.round((1 - p) * 900) : null });
-            emit({ type: "queue", jobs: ids.map((x) => ({ id: x, title: `MATH 250 · Fri 16 Oct ${x}`, stage: x === id ? stage : "queued", progress: x === id ? p : 0, detail: x === id ? "Transcribing passages" : "Waiting" })) });
+            emit({ type: "queue", paused, jobs: ids.map((x) => ({ id: x, title: `MATH 250 · Fri 16 Oct ${x}`, stage: x === id ? stage : "queued", progress: x === id ? p : 0, detail: x === id ? "Transcribing passages" : "Waiting" })) });
           }, 700);
         }, k * 9000);
       });
@@ -1886,6 +2088,7 @@
           profiles: profs, profile_id: me.id,
           settings: { output_dir: "C:\\Users\\student\\Documents\\IEUStudia", model: "large-v3-turbo", device: "auto", theme: location.hash.includes("dark") ? "dark" : "light", capture_slides: true, write_srt: true, keep_audio: false, min_duration_s: 60, ai_model: "sonnet", first_run_done: true },
           last_sync: new Date(Date.now() - 120000).toISOString(), courses: signed ? courses : [], queue: [],
+          resume: location.hash.includes("resume") ? { count: 3, days: 2, audio_s: 7800, courses: ["EEE 215", "MATH 250"] } : null,
           update: Mock.update_check() };
       },
       sync: () => { emit({ type: "sync", phase: "start", message: "Checking IEULearn and Panopto…" }); setTimeout(() => emit({ type: "sync", phase: "done", new_count: 0, message: "Up to date", last_sync: new Date().toISOString() }), 1400); return { ok: true }; },
@@ -1893,7 +2096,11 @@
       transcribe_day: (k) => { const d = courses.flatMap((c) => c.days).find((x) => x.day_key === k); const ids = d.recordings.filter((r) => !r.duplicate && !r.too_short && r.status !== "done").map((r) => r.id); simulate(ids); return { ok: true, queued: ids.length }; },
       cancel: () => ({ ok: true }), get_day: () => ({ ok: true, day: JSON.parse(JSON.stringify(detail)) }),
       library: () => ({ ok: true, courses: courses.map((c) => ({ course_id: c.id, code: c.code, name: c.display_name, days: c.days.filter((d) => d.any_done) })).filter((c) => c.days.length) }),
-      search: (q) => ({ ok: true, results: [{ day_key: "17933|x|lecture", delivery_id: "a", t: 1121, ts: "18:41", snippet: `…the kind of question I will ask in the [${q}], so please be careful…`, course_code: "MATH 240", date: "2026-10-14", time: "08:28" }] }),
+      search: (q) => ({ ok: true, results: [{ day_key: "17933|x|lecture", delivery_id: "a", t: 1121, ts: "18:41", snippet: `…the kind of question I will ask in the \u0002${q}\u0003, so please be careful…`, course_code: "MATH 240", date: "2026-10-14", time: "08:28" }],
+        materials: [{ resource_id: "m1793302", title: "Week03_Student", page: 12, snippet: `Bayes' rule [Eq. 2.9] … \u0002${q}\u0003 with the total probability`, course_id: "17933", course_code: "MATH 240" }] }),
+      queue_pause: (on) => { paused = !!on; emit({ type: "queue", jobs: S.queue, batch: S.batch, paused }); return { ok: true, paused }; },
+      queue_first: () => ({ ok: true }), queue_resume: () => ({ ok: true, queued: 3 }), queue_forget: () => ({ ok: true }),
+      copy_text: () => ({ ok: true }),
       open_file: () => ({ ok: true }), open_output: () => ({ ok: true }), open_course_folder: () => ({ ok: true }),
       open_url: () => ({ ok: true }), open_logs: () => ({ ok: true }),
       update_check: () => ({ ok: true, current: "2.3.0", available: location.hash.includes("update"), version: "2.4.0", can_install: true,
@@ -1965,7 +2172,6 @@
       chat_update: (id, patch) => { Object.assign(chats[id], patch.title != null ? { title: patch.title } : {}, patch.model ? { model: patch.model } : {}); return { ok: true, chat: view(chats[id]) }; },
       chat_delete: (id) => { delete chats[id]; return { ok: true }; },
       chat_export: () => ({ ok: true, path: "chat.md" }),
-      copy_text: () => ({ ok: true }),
     };
   }
 })();

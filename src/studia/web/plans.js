@@ -73,7 +73,7 @@
     for (const cid of Object.keys(groups)) {
       const c = courseOf(cid);
       h += `<div class="section-title">${esc(c.code || "Course")} <span class="dim sm">${esc(c.display_name || "")}</span></div><div class="pl-list">`;
-      h += groups[cid].map((p) => `<div class="card pl-card ${p.status}" data-act="plan-open" data-id="${esc(p.id)}">
+      h += groups[cid].map((p) => `<div class="card pl-card ${p.status}" data-act="plan-open" data-id="${esc(p.id)}" tabindex="0" role="button">
         <div class="pl-title">${I(p.status !== "done" ? "hourglass" : (p.scope || {}).kind === "prep" ? "cap" : "youtube", "sm")}<b>${esc(p.title || (p.status === "done" ? "Study plan" : "New plan"))}</b>
           <span class="pill">${(p.scope || {}).kind === "prep" ? "Prep pack" : "Videos"}</span>${p.parent_id ? `<span class="pill">Update</span>` : ""}</div>
         <div class="pl-scope">${esc(weekSpan((p.scope || {}).weeks))}${(p.scope || {}).focus ? ` · for ${esc(p.scope.focus)}` : ""} · ${Math.round(((p.scope || {}).minutes || 0) / 60 * 10) / 10} h · ${esc(dmw(p.created_at))}</div>

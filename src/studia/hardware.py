@@ -59,6 +59,12 @@ def eight_gb(facts: dict[str, Any]) -> bool:
     return installed >= 7.5 if installed else float(facts.get("ram_gb") or 0) >= 7.0
 
 
+def enough_memory(facts: dict[str, Any]) -> bool:
+    """The 4 GB minimum by what is installed, like :func:`eight_gb` (a 4 GB laptop lets Windows use 3.4-3.8 GB)."""
+    installed = float(facts.get("ram_installed_gb") or 0)
+    return installed >= MIN_RAM_GB - 0.5 if installed else float(facts.get("ram_gb") or 0) >= MIN_RAM_GB
+
+
 def _reg(root: int, path: str, name: str) -> str:
     import winreg
 
@@ -168,7 +174,7 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
         blockers.append("This processor can't run the speech recognition: it lacks the AVX instructions it needs "
                         "(most processors since about 2011 have them, but some low-cost Celeron and Pentium ones "
                         "don't).")
-    if ram and ram < MIN_RAM_GB:
+    if ram and not enough_memory(facts):
         blockers.append(f"IEUStudia needs at least {MIN_RAM_GB:.0f} GB of memory; this PC has {ram:.1f} GB.")
     free = float(facts.get("disk", {}).get("data_free_gb") or 0)
     if need_gb and free < need_gb + 1:
@@ -222,7 +228,7 @@ def _summary(facts: dict[str, Any], cuda: bool) -> list[dict[str, str]]:
             {"label": "Processor", "value": f"{cpu['name']} · {cpu['cores']} threads" + ("" if cpu.get("avx2") else " · older type, slower" if cpu.get("avx") else " · can't transcribe (no AVX)"),
              "ok": "yes" if cpu.get("avx2") else ("warn" if cpu.get("avx") else "no")},
             {"label": "Memory", "value": f"{facts.get('ram_installed_gb') or facts['ram_gb']:.0f} GB",
-             "ok": "yes" if eight_gb(facts) else ("warn" if facts["ram_gb"] >= MIN_RAM_GB else "no")},
+             "ok": "yes" if eight_gb(facts) else ("warn" if enough_memory(facts) else "no")},
             {"label": "Graphics", "value": (f"{gpu['name']} · {gpu['vram_mb'] / 1024:.0f} GB · driver {gpu['driver']}" if gpu.get("present")
                                             else "No NVIDIA graphics card (the processor transcribes)"),
              "ok": "yes" if cuda else "warn"},

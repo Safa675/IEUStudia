@@ -10,6 +10,7 @@ IEULearn login). Memory: tens of MB (no speech engine, no browser engine).
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import threading
@@ -22,6 +23,8 @@ log = logging.getLogger("studia")
 CMD_OPEN, CMD_SYNC, CMD_PAUSE, CMD_STARTUP, CMD_QUIT = 1, 2, 3, 4, 9
 FIRST_CHECK_S = 90            # after signing in to Windows, let the PC settle first
 KEEP_SEEN = 3000
+REMIND_FROM = dt.time(17)     # a reminder comes the evening before, from 17:00 ...
+REMIND_UNTIL = dt.time(14)    # ... or on the day itself until 14:00, if the PC was off that evening
 
 
 def instance_name() -> str:
@@ -83,8 +86,14 @@ def _load_seen() -> dict[str, list[str]]:
 
 
 def _save_seen(seen: dict[str, list[str]]) -> None:
+    """Add to what was told: the app and the helper may both have told something since this was loaded."""
+    now = _load_seen()
+    merged = {k: list(dict.fromkeys(now.get(k, []) + seen.get(k, [])))[-KEEP_SEEN:] for k in set(now) | set(seen)}
+    path = _seen_path()
+    tmp = path.with_name(path.name + ".tmp")
     try:
-        _seen_path().write_text(json.dumps({k: v[-KEEP_SEEN:] for k, v in seen.items()}), encoding="utf-8")
+        tmp.write_text(json.dumps(merged), encoding="utf-8")
+        tmp.replace(path)
     except OSError:
         pass
 
@@ -145,8 +154,79 @@ def summarize(lib: Any, settings: Any, cfg: Any, new_recordings: list[str], new_
     targets = {cid for _, cid, _ in lines}
     title = "IEUStudia: heads-up" if lines[0][0] == 0 else "IEUStudia: new on IEULearn"
     text = "\n".join(line for _, _, line in lines[:4]) + (f"\n+{len(lines) - 4} more" if len(lines) > 4 else "")
-    payload = f"course:{next(iter(targets))}" if len(targets) == 1 else "home"
+    tab = {0: "announcements", 1: "announcements", 2: "lectures", 3: "materials"}[lines[0][0]]   # what it's about
+    payload = f"course:{next(iter(targets))}:{tab}" if len(targets) == 1 else "home"
     return title, text, payload
+
+
+def _day(d: dt.date) -> str:
+    from .outputs.common import MONTHS, WEEKDAYS_SHORT
+
+    return f"{WEEKDAYS_SHORT[d.weekday()]} {d.day} {MONTHS[d.month - 1][:3]}"
+
+
+def _los(los: list[int]) -> str:
+    """[3, 4, 6] → "LO3–LO4, LO6"."""
+    runs: list[list[int]] = []
+    for n in sorted(set(los)):
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    return ", ".join(f"LO{a}" if a == b else f"LO{a}–LO{b}" for a, b in runs)
+
+
+def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, list[str]]
+              ) -> Optional[tuple[str, str, str]]:
+    """The announced quizzes and exams to remind you of now, each once (``seen["rem"]``): a quiz the evening before
+    the first of its week's class days still to come (or that day, until that class is over), a midterm or final the
+    evening before its week, since the exam schedule gives its day (until 14:00 on the first day). One notification
+    (title, text, what clicking it opens) or None. ``events``: calendar_export.assessment_events."""
+    told = set(seen.get("rem", []))
+    today, hm = now.date(), f"{now:%H:%M}"
+    due = []
+    for e in events:
+        quiz = e.get("kind") == "quiz"
+        classes = list(zip(e.get("classes") or [], e.get("ends") or ["23:59"] * len(e.get("classes") or [])))
+        if quiz and classes:
+            left = [(d, end) for d, end in classes if d > today.isoformat() or (d == today.isoformat() and end > hm)]
+            if not left:                                  # all its class hours are over: it's done
+                continue
+            first = dt.date.fromisoformat(left[0][0])
+            until = dt.datetime.combine(first, dt.time.fromisoformat(left[0][1]))
+            rest = [dt.date.fromisoformat(d) for d, _ in left[1:]]
+        else:
+            first, rest = dt.date.fromisoformat(e["start"]), []
+            until = dt.datetime.combine(first, REMIND_UNTIL)
+        # a quiz moved to another week is said again; an exam week once, even when an announcement replaces the
+        # syllabus's word for it
+        key = f"{e['uid']}@{e['start']}" if quiz else f"{e.get('course_id') or e['course']}-exam-week{e['week']}"
+        if key not in told and dt.datetime.combine(first - dt.timedelta(days=1), REMIND_FROM) <= now <= until:
+            due.append((key, e, first, rest, len(classes)))
+    if not due:
+        return None
+    seen.setdefault("rem", []).extend(key for key, *_ in due)
+    lines = []
+    for _, e, first, rest, n in due:
+        when = "today" if first == today else f"tomorrow ({_day(first)})"
+        los = f" Covers {_los(e['los'])}." if e.get("los") else ""
+        if e.get("kind") == "quiz" and n:
+            lines.append(f"{e['course']}: {e['name']} {'may be ' if n > 1 else ''}{when}"
+                         f"{' or ' + _day(rest[0]) if rest else ''}, as announced.{los}")
+        elif e.get("kind") == "quiz":
+            lines.append(f"{e['course']}: {e['name']} is in week {e['week']}, which starts {when}.{los}")
+        else:
+            lines.append(f"{e['course']}: {e['name']} is in week {e['week']}, which starts {when}. "
+                         f"The exam schedule on IEULearn has the day.{los}")
+    _, e, first, rest, n = due[0]
+    title = "IEUStudia: coming up"
+    if len(due) == 1 and e.get("kind") == "quiz" and n == 1:
+        title = f"IEUStudia: {e['name']} {'today' if first == today else 'tomorrow'}"
+    payload = "home"
+    if len(due) == 1 and e.get("course_id"):           # Get ready knows what was announced; a syllabus week: the week
+        payload = (f"week:{e['course_id']}:{e['week']}" if "-syllabus-week" in e["uid"]
+                   else f"ready:{e['course_id']}:{e['name']}")
+    return title, "\n".join(lines[:4]), payload
 
 
 # ----------------------------------------------------------------------------- the helper
@@ -254,6 +334,8 @@ class Helper:
         try:
             from . import secrets_store
 
+            seen = _load_seen()
+            note = None
             sync = SyncService(lib, lambda: settings, log)
             if not sync.has_credentials():
                 if secrets_store.rejected():
@@ -262,26 +344,34 @@ class Helper:
                     if not self.told_rejected:
                         self.told_rejected = True
                         self.tray.notify("IEULearn didn't accept your saved password",
-                                         "Did you change it? Open IEUStudia and sign in again; until then there are "
-                                         "no notifications.")
+                                         "Did you change it? Open IEUStudia and sign in again; until then it can't "
+                                         "check for new lectures.")
                         return True
-                    return False
-                self.tray.set_tooltip("IEUStudia · sign in in the app to get notifications")
-                return False
-            self.told_rejected = False
-            res = sync.sync()
-            content = sync.sync_content()
-            seen = _load_seen()
-            note = summarize(lib, settings, self.cfg, res.new_ids, content["new_announcements"],
-                             content["new_materials"], seen)
+                else:
+                    self.tray.set_tooltip("IEUStudia · sign in in the app to get notifications")
+            else:
+                self.told_rejected = False
+                try:
+                    res = sync.sync()
+                    content = sync.sync_content()
+                    note = summarize(lib, settings, self.cfg, res.new_ids, content["new_announcements"],
+                                     content["new_materials"], seen)
+                    self.last = time.strftime("%H:%M")
+                    self.tray.set_tooltip(f"IEUStudia · checked {self.last}")
+                    log.info("Helper: checked IEULearn (%d new recordings, %d announcements, %d files)",
+                             len(res.new_ids), len(content["new_announcements"]), len(content["new_materials"]))
+                except Exception:  # noqa: BLE001 - IEULearn can't be reached: the reminders still come
+                    log.warning("Helper: check failed", exc_info=True)
+            if note is None and self.cfg.notify_reminders and not self.paused:     # one notification at a time
+                from .calendar_export import assessment_events
+
+                told = _load_seen().get("rem", [])      # the app may have reminded meanwhile (the check takes a while)
+                seen["rem"] = list(dict.fromkeys(told + seen.get("rem", [])))
+                note = reminders(assessment_events(lib, settings), dt.datetime.now(), seen)
             _save_seen(seen)
-            self.last = time.strftime("%H:%M")
-            self.tray.set_tooltip(f"IEUStudia · checked {self.last}")
             told = bool(note) and not self.paused
             if told:
                 self.tray.notify(*note)
-            log.info("Helper: checked IEULearn (%d new recordings, %d announcements, %d files)",
-                     len(res.new_ids), len(content["new_announcements"]), len(content["new_materials"]))
             return told
         finally:
             lib.close()

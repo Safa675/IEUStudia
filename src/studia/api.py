@@ -10,7 +10,6 @@ import logging
 import queue
 import threading
 import time
-import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -19,7 +18,8 @@ from .cancel import Cancelled
 from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
 from .services import NOTE_KINDS, Services
-from .winutil import flash_taskbar, open_path, reveal, set_clipboard
+from .winutil import (TaskbarProgress, flash_taskbar, is_foreground, normal_priority, open_in_browser, open_path,
+                      reveal, set_clipboard)
 
 log = logging.getLogger("studia")
 AUTO_SYNC_S = 30 * 60        # while the app is open: look for new lectures, materials and announcements
@@ -59,6 +59,13 @@ class Api:
         self._update_cancel: Optional[threading.Event] = None
         self._update_running = False
         self._update_installer: Optional[Any] = None    # downloaded: app.py runs it once the window has closed
+        self._hwnd = 0                                  # the window (app.py sets it once it's shown)
+        self._taskbar = TaskbarProgress()
+        self._queue_seen: dict[str, Any] = {}           # the last queue event (the taskbar button shows it)
+        self._cur_progress: tuple[str, float] = ("", 0.0)
+        self._notifier: Optional[Any] = None
+        self._notify_lock = threading.Lock()
+        self._remind_lock = threading.Lock()
         threading.Thread(target=self._dispatch, name="ui-events", daemon=True).start()
         if services is not None:
             self._set_services(services)
@@ -126,13 +133,97 @@ class Api:
 
     def _on_service_event(self, evt: dict[str, Any]) -> None:
         self._push(evt)
-        if evt.get("type") == "job" and evt.get("final"):
+        kind = evt.get("type")
+        if kind in ("queue", "job"):
+            try:
+                self._show_progress(evt)
+            except Exception:  # noqa: BLE001 - cosmetic
+                log.debug("taskbar progress failed", exc_info=True)
+        if kind == "job" and evt.get("final"):
             self._courses_dirty.set()
-            if evt.get("batch_done") and evt.get("stage") in ("done", "failed"):
+            if evt.get("batch_done"):
                 try:
-                    flash_taskbar(getattr(self, "_hwnd", 0))
+                    if evt.get("stage") in ("done", "failed"):
+                        flash_taskbar(self._hwnd)
+                    threading.Thread(target=self._tell_batch_done, args=(evt,), name="batch-done", daemon=True).start()
                 except Exception:  # noqa: BLE001 - cosmetic
-                    pass
+                    log.debug("telling the batch is done failed", exc_info=True)
+
+    def _show_progress(self, evt: dict[str, Any]) -> None:
+        """The taskbar button fills up as the queued lectures are transcribed (yellow while paused)."""
+        if evt.get("type") == "queue":
+            self._queue_seen = evt
+        q = self._queue_seen
+        jobs, b = q.get("jobs") or [], q.get("batch") or {}
+        if not jobs:
+            self._taskbar.set(self._hwnd, TaskbarProgress.OFF)
+            return
+        cur = next((j for j in jobs if j["stage"] in ("transcribing", "writing")), None)
+        if cur and evt.get("type") == "job" and evt.get("id") == cur["id"] and not evt.get("final"):
+            self._cur_progress = (cur["id"], float(evt.get("progress") or 0.0))
+        p = self._cur_progress[1] if cur and self._cur_progress[0] == cur["id"] else cur["progress"] if cur else 0.0
+        total = b.get("total") or len(jobs)
+        self._taskbar.set(self._hwnd, TaskbarProgress.PAUSED if q.get("paused") else TaskbarProgress.NORMAL,
+                          (b.get("finished", 0) + p) / max(1, total))
+
+    def _tell_batch_done(self, evt: dict[str, Any]) -> None:
+        """Transcription you may have left running in the background is done: a Windows notification (only when the
+        window isn't the one you're using: it says so itself then)."""
+        r = evt.get("batch_result") or {}                 # none while IEUStudia closes
+        done, failed = int(r.get("done") or 0), int(r.get("failed") or 0)
+        if not (done or failed) or is_foreground(self._hwnd):
+            return
+        last = r.get("last_done") or {}                   # the lecture that was done (the last to end may be another)
+        rec = (self._s.lib.get_recording(last["id"]) if done == 1 and not failed and last.get("id")
+               and not last.get("local") else None)
+        if rec is not None:
+            title, text, target = (f"Transcribed: {last.get('title') or 'your lecture'}",
+                                   "It's ready to read. Click to open it.", f"day:{rec.day_key}")
+        else:
+            title = f"{done} lecture{'s' if done != 1 else ''} transcribed" if done else "Transcription finished"
+            text = " ".join(filter(None, [
+                ("They're" if done > 1 else "It's") + " ready to read in IEUStudia." if done else "",
+                f"{failed} couldn't be transcribed: the course page says why." if failed > 1 else
+                "1 couldn't be transcribed: the course page says why." if failed else ""]))
+            target = "home"
+        self._notify(title, text, target)
+
+    def _notify(self, title: str, text: str, target: str = "home") -> None:
+        from .tray import Notifier
+
+        with self._notify_lock:                           # one icon, however many threads tell something at once
+            if self._notifier is None:
+                self._notifier = Notifier(Path(__file__).with_name("assets") / "icon.ico", self._notification_clicked)
+            self._notifier.notify(title, text, target)
+
+    def _notification_clicked(self, target: Optional[Any]) -> None:
+        from .winutil import bring_to_front
+
+        if self._hwnd:
+            bring_to_front(self._hwnd)
+        if isinstance(target, str) and target:
+            self._push({"type": "open", "target": target})
+
+    def _remind(self) -> None:
+        """The evening before an announced quiz (and before an exam week): a reminder, once. In the window if you're
+        using it, else as a Windows notification. The tray helper does the same while the window is closed."""
+        from . import appconfig
+        from .agent import _load_seen, _save_seen, reminders
+        from .calendar_export import assessment_events
+
+        if not appconfig.load().notify_reminders:
+            return
+        with self._remind_lock:                           # two syncs ending together remind once
+            seen = _load_seen()
+            note = reminders(assessment_events(self._s.lib, self._s.settings), dt.datetime.now(), seen)
+            if note is None:
+                return
+            _save_seen(seen)
+        title, text, target = note
+        if is_foreground(self._hwnd):
+            self._push({"type": "toast", "level": "info", "message": text.replace("\n", " · ")})
+        else:
+            self._notify(title, text, target)
 
     def _dispatch(self) -> None:
         """Deliver events to the page from one thread; coalesce bursts (only the latest job/queue state)."""
@@ -211,6 +302,7 @@ class Api:
             "profile": profile.__dict__ if profile else None,
             "settings": self._s.settings.to_json(), "last_sync": self._s.lib.get_meta("last_sync"),
             "courses": self._course_views() if signed_in else [], "queue": self._s.jobs.snapshot(),
+            "paused": self._s.jobs.paused(), "resume": self._s.jobs.leftover_view() if signed_in else None,
             **self._profiles_view(),
         }
 
@@ -434,8 +526,10 @@ class Api:
 
         if which == "chatgpt":
             ai_setup.forget_test("chatgpt")
-            return {"ok": True, **chatgpt.start_sign_in(self._ai_event, consent=bool(consent))}
-        start_login(which)
+            return {"ok": True, **chatgpt.start_sign_in(self._ai_event, consent=bool(consent),
+                                                        open_browser=open_in_browser)}
+        with normal_priority():
+            start_login(which)
         return {"ok": True}
 
     def _ai_event(self, e: dict[str, Any]) -> None:
@@ -588,11 +682,12 @@ class Api:
 
         if profile_id == accounts.load()[0]:
             return {"ok": True, "same": True}
-        if self._services is not None and self._services.jobs.busy():
-            if not force:
-                return {"ok": False, "busy": True, "error": "A transcription is still running."}
-            self._services.jobs.cancel(None)
+        busy = self._services is not None and self._services.jobs.busy()
+        if busy and not force:
+            return {"ok": False, "busy": True, "error": "A transcription is still running."}
         acc = accounts.set_active(profile_id)
+        if busy:
+            self._services.jobs.shutdown()           # what is still waiting is kept for this profile
         log.info("Switching to profile %s", acc.id)
         self._restart = True
         timer = threading.Timer(0.4, self._close_for_restart)     # the page shows "Switching…" first
@@ -651,6 +746,10 @@ class Api:
             self._push({"type": "sync", "phase": "error", "message": str(exc) or "Sync failed", **q})
         finally:
             self._sync_lock.release()
+            try:                                          # from what is on this PC: also when IEULearn can't be reached
+                self._remind()
+            except Exception:  # noqa: BLE001 - a reminder never fails a sync
+                log.warning("Reminders failed", exc_info=True)
         return False
 
     @staticmethod
@@ -712,12 +811,12 @@ class Api:
             try:
                 needs = course_needs(self._s.lib, self._s.settings, ids, self._s.jobs.active_ids())
                 order = queue_order(needs)
-                queued = self._s.jobs.enqueue(order) if order else 0
+                queued = self._s.jobs.enqueue(order, batch=True) if order else 0     # after what you ask for
                 mats = [m for n in needs for m in n.materials] if materials else []
                 if mats:
                     self.materials_download(mats)
                 self._courses_dirty.set()
-                self._push({"type": "queue", "jobs": self._s.jobs.snapshot()})
+                self._push(self._s.jobs.queue_event())
                 self._push({"type": "catchup", "phase": "done", "scope": scope, "lectures": queued,
                             "materials": len(mats), "audio_s": round(sum(n.audio_s for n in needs)),
                             "waiting": [n.code for n in needs if n.needs_section and n.waiting]})
@@ -731,22 +830,53 @@ class Api:
     # ------------------------------------------------------------------ transcription
     @safe
     def transcribe(self, ids: list[str]) -> dict[str, Any]:
+        """Queue lectures you asked for: they go before a full or course sync's batch."""
         n = self._s.jobs.enqueue([str(i) for i in ids])
         self._courses_dirty.set()
-        self._push({"type": "queue", "jobs": self._s.jobs.snapshot()})
+        self._push(self._s.jobs.queue_event())
         return {"ok": True, "queued": n}
 
     @safe
     def transcribe_day(self, day_key: str) -> dict[str, Any]:
-        _, recs = self._s.day(day_key)
+        from .sections import available_sections, classify, guess_my_section
+
+        course, recs = self._s.day(day_key)
         s = self._s.settings
         ids = [r.delivery_id for r in recs if not r.duplicate_of and not r.hidden and r.status != "done"
                and not (0 < r.duration_s < s.min_duration_s)]
+        prefs = s.prefs(course.id)
+        every = self._s.lib.recordings(course.id)
+        if prefs.show_mode != "all" and len(available_sections(every)) > 1:
+            mine = classify(course, every, prefs.my_section or guess_my_section(course))
+            if any(mine.get(r.delivery_id) is not False for r in recs):   # yours that day: not the other sections'
+                ids = [i for i in ids if mine.get(i) is not False]        # (as Sync course does)
         return self.transcribe(ids)
 
     @safe
     def cancel(self, job_id: Optional[str] = None) -> dict[str, Any]:
         self._s.jobs.cancel(job_id or None)
+        return {"ok": True}
+
+    @safe
+    def queue_first(self, job_id: str) -> dict[str, Any]:
+        """Do this lecture next."""
+        return {"ok": self._s.jobs.first(str(job_id))}
+
+    @safe
+    def queue_pause(self, on: bool) -> dict[str, Any]:
+        self._s.jobs.pause(bool(on))
+        return {"ok": True, "paused": self._s.jobs.paused()}
+
+    @safe
+    def queue_resume(self) -> dict[str, Any]:
+        """Go on with the lectures that were still waiting when IEUStudia closed."""
+        n = self._s.jobs.resume_leftover()
+        self._courses_dirty.set()
+        return {"ok": True, "queued": n}
+
+    @safe
+    def queue_forget(self) -> dict[str, Any]:
+        self._s.jobs.forget_leftover()
         return {"ok": True}
 
     @safe
@@ -766,9 +896,14 @@ class Api:
         detail = views.day_detail(self._s.lib, self._s.settings, day_key, self._s.day_files(day_key))
         if detail is None:
             return {"ok": False, "error": "This class day no longer exists."}
+        from .outputs.flashcards import parse_cards
+
         files = detail["files"]
         detail["notes"] = [{"kind": k, "label": NOTE_KINDS[k], "md": Path(files[f"notes:{k}"]).read_text(encoding="utf-8")}
                            for k in files.get("notes_kinds", [])]          # newest first
+        for n in detail["notes"]:
+            if n["kind"] == "flashcards":                                  # to practise them one by one
+                n["cards"] = parse_cards(n["md"])
         return {"ok": True, "day": detail}
 
     @safe
@@ -847,9 +982,22 @@ class Api:
 
             try:
                 self._push({"type": "material", "id": rid, "state": "downloading", "done": 0, "total": 0})
-                path = self._s.materials.download(rid, session, progress)
+                for wait in (5, 15, 30, 0):            # no connection (Wi-Fi coming back after sleep): wait it out
+                    try:
+                        path = self._s.materials.download(rid, session, progress)
+                        break
+                    except NetworkError:               # no connection, or a timeout
+                        if not wait:
+                            raise
+                        time.sleep(wait)
                 pages = self._s.materials.index_text(rid)
                 self._push({"type": "material", "id": rid, "state": "done", "path": str(path), "pages": pages})
+            except NetworkError as exc:                # still none: the rest would fail the same way, say it once
+                with self._mat_lock:
+                    rest, self._mat_queue = self._mat_queue[:], []
+                log.warning("Materials stopped: %s", exc)
+                for i, one in enumerate([rid, *rest]):
+                    self._push({"type": "material", "id": one, "state": "error", "error": str(exc), "quiet": i > 0})
             except NeedLogin:
                 try:
                     self._s.sync.ensure_login()
@@ -946,7 +1094,7 @@ class Api:
     @safe
     def open_url(self, url: str) -> dict[str, Any]:
         if url.startswith(("https://", "http://")):
-            webbrowser.open(url)
+            open_in_browser(url)
         return {"ok": True}
 
     @safe
@@ -985,7 +1133,9 @@ class Api:
                 reveal(out.get("pdf") or out["zip"])
             except Exception as exc:  # noqa: BLE001
                 log.exception("export failed")
-                self._push({"type": "export", "phase": "error", "day_key": day_key, "message": str(exc)})
+                from .net import plain_error
+
+                self._push({"type": "export", "phase": "error", "day_key": day_key, "message": plain_error(exc)})
 
         threading.Thread(target=run, name="export", daemon=True).start()
         return {"ok": True}
@@ -1015,8 +1165,14 @@ class Api:
                 path = self._s.ai_notes(day_key, template, include_slides, self._s.settings.ai_model, cancel,
                                         lambda t: self._push({"type": "ai", "phase": "progress", "day_key": day_key,
                                                               "text": t, **kind}))
-                self._push({"type": "ai", "phase": "done", "day_key": day_key, "path": str(path),
-                            "text": path.read_text(encoding="utf-8"), **kind})
+                text = path.read_text(encoding="utf-8")
+                cards = {}
+                if template == "flashcards":                  # to practise them one by one
+                    from .outputs.flashcards import parse_cards
+
+                    cards = {"cards": parse_cards(text)}
+                self._push({"type": "ai", "phase": "done", "day_key": day_key, "path": str(path), "text": text,
+                            **kind, **cards})
             except Cancelled:
                 self._push({"type": "ai", "phase": "error", "day_key": day_key, "message": "", "cancelled": True, **kind})
             except Exception as exc:  # noqa: BLE001

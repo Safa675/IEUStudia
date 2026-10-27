@@ -70,6 +70,26 @@ def _now() -> str:
     return dt.datetime.now().isoformat(timespec="seconds")
 
 
+def _fts_word(word: str, prefix: bool = False) -> str:
+    """A query word for FTS5 however its i's were written: the tokenizer folds I and İ to i but keeps ı, so "SINAV"
+    is indexed as "sinav" and "sınav" as "sınav". Every spelling of (up to four of) its i's is tried."""
+    base = word.replace("İ", "i").replace("I", "i").lower().replace("ı", "i")
+    spots = [k for k, ch in enumerate(base) if ch == "i"][:4]
+    forms = []
+    for mask in range(1 << len(spots)):
+        chars = list(base)
+        for bit, k in enumerate(spots):
+            if mask >> bit & 1:
+                chars[k] = "ı"
+        forms.append('"' + "".join(chars) + '"' + ("*" if prefix else ""))
+    return forms[0] if len(forms) == 1 else "(" + " OR ".join(forms) + ")"
+
+
+def _fts_query(words: list[str]) -> str:
+    """All the words, the last one as a prefix (it may still be being typed)."""
+    return " AND ".join(_fts_word(w, i == len(words) - 1) for i, w in enumerate(words))
+
+
 class Library:
     def __init__(self, path: Path, app_version: str = "") -> None:
         """``app_version``: the app opening it; when that is a new version, a copy of the library as the previous
@@ -224,8 +244,10 @@ class Library:
         with self._lock:
             return self.db.execute("SELECT 1 FROM recordings WHERE course_id=? LIMIT 1", (course_id,)).fetchone() is not None
 
-    def merge_recordings(self, course_id: str, recs: list[Recording], first_sync: bool) -> list[str]:
-        """Insert/update a course's recordings; returns ids that are NEW since the last sync."""
+    def merge_recordings(self, course_id: str, recs: list[Recording], first_sync: bool,
+                         new_after: str = "") -> list[str]:
+        """Insert/update a course's recordings; returns ids that are NEW since the last sync. ``new_after``: in a
+        first sync, recordings that started after this time are new all the same."""
         now = _now()
         new_ids: list[str] = []
         with self._lock:
@@ -256,7 +278,7 @@ class Library:
                         (r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url, r.session_id, r.kind,
                          r.section_tag, now, r.delivery_id))
                 else:
-                    is_new = 0 if first_sync else 1
+                    is_new = 0 if first_sync and not (new_after and start > new_after) else 1
                     cur = self.db.execute(
                         "INSERT OR IGNORE INTO recordings(delivery_id, course_id, folder_id, folder_path, name, start, "
                         "duration_s, viewer_url, session_id, kind, section_tag, is_new, first_seen, last_seen) "
@@ -476,7 +498,7 @@ class Library:
                                         "file_name, kind, ext, url, download_url, first_seen, last_seen, is_new) "
                                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                         (r.id, course_id, u.id, pos, r.title, r.file_name, r.kind, r.ext, r.url,
-                                         r.download_url, now, now, 0 if first_sync else 1))
+                                         r.download_url, "" if first_sync else now, now, 0 if first_sync else 1))
                         if not first_sync:
                             new_ids.append(r.id)
             if units:   # an empty plan is more likely a hiccup than a course without materials: keep what we know
@@ -590,10 +612,10 @@ class Library:
             return []
         with self._lock:
             if self.fts:
-                q = " ".join(f'"{w}"' for w in words[:-1]) + (" " if len(words) > 1 else "") + f'"{words[-1]}"*'
+                q = _fts_query(words)
                 try:
                     rows = self.db.execute(
-                        "SELECT resource_id, page, snippet(material_fts, 2, '[', ']', '…', 14) FROM material_fts "
+                        "SELECT resource_id, page, snippet(material_fts, 2, char(2), char(3), '…', 14) FROM material_fts "
                         "WHERE material_fts MATCH ? ORDER BY rank LIMIT ?", (q, limit)).fetchall()
                     return [{"resource_id": r[0], "page": int(r[1]), "snippet": r[2]} for r in rows]
                 except sqlite3.OperationalError:
@@ -615,13 +637,13 @@ class Library:
     def search_any(self, query: str, course_id: Optional[str] = None, limit: int = 8) -> dict[str, list[dict[str, Any]]]:
         """Pages of course files and transcript passages that share the most words with ``query`` (any word, best
         first; common words ignored): {"materials": [{resource_id, page, text}], "transcripts": [{delivery_id, t, text}]}."""
-        words = [w for w in re.findall(r"[\w']+", (query or "").lower(), flags=re.UNICODE)
+        words = [w for w in re.findall(r"[\w']+", (query or "").replace("İ", "i").lower(), flags=re.UNICODE)
                  if len(w) >= 3 and w not in self._STOP and not w.isdigit()]
         words = list(dict.fromkeys(words))[:10]
         out: dict[str, list[dict[str, Any]]] = {"materials": [], "transcripts": []}
         if not words or not self.fts:
             return out
-        q = " OR ".join(f'"{w}"*' if len(w) >= 5 else f'"{w}"' for w in words)
+        q = " OR ".join(_fts_word(w, len(w) >= 5) for w in words)
         with self._lock:
             try:
                 rows = self.db.execute(
@@ -787,10 +809,10 @@ class Library:
             return []
         with self._lock:
             if self.fts:
-                q = " ".join(f'"{w}"' for w in words[:-1]) + (" " if len(words) > 1 else "") + f'"{words[-1]}"*'
+                q = _fts_query(words)
                 try:
                     rows = self.db.execute(
-                        "SELECT delivery_id, t, snippet(transcript_fts, 2, '[', ']', '…', 14) AS snip "
+                        "SELECT delivery_id, t, snippet(transcript_fts, 2, char(2), char(3), '…', 14) AS snip "
                         "FROM transcript_fts WHERE transcript_fts MATCH ? ORDER BY rank LIMIT ?", (q, limit)).fetchall()
                     return [{"delivery_id": r[0], "t": float(r[1]), "snippet": r[2]} for r in rows]
                 except sqlite3.OperationalError:

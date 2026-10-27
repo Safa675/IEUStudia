@@ -25,6 +25,14 @@ def _in(iso: str, a: dt.date, b: dt.date) -> bool:
     return bool(iso) and a.isoformat() <= iso[:10] <= b.isoformat()
 
 
+def _overlap(w: dict[str, Any], a: dt.date, b: dt.date) -> int:
+    """How many days of the course week ``w`` fall between ``a`` and ``b``."""
+    if not w["start"]:
+        return 0
+    start, end = dt.date.fromisoformat(w["start"]), dt.date.fromisoformat(w["end"] or w["start"])
+    return max(0, (min(b, end) - max(a, start)).days + 1)
+
+
 def _week(weeks: list[dict[str, Any]], no: Any) -> Optional[dict[str, Any]]:
     """A course week by number, with its dates counted from a dated week when the plan does not list it."""
     w = next((x for x in weeks if x["no"] == no), None)
@@ -56,7 +64,9 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
         d = course_detail(lib, settings, c.id, now=now)
         if d is None:
             continue
-        week = next((w for w in d["weeks"] if w["start"] and w["start"] <= sun.isoformat() and (w["end"] or w["start"]) >= mon.isoformat()), None)
+        # the course week that covers most of this week (IEULearn's weeks of a Wednesday course run Wed-Tue)
+        week = max((w for w in d["weeks"] if _overlap(w, mon, sun) > 0), key=lambda w: _overlap(w, mon, sun),
+                   default=None)
         show_all = settings.prefs(c.id).show_mode == "all"
         lectures = []
         for w in d["weeks"]:
@@ -111,7 +121,7 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
     for c in courses:
         for e in c["coming"]:
             if e["this_week"] and not e["done"]:
-                todo.insert(0, {"kind": "prepare", "course": c["code"], "course_id": c["id"],
+                todo.insert(0, {"kind": "prepare", "course": c["code"], "course_id": c["id"], "name": e["name"],
                                 "text": f"{e['name']} is this week" + (f" (LO{', LO'.join(map(str, e['los']))})" if e["los"] else "")})
     return {"week": {"start": mon.isoformat(), "end": sun.isoformat(), "offset": offset,
                      "label": f"{mon:%d %b} – {sun:%d %b %Y}"}, "courses": courses, "todo": todo[:30]}

@@ -42,8 +42,11 @@ def splash_command(*args: str) -> list[str]:
 
 
 def spawn(cmd: list[str]) -> bool:
+    from .winutil import normal_priority
+
     try:
-        subprocess.Popen(cmd, close_fds=True, creationflags=DETACHED)
+        with normal_priority():          # not the lower priority the app has while it transcribes
+            subprocess.Popen(cmd, close_fds=True, creationflags=DETACHED)
         return True
     except OSError:
         return False

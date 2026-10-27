@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import itertools
 import logging
 import threading
 from pathlib import Path
@@ -76,6 +77,7 @@ def _sigs() -> None:
     user32.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
     user32.DestroyWindow.argtypes = [wt.HWND]
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.UnregisterClassW.argtypes = [wt.LPCWSTR, wt.HINSTANCE]
     shell32.Shell_NotifyIconW.argtypes = [wt.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
     shell32.Shell_NotifyIconW.restype = wt.BOOL
     kernel32.GetModuleHandleW.restype = wt.HMODULE
@@ -87,9 +89,13 @@ MenuItem = tuple[int, str, bool, bool]          # (id, label, checked, enabled);
 
 class Tray:
     def __init__(self, tooltip: str, icon: Path, menu: Callable[[], list[MenuItem]],
-                 on_command: Callable[[int], None], on_open: Callable[[Optional[Any]], None]) -> None:
+                 on_command: Callable[[int], None], on_open: Callable[[Optional[Any]], None],
+                 class_name: str = "IEUStudiaTray", title: str = "IEUStudia helper") -> None:
+        """``class_name``: the installer finds the helper by "IEUStudiaTray" to close it before replacing files (see
+        PrepareToInstall in packaging/IEUStudia.iss); other icons need a name of their own."""
         _sigs()
         self.tooltip = tooltip
+        self.class_name, self.title = class_name, title
         self.icon_path = Path(icon)
         self.menu = menu
         self.on_command = on_command
@@ -209,13 +215,14 @@ class Tray:
 
     def run(self) -> None:
         hinst = kernel32.GetModuleHandleW(None)
+        name = self.class_name
         cls = WNDCLASSEXW()
         cls.cbSize = ctypes.sizeof(WNDCLASSEXW)
         cls.lpfnWndProc = self._proc
         cls.hInstance = hinst
-        cls.lpszClassName = "IEUStudiaTray"
+        cls.lpszClassName = name
         user32.RegisterClassExW(ctypes.byref(cls))
-        self.hwnd = user32.CreateWindowExW(0, "IEUStudiaTray", "IEUStudia helper", 0, 0, 0, 0, 0, None, None, hinst, None)
+        self.hwnd = user32.CreateWindowExW(0, name, self.title, 0, 0, 0, 0, 0, None, None, hinst, None)
         ico = str(self.icon_path)
         self._icon_small = user32.LoadImageW(None, ico, 1, user32.GetSystemMetrics(49), user32.GetSystemMetrics(50), 0x10)
         self._icon_big = user32.LoadImageW(None, ico, 1, 64, 64, 0x10)
@@ -228,3 +235,50 @@ class Tray:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
         self.hwnd = 0
+        user32.UnregisterClassW(name, hinst)
+
+
+_SERIAL = itertools.count(1)         # each notification icon's window class is new (the last may still be closing)
+
+
+class Notifier:
+    """Notifications from the app itself (the tray helper may not be running): an icon appears next to the clock for
+    a notification and goes away when the window is opened from it, or after a while."""
+
+    KEEP_S = 600
+
+    def __init__(self, icon: Path, on_click: Callable[[Optional[Any]], None]) -> None:
+        self.icon = Path(icon)
+        self.on_click = on_click                 # the notification's payload, or None (the icon was clicked)
+        self._tray: Optional[Tray] = None
+        self._timer: Optional[threading.Timer] = None
+        self._lock = threading.Lock()
+
+    def notify(self, title: str, text: str, payload: Any = None) -> None:
+        with self._lock:
+            if self._tray is None:
+                tray = Tray("IEUStudia", self.icon, lambda: [(1, "Open IEUStudia", False, True)],
+                            lambda cmd: self._clicked(None), self._clicked,
+                            class_name=f"IEUStudiaNotify{id(self):x}{next(_SERIAL)}", title="IEUStudia notification")
+                threading.Thread(target=tray.run, name="notifier", daemon=True).start()
+                tray.ready.wait(3)
+                self._tray = tray
+            self._tray.notify(title, text, payload)
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(self.KEEP_S, self.close)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _clicked(self, payload: Optional[Any]) -> None:
+        self.close()
+        self.on_click(payload)
+
+    def close(self) -> None:
+        with self._lock:
+            tray, self._tray = self._tray, None
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+        if tray is not None:
+            tray.stop()

@@ -50,21 +50,22 @@ outcomes and the assessment plan are there too, so you can see which quiz covers
 **Read and search your lectures.** Pick a lecture and it's transcribed on your PC with Whisper. Lectures are mostly in
 English; Turkish parts are kept the way they were said and marked `[TR]`. Each paragraph links back to its moment in
 the recording, and the slides from the screen recording show up next to the text. One search box covers all your
-lectures and course files.
+lectures and course files, in English or Turkish. A long queue can be paused, the lectures you ask for go before a
+full sync's batch, and if you close IEUStudia before it's done, it offers to go on next time.
 
 **Don't miss a quiz.** Whenever a lecture or an announcement mentions a quiz, the midterm, the final, homework or a
 change in the schedule, it shows up on the course page. Before a quiz, *Get ready* lists the lectures to catch up on,
-the files to download and what the lecturer said about it. Quizzes and exams can go into your calendar, and a weekly
-digest sums up what happened.
+the files to download and what the lecturer said about it. The evening before an announced quiz, IEUStudia reminds
+you. Quizzes and exams can go into your calendar, and a weekly digest sums up what happened.
 
 **Get a notification when something new appears.** If you want, IEUStudia keeps checking IEULearn every half hour
 after you close its window (its icon stays next to the clock) and shows a Windows notification for new recordings,
 announcements and files. It can start with Windows. It never transcribes or downloads anything on its own.
 
 **Use AI with your own subscription.** With ChatGPT or Claude you can chat about your lectures (answers point to the
-exact moment they come from), write study notes or flashcards, put together an exam prep pack, or make a video study
-plan: YouTube videos for your weeks, each one checked through its captions against what your course actually
-covers. All of this is optional, see [AI features](#ai-features).
+exact moment they come from), write study notes or flashcards (and practise them one at a time), put together an exam
+prep pack, or make a video study plan: YouTube videos for your weeks, each one checked through its captions against
+what your course actually covers. All of this is optional, see [AI features](#ai-features).
 
 <table>
   <tr>

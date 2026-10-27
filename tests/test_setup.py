@@ -188,9 +188,55 @@ def test_helper_notifications(tmp_path):
     seen = {}
     title, text, payload = summarize(lib, s, cfg, ["s1", "s3"], ["a1", "a2"], [], seen)
     assert title == "IEUStudia: heads-up" and text.splitlines()[0] == "EEE 215: Quiz · Quiz 2 next week"
-    assert "EEE 215: 1 new lecture recording" in text and "Room change" in text and payload == "course:b"
+    assert "EEE 215: 1 new lecture recording" in text and "Room change" in text
+    assert payload == "course:b:announcements"                                         # opens what it's about
     assert summarize(lib, s, cfg, ["s1", "s3"], ["a1", "a2"], [], seen) is None        # already told
     assert summarize(lib, s, cfg, ["s1"], [], [], {}) is None                          # another section's lecture
+    assert summarize(lib, s, cfg, ["s3"], [], [], {})[2] == "course:b:lectures"        # a recording: the lectures
+
+
+def _quiz(**kw):
+    return {"uid": "b-quiz-2", "course": "MATH 240", "name": "Quiz 2", "course_id": "b", "kind": "quiz",
+            "classes": ["2026-10-13", "2026-10-15"], "ends": ["10:20", "12:50"], "los": [3, 4, 6],
+            "start": "2026-10-13", "end": "2026-10-15", "week": 5, **kw}
+
+
+def test_a_quiz_is_reminded_once_the_evening_before():
+    from studia.agent import reminders
+
+    seen = {}
+    assert reminders([_quiz()], dt.datetime(2026, 10, 12, 16, 30), seen) is None          # not yet
+    title, text, payload = reminders([_quiz()], dt.datetime(2026, 10, 12, 19, 0), seen)
+    assert title == "IEUStudia: coming up" and payload == "ready:b:Quiz 2"                # a click: Get ready
+    assert text == "MATH 240: Quiz 2 may be tomorrow (Tue 13 Oct) or Thu 15 Oct, as announced. Covers LO3–LO4, LO6."
+    assert reminders([_quiz()], dt.datetime(2026, 10, 12, 21, 0), seen) is None            # said once
+    assert reminders([_quiz()], dt.datetime(2026, 10, 13, 9, 0), {})[1].startswith("MATH 240: Quiz 2 may be today or Thu")
+    assert reminders([_quiz()], dt.datetime(2026, 10, 13, 11, 0), {}) is None             # Tuesday's class is over
+    late = reminders([_quiz()], dt.datetime(2026, 10, 14, 18, 0), {})                      # off on Monday evening
+    assert late[1].startswith("MATH 240: Quiz 2 may be tomorrow (Thu 15 Oct), as announced")
+    assert reminders([_quiz()], dt.datetime(2026, 10, 15, 13, 0), {}) is None             # all its classes are over
+    moved = _quiz(start="2026-10-20", classes=["2026-10-20"], ends=["10:20"], end="2026-10-20", week=6)
+    title, text, _ = reminders([moved], dt.datetime(2026, 10, 19, 18, 0), seen)           # moved a week: said again
+    assert title == "IEUStudia: Quiz 2 tomorrow" and text.startswith("MATH 240: Quiz 2 tomorrow (Tue 20 Oct), as announced")
+
+
+def test_an_exam_week_is_reminded_once_without_a_day():
+    from studia.agent import reminders
+
+    mid = _quiz(uid="b-syllabus-week8", name="Midterm Exam", kind="exam", classes=[], ends=[], los=[],
+                start="2026-11-09", end="2026-11-15", week=8)
+    seen = {}
+    title, text, payload = reminders([mid], dt.datetime(2026, 11, 8, 20, 0), seen)
+    assert text == "MATH 240: Midterm Exam is in week 8, which starts tomorrow (Mon 9 Nov). The exam schedule on IEULearn has the day."
+    assert payload == "week:b:8"                                    # the syllabus's word: Get ready doesn't know it
+    announced = {**mid, "uid": "b-midterm-1", "name": "Midterm 1", "kind": "midterm"}
+    assert reminders([announced], dt.datetime(2026, 11, 9, 9, 0), seen) is None            # the same week, said once
+    title, text, payload = reminders([announced, _quiz(course="EEE 215", uid="c-quiz-1", course_id="c",
+                                                       start="2026-11-09", classes=["2026-11-09"], ends=["15:00"],
+                                                       los=[])], dt.datetime(2026, 11, 8, 20, 0), {})
+    assert title == "IEUStudia: coming up" and payload == "home"
+    assert text.splitlines() == ["MATH 240: Midterm 1 is in week 8, which starts tomorrow (Mon 9 Nov). The exam schedule "
+                                 "on IEULearn has the day.", "EEE 215: Quiz 2 tomorrow (Mon 9 Nov), as announced."]
 
 
 def test_stop_background_checks_in_the_tray_menu_stays_off(monkeypatch):

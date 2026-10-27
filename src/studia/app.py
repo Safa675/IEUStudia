@@ -382,12 +382,13 @@ def _main(argv: Optional[list[str]] = None) -> None:
             return False
         busy = services is not None and services.jobs.busy()
         if busy and not window.create_confirmation_dialog(
-                "Transcription in progress", "A transcription is still running. Quit and cancel it?"):
+                "Transcription in progress", "IEUStudia is still transcribing. Quit anyway? Lectures that aren't "
+                "transcribed yet are kept, and next time IEUStudia offers to go on with them."):
             return False
         if setup and api._setup_cancel is not None:
             api._setup_cancel.set()
         if busy:
-            services.jobs.cancel(None)
+            services.jobs.shutdown()
         return True
 
     window.events.shown += lambda: _on_shown(api, name)
@@ -397,6 +398,8 @@ def _main(argv: Optional[list[str]] = None) -> None:
     webview.start(gui="edgechromium", debug=debug, private_mode=False,
                   storage_path=str(app_dir() / "webview"))
     _stop_watchdog(watchdog)
+    if api._notifier is not None:                # its icon next to the clock goes with the window
+        api._notifier.close()
     if started.get("services") is not None:
         started["services"].shutdown()
     log.info("IEUStudia closed")

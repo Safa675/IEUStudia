@@ -390,7 +390,7 @@ def test_a_lecture_cancelled_while_it_waits_stays_cancelled_when_its_turn_comes(
     time.sleep(0.3)
     later = [e for e in env["events"][cancelled_at:] if e.get("type") == "job" and e.get("id") == cancelled]
     assert not later and env["lib"].get_recording(cancelled).status == "available"
-    assert jm._audio_places.acquire(blocking=False)    # the place was given back
+    assert jm._places == 1 and not jm._place_wait       # the place was given back
 
 
 def test_cancel_while_panopto_cant_be_reached_is_a_cancel_not_a_failure(env):
@@ -410,3 +410,199 @@ def test_cancel_while_panopto_cant_be_reached_is_a_cancel_not_a_failure(env):
     jm.cancel("r1")
     assert wait_for(lambda: finals(env["events"], "r1"))
     assert finals(env["events"], "r1")[0]["stage"] == "cancelled" and env["lib"].get_recording("r1").status == "available"
+
+
+# ------------------------------------------------------------------ order, pause, and the queue across restarts
+def _more(env, ids, day=15):
+    env["lib"].merge_recordings("c", [Recording(delivery_id=d, course_id="c", folder_id="f", folder_path="", name=d,
+                                                start=dt.datetime(2026, 10, day, 8 + i, 0), duration_s=2400, viewer_url="u")
+                                      for i, d in enumerate(ids)], first_sync=False)
+
+
+class StepEngine(FakeEngine):
+    """A slow processor that finishes one lecture each time the test says so, and notes the order they started in."""
+
+    def __init__(self):
+        super().__init__()
+        self.started = []
+        self.steps = threading.Semaphore(0)
+
+    def transcribe(self, audio, progress, cancel, meta):
+        self.started.append(meta["delivery_id"])
+        while not self.steps.acquire(timeout=0.05):
+            if cancel.is_set():
+                from studia.cancel import Cancelled
+                raise Cancelled()
+        return super().transcribe(audio, progress, cancel, meta)
+
+
+def test_lectures_asked_for_go_before_a_sync_batch_and_do_next_goes_first(env):
+    _more(env, ["b1", "b2", "b3", "b4", "u1"])
+    env["state"]["engine"] = engine = StepEngine()
+    jm = env["make"](parallel_downloads=1)
+    jm.enqueue(["b1", "b2", "b3", "b4"], batch=True)              # a full sync's batch
+    assert wait_for(lambda: engine.started == ["b1"])
+    assert wait_for(lambda: jm.job("b3") is not None and jm.job("b3").detail.startswith("Downloaded"))  # b2 is ready
+    jm.enqueue(["u1"])                                             # Transcribe on a class day
+    assert wait_for(lambda: jm.job("u1").detail.startswith("Downloaded"))       # downloaded past the batch's b3, b4
+    assert jm.first("b4") and not jm.first("nope")                 # "Do next"
+    snap = jm.snapshot()
+    assert [j["id"] for j in snap] == ["b1", "b4", "u1", "b2", "b3"] and [j["first"] for j in snap][:2] == [False, True]
+    for n in range(1, 6):
+        assert wait_for(lambda: len(engine.started) == n)
+        time.sleep(0.25)                                           # downloads settle before the next one starts
+        engine.steps.release()
+    assert wait_for(lambda: not jm.busy())
+    assert engine.started == ["b1", "u1", "b4", "b2", "b3"]
+    assert jm._places == jobs_mod.DECODED_MAX and not jm._held and not jm._place_wait
+
+
+def test_do_next_beats_a_lecture_that_is_ready_while_it_is_decoded(env):
+    """Decoding takes a while: the lecture moved up gets the place that comes free, and the one already ready waits."""
+    _more(env, ["b1", "b2", "b3", "b4", "u1"])
+    slow = jobs_mod.decode_audio
+
+    def decode(path, cancel=None):
+        time.sleep(0.4)
+        return slow(path, cancel)
+
+    env["mp"].setattr(jobs_mod, "decode_audio", decode)
+    env["state"]["engine"] = engine = StepEngine()
+    jm = env["make"](parallel_downloads=1)
+    jm.enqueue(["b1", "b2", "b3", "b4"], batch=True)
+    assert wait_for(lambda: engine.started == ["b1"])
+    assert wait_for(lambda: jm.job("b3") is not None and jm.job("b3").detail.startswith("Downloaded"))
+    assert jm.first("b3")
+    assert jm.enqueue(["b4", "u1"]) == 2                           # asked for now: b4 moves ahead of the batch
+    for n in range(1, 6):
+        assert wait_for(lambda: len(engine.started) == n, timeout=15)
+        time.sleep(0.6)                                            # the next ones download and decode meanwhile
+        engine.steps.release()
+    assert wait_for(lambda: not jm.busy(), timeout=15)
+    assert engine.started[:2] == ["b1", "b3"] and engine.started.index("b2") > engine.started.index("b4")
+
+
+def test_a_lecture_that_ends_as_more_is_queued_is_not_kept(env, monkeypatch):
+    """A lecture that ended (cancelled, done) is not written back into what is still to do by a queue change."""
+    jm = env["make"]()
+    env["state"]["engine"] = BlockingEngine()
+    _more(env, ["r3"])
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: jm.job("r1") is not None and jm.job("r1").stage == "transcribing")
+    real = env["lib"].set_status
+
+    def slow(did, status, error=""):                             # the cancel is caught between its steps
+        if did == "r1" and status == "available":
+            jm.enqueue(["r3"])
+        return real(did, status, error)
+
+    monkeypatch.setattr(env["lib"], "set_status", slow)
+    jm.cancel("r1")
+    assert wait_for(lambda: jm.job("r1") is None)
+    jm.cancel("r3")
+    assert wait_for(lambda: not jm.busy())
+    assert env["lib"].get_meta(jobs_mod.QUEUE_KEY) == "[]" and env["make"]().leftover() == []
+
+
+def test_pause_stops_between_passages_and_cancel_still_works(env):
+    import re
+
+    class Passages(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.done = 0
+
+        def transcribe(self, audio, progress, cancel, meta):
+            for i in range(40):
+                progress("transcribe", 0.05 + 0.88 * i / 40, f"Transcribing passage {i} of 40 · ~{40 - i}s left")
+                self.done += 1
+                time.sleep(0.02)
+            return super().transcribe(audio, progress, cancel, meta)
+
+    env["state"]["engine"] = engine = Passages()
+    awake = []
+    env["mp"].setattr(jobs_mod, "KeepAwake", lambda reason: type("K", (), {"on": lambda s: awake.append(True),
+                                                                            "off": lambda s: awake.append(False)})())
+    jm = env["make"]()
+    jm.enqueue(["r1", "r2"])
+    assert wait_for(lambda: engine.done >= 3)
+    jm.pause(True)
+    assert jm.paused() and awake[-1] is False                     # the PC may sleep while paused
+    time.sleep(0.15)
+    stopped = engine.done
+    time.sleep(0.6)
+    assert engine.done == stopped                                  # nothing goes on
+    assert [e for e in env["events"] if e.get("type") == "queue"][-1]["paused"] is True
+    resumed_at = len(env["events"])
+    jm.pause(False)
+    assert awake[-1] is True
+    assert wait_for(lambda: not jm.busy())
+    assert {f["stage"] for i in ("r1", "r2") for f in finals(env["events"], i)} == {"done"} and not jm.paused()
+    # the engine counts the time paused as time spent: it is taken out of its estimates after the pause (the first
+    # message after Continue was estimated before it)
+    after = [e for e in env["events"][resumed_at:] if e.get("type") == "job" and e.get("id") == "r1"
+             and "passage" in (e.get("detail") or "") and e.get("eta_s") is not None]
+    left = [(e["eta_s"], 40 - int(re.search(r"passage (\d+)", e["detail"]).group(1))) for e in after]
+    assert left and left[0][0] == left[0][1] and any(eta < raw for eta, raw in left[1:])
+    base = engine.done
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: engine.done >= base + 2)
+    jm.pause(True)
+    jm.cancel("r1")                                                # cancel while paused
+    assert wait_for(lambda: len(finals(env["events"], "r1")) == 2)
+    assert finals(env["events"], "r1")[-1]["stage"] == "cancelled" and not jm.paused()     # the pause ends with the queue
+
+
+def test_the_queue_is_kept_when_the_app_closes_and_offered_again(env):
+    _more(env, ["r3", "r4", "r5"])                                 # (r2 is a copy of r1: never offered)
+    env["state"]["engine"] = BlockingEngine()
+    jm = env["make"]()
+    jm.enqueue(["r1", "r3"])
+    jm.enqueue(["r4", "r5"], batch=True)
+    assert wait_for(lambda: jm.job("r1") is not None and jm.job("r1").stage == "transcribing")
+    jm.shutdown()                                                  # the app closes while r1 is being transcribed
+    assert wait_for(lambda: not jm.busy())
+    env["lib"].reset_interrupted()
+    again = env["make"]()                                          # the next start
+    assert again.leftover() == ["r1", "r3", "r4", "r5"]
+    assert again.leftover_view() == {"count": 4, "days": 2, "audio_s": 9600, "courses": ["EEE 215"]}
+    env["state"]["engine"] = FakeEngine()
+    assert again.resume_leftover() == 4
+    assert wait_for(lambda: not again.busy())
+    assert again.leftover() == [] and env["lib"].get_meta(jobs_mod.QUEUE_KEY) == "[]"
+    third = env["make"]()
+    third.enqueue(["r1"])
+    third.cancel("r1")                                             # cancelled by you: not offered again
+    assert wait_for(lambda: not third.busy()) and third.leftover() == []
+    env["state"]["engine"] = BlockingEngine()
+    closing = env["make"]()
+    closing.enqueue(["r3"])
+    assert wait_for(lambda: closing.job("r3") is not None and closing.job("r3").stage == "transcribing")
+    closing.shutdown()
+    assert wait_for(lambda: not closing.busy())
+    env["lib"].set_status("r3", "available")
+    fourth = env["make"]()
+    assert fourth.leftover() == ["r3"]
+    fourth.forget_leftover()
+    assert fourth.leftover() == [] and env["make"]().leftover() == []
+
+
+def test_a_transcript_saved_before_its_files_are_written_is_written_at_the_next_start(env):
+    """Closing while the slides are finished: the transcript is saved, and its files are noted as still to write."""
+    gate, waiting = threading.Event(), threading.Event()
+
+    def slides(job, *a):
+        waiting.set()
+        gate.wait(10)
+        return []
+
+    env["mp"].setattr(FakePanopto, "screen_source", lambda self, info: ("https://x/screen", 0.0))
+    lib = env["lib"]
+    jm = jobs_mod.JobManager(lib, FakeSync(), lambda: Settings(parallel_downloads=1, capture_slides=True),
+                             lambda s: env["state"]["engine"], env["events"].append, lambda did: {}, slides)
+    jm.enqueue(["r1"])
+    assert waiting.wait(10) and wait_for(lambda: jm.job("r1") is not None and jm.job("r1").detail == "Finishing slides")
+    assert jm.unwritten() == ["r1"]                  # if IEUStudia closed now, the next start writes its files
+    gate.set()
+    assert wait_for(lambda: not jm.busy())
+    assert jm.unwritten() == [] and lib.get_recording("r1").status == "done"

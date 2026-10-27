@@ -178,6 +178,16 @@ class SyncService:
         except (requests.RequestException, OSError):
             return False
 
+    def _merge(self, course_id: str, recs: list) -> list[str]:
+        """A course's first listing is what was there already (not new). Its folder may have been empty then (the
+        term had not started): a recording that started after that first listing is new."""
+        first = not self.lib.has_recordings(course_id)
+        key = f"listed:{course_id}"
+        since = self.lib.get_meta(key) or ""
+        if first and not since:
+            self.lib.set_meta(key, dt.datetime.now().isoformat(timespec="seconds"))
+        return self.lib.merge_recordings(course_id, recs, first_sync=first, new_after=since if first else "")
+
     @staticmethod
     def _list(course: Course, s: requests.Session) -> tuple[Course, list, requests.Session]:
         return course, Panopto(s).list_recordings(course.id, course.folder_id or ""), s
@@ -209,8 +219,7 @@ class SyncService:
                         course, recs, s = f.result()
                         merge_cookies(self._session, s)
                         listed[course.id] = recs
-                        first = not self.lib.has_recordings(course.id)
-                        new_ids += self.lib.merge_recordings(course.id, recs, first_sync=first)
+                        new_ids += self._merge(course.id, recs)
                     except Exception as exc:  # noqa: BLE001 - retried below
                         self.log.info("Early listing failed (%s); retrying", exc)
                 if listed:
@@ -274,8 +283,7 @@ class SyncService:
                         continue
                     merge_cookies(self._session, s)
                     listed[course.id] = recs
-                    first = not self.lib.has_recordings(course.id)
-                    new_ids += self.lib.merge_recordings(course.id, recs, first_sync=first)
+                    new_ids += self._merge(course.id, recs)
             if failed:
                 errors.append(f"Couldn't check new recordings for {', '.join(sorted(set(failed)))}: Panopto didn't "
                               "answer. They're checked again next time.")

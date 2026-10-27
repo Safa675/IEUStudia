@@ -2,6 +2,10 @@
 
 Pipeline per recording:  Panopto details → audio download → decode (CPU) ──► GPU: transcribe
                                          └► screen keyframes → slides (parallel) ─┘──► write files
+
+Order: what you ask for now (a class day, Get ready, selected lectures) goes before the batch of a full or course
+sync, and "Do next" puts a lecture before everything still waiting. An extra download lane lets such a lecture
+overtake the batch lectures that are already downloaded and waiting for their turn.
 """
 
 from __future__ import annotations
@@ -9,6 +13,8 @@ from __future__ import annotations
 import dataclasses as dc
 import errno
 import hashlib
+import heapq
+import itertools
 import json
 import logging
 import queue
@@ -29,7 +35,7 @@ from .net import plain_error
 from .panopto import NeedPanoptoAuth, NotReady, Panopto
 from .paths import audio_cache_dir
 from .quality import SILENT_DBFS, NoSpeech, is_silent
-from .winutil import KeepAwake
+from .winutil import KeepAwake, set_low_priority
 
 if TYPE_CHECKING:
     import numpy as np
@@ -46,6 +52,8 @@ Emit = Callable[[dict[str, Any]], None]
 IDLE_UNLOAD_S = 600   # free the GPU memory 10 minutes after the last job
 DECODED_MAX = 2       # decoded lectures in memory at once (~345 MB each for 90 minutes): one transcribing, one next
 PENDING_KEY = "outputs_pending"     # library meta: recordings whose files in the output folder could not be written
+QUEUE_KEY = "transcribe_queue"      # library meta: the lectures still to transcribe, offered again after a restart
+NOW, BATCH = 0, 1                   # queue ranks: asked for now, a full or course sync's batch ("Do next" goes below 0)
 _ETA = re.compile(r"\s*·\s*~(\d+)s left")
 
 _STATUS = {"queued": "queued", "downloading": "downloading", "transcribing": "transcribing",
@@ -76,6 +84,12 @@ class Job:
     started: float = dc.field(default_factory=time.monotonic)
     finished: bool = False
     duration_s: float = 0.0          # the recording's length (for the batch's time left)
+    rank: int = NOW                  # lower goes first (see NOW, BATCH)
+    seq: int = 0                     # order within a rank
+    token: int = 0                   # its current place in a queue: an older entry for it is skipped
+    where: str = ""                  # "dl" waiting to download, "prep" downloading, "gpu" ready, "run" transcribing
+    paused_s: float = 0.0            # time paused in the middle of transcribing it (the engine's time left counts it)
+    day_key: str = ""                # its class day (the page counts lectures, not their parts)
 
     def view(self) -> dict[str, Any]:
         detail, eta = self.detail, None
@@ -84,7 +98,8 @@ class Job:
             detail, eta = (detail[:m.start()] + detail[m.end():]).strip(), int(m.group(1))
         return {"id": self.id, "title": self.title, "course_code": self.course_code, "course_id": self.course_id,
                 "stage": self.stage, "progress": round(self.progress, 3), "detail": detail, "eta_s": eta,
-                "error": self.error, "local": self.local_path is not None}
+                "error": self.error, "local": self.local_path is not None, "first": self.rank < NOW,
+                "day": self.day_key or self.id}
 
 
 class JobManager:
@@ -102,9 +117,26 @@ class JobManager:
         self.log = log_ or log
         self._jobs: dict[str, Job] = {}
         self._lock = threading.RLock()
-        self._dl_q: "queue.Queue[Optional[Job]]" = queue.Queue()
-        self._gpu_q: "queue.Queue[Optional[Job]]" = queue.Queue()
-        self._audio_places = threading.Semaphore(DECODED_MAX)    # downloads still run ahead, as files on disk
+        # the queues (lock order: self._lock, then self._q): lectures waiting to download, in order of (rank, seq),
+        # and lectures downloaded and decoded, ready to transcribe. Moving a lecture up adds a new entry; the old one
+        # is skipped (its token no longer matches).
+        self._q = threading.Condition()
+        self._dl_heap: list[tuple[int, int, int, Job]] = []
+        self._gpu_q: "queue.PriorityQueue[tuple[int, int, int, Job]]" = queue.PriorityQueue()
+        self._tokens = itertools.count(1)
+        self._seqs = itertools.count(1)
+        self._top = 0                                    # "Do next" ranks: -1, -2, … (the latest asked goes first)
+        self._lanes = 1                                  # download threads that take any lecture (see _start)
+        self._held: dict[int, tuple[Job, bool]] = {}     # lectures the download threads hold (job, overtaking)
+        # places for decoded audio in memory: one lecture transcribing, one ready (downloads still run ahead, as
+        # files on disk). A free place goes to the waiting lecture that comes first in the queue.
+        self._places = DECODED_MAX
+        self._place_wait: dict[int, Job] = {}
+        self._run = threading.Event()                    # cleared while the queue is paused
+        self._run.set()
+        self._paused_at = 0.0
+        self._closing = False                            # the app closes: what is still waiting is kept
+        self._saved: list[str] = self._load_saved()      # lectures still to transcribe (QUEUE_KEY), in order
         self._awake = KeepAwake("IEUStudia is transcribing lectures")
         self._started = False
         self._engine = None
@@ -118,11 +150,15 @@ class JobManager:
         if self._started:
             return
         self._started = True
-        for i in range(self.settings().parallel_downloads):
+        self._lanes = self.settings().parallel_downloads
+        for i in range(self._lanes):
             threading.Thread(target=self._dl_loop, name=f"download-{i + 1}", daemon=True).start()
+        threading.Thread(target=self._dl_loop, args=(True,), name="download-next", daemon=True).start()
         threading.Thread(target=self._gpu_loop, name="transcribe", daemon=True).start()
 
-    def enqueue(self, ids: list[str]) -> int:
+    def enqueue(self, ids: list[str], batch: bool = False) -> int:
+        """Queue lectures. ``batch``: a full or course sync's; lectures asked for one by one go before those (one
+        already waiting in such a batch moves ahead). Returns how many were queued or moved."""
         n = 0
         with self._lock:
             self._idle_gen += 1          # cancels a pending idle unload
@@ -130,6 +166,12 @@ class JobManager:
             self._new_batch()
             for did in ids:
                 if did in self._jobs:
+                    job = self._jobs[did]
+                    if not batch and job.rank >= BATCH and not job.finished and job.where != "run":
+                        with self._q:
+                            job.rank, job.seq = NOW, next(self._seqs)
+                            self._requeue(job)
+                        n += 1
                     continue
                 rec = self.lib.get_recording(did)
                 if rec is None:
@@ -138,14 +180,16 @@ class JobManager:
                 code = course.code if course else ""
                 job = Job(id=did, title=f"{code} · {rec.start:%a %d %b} {rec.start:%H:%M}".strip(" ·"),
                           course_id=rec.course_id, course_code=code, prev_status=rec.status,
-                          duration_s=max(0.0, rec.duration_s))
+                          duration_s=max(0.0, rec.duration_s), rank=BATCH if batch else NOW, seq=next(self._seqs),
+                          day_key=rec.day_key)
                 self._jobs[did] = job
                 self.lib.set_status(did, "queued")
-                self._dl_q.put(job)
+                self._put_dl(job)
                 self._update(job, "queued", 0.0, "Waiting", force=True)
                 n += 1
             if self._jobs:
-                self._awake.on()         # Windows' idle timer must not put the PC to sleep mid-batch
+                self._working(True)
+            self._remember()
         self._emit_queue()
         return n
 
@@ -156,11 +200,11 @@ class JobManager:
             self._start()
             self._new_batch()
             if did not in self._jobs:
-                job = Job(id=did, title=Path(path).name, local_path=Path(path))
+                job = Job(id=did, title=Path(path).name, local_path=Path(path), seq=next(self._seqs))
                 self._jobs[did] = job
-                self._dl_q.put(job)
+                self._put_dl(job)
                 self._update(job, "queued", 0.0, "Waiting", force=True)
-            self._awake.on()
+            self._working(True)
         self._emit_queue()
         return did
 
@@ -172,18 +216,68 @@ class JobManager:
             if job.stage == "queued":
                 self._finish(job, "cancelled")
 
+    def shutdown(self) -> None:
+        """IEUStudia closes: stop, but keep the lectures still to transcribe for the next start (the one being
+        transcribed starts again then)."""
+        with self._lock:
+            self._closing = True
+        self.cancel(None)
+        set_low_priority(False)
+
+    def first(self, job_id: str) -> bool:
+        """Do this lecture next: before everything still waiting (the one being transcribed finishes first)."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.finished or job.local_path is not None:
+                return False
+            self._top -= 1
+            with self._q:
+                job.rank = self._top
+                self._requeue(job)
+            self._remember()
+        self._emit_queue()
+        return True
+
+    def pause(self, on: bool) -> None:
+        """Pause or continue: nothing new starts, and the lecture being transcribed stops after its current
+        passages. The PC may sleep while paused. Cancel still works."""
+        with self._lock:
+            if on == (not self._run.is_set()) or (on and not self._jobs):
+                return
+            b = getattr(self, "_batch", None)
+            if on:
+                self._run.clear()
+                self._paused_at = time.monotonic()
+                self._awake.off()
+            else:
+                if b is not None:
+                    b["paused"] = b.get("paused", 0.0) + time.monotonic() - self._paused_at
+                self._run.set()
+                if self._jobs:
+                    self._awake.on()
+        self._emit_queue()
+
+    def paused(self) -> bool:
+        return not self._run.is_set()
+
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [j.view() for j in self._jobs.values()]
+            return [j.view() for j in sorted(self._jobs.values(), key=self._order)]
+
+    @staticmethod
+    def _order(j: Job) -> tuple[int, int, int]:
+        """Queue order for the page: the lecture being transcribed, then the others in the order they come."""
+        return (0 if j.where == "run" else 1, j.rank, j.seq)
 
     def _new_batch(self) -> None:
         """Start counting a new batch when work is added to an idle queue (call with the lock held)."""
         if not self._jobs:
-            self._batch = {"done": 0, "ended": 0, "audio_done": 0.0, "started": time.monotonic()}
+            self._batch = {"done": 0, "ended": 0, "failed": 0, "audio_done": 0.0, "started": time.monotonic(),
+                           "paused": 0.0}
 
     def batch(self) -> dict[str, Any]:
         """How far the current batch is: finished / total jobs and, once one lecture is done, the time left at the
-        speed measured so far (downloads, model load and both languages included)."""
+        speed measured so far (downloads, model load and both languages included; time paused is not)."""
         with self._lock:
             b = getattr(self, "_batch", None)
             jobs = list(self._jobs.values())
@@ -191,10 +285,137 @@ class JobManager:
             return {}
         inflight = sum(j.duration_s * j.progress for j in jobs if j.stage in ("transcribing", "writing"))
         left = sum(j.duration_s for j in jobs) - inflight
-        elapsed = time.monotonic() - b["started"]
+        now = time.monotonic()
+        elapsed = now - b["started"] - b.get("paused", 0.0) - (now - self._paused_at if self.paused() else 0.0)
         work = b["audio_done"] + inflight
         eta = round(left * elapsed / work) if b["audio_done"] > 0 and elapsed > 30 else None
         return {"finished": b["ended"], "total": b["ended"] + len(jobs), "left_s": eta}
+
+    # ------------------------------------------------------------------ what is still to do, across restarts
+    def _load_saved(self) -> list[str]:
+        try:
+            ids = json.loads(self.lib.get_meta(QUEUE_KEY) or "[]")
+        except ValueError:
+            return []
+        return [str(i) for i in ids] if isinstance(ids, list) else []
+
+    def _remember(self) -> None:
+        """Store the lectures still to transcribe: the queue in its order, then any left from an earlier start that
+        wasn't continued or forgotten yet (call with the lock held)."""
+        now = [j.id for j in sorted(self._jobs.values(), key=lambda j: (j.rank, j.seq))
+               if j.local_path is None and not j.finished]
+        self._saved = now + [i for i in self._saved if i not in now]
+        self.lib.set_meta(QUEUE_KEY, json.dumps(self._saved))
+
+    def _forget(self, did: str) -> None:
+        with self._lock:
+            if did in self._saved:
+                self._saved = [i for i in self._saved if i != did]
+                self.lib.set_meta(QUEUE_KEY, json.dumps(self._saved))
+
+    def leftover(self) -> list[str]:
+        """Lectures that were still waiting when IEUStudia last closed (or stopped), not transcribed since."""
+        with self._lock:
+            ids = [i for i in self._saved if i not in self._jobs]
+        out = []
+        for did in ids:
+            r = self.lib.get_recording(did)
+            if r is not None and r.status != "done" and not r.duplicate_of and not r.hidden:
+                out.append(did)
+        return out
+
+    def leftover_view(self) -> Optional[dict[str, Any]]:
+        ids = self.leftover()
+        if not ids:
+            return None
+        recs = [r for r in (self.lib.get_recording(i) for i in ids) if r is not None]
+        courses = {c.id: c.code for c in self.lib.courses(True)}
+        return {"count": len(recs), "days": len({r.day_key for r in recs}),
+                "audio_s": round(sum(max(0.0, r.duration_s) for r in recs)),
+                "courses": sorted({courses.get(r.course_id, "") for r in recs} - {""})}
+
+    def resume_leftover(self) -> int:
+        return self.enqueue(self.leftover())
+
+    def forget_leftover(self) -> None:
+        with self._lock:
+            self._saved = [i for i in self._saved if i in self._jobs]
+            self.lib.set_meta(QUEUE_KEY, json.dumps(self._saved))
+
+    # ------------------------------------------------------------------ queues (call with self._q held)
+    def _push_dl(self, job: Job) -> None:
+        job.token, job.where = next(self._tokens), "dl"
+        heapq.heappush(self._dl_heap, (job.rank, job.seq, job.token, job))
+
+    def _push_gpu(self, job: Job) -> None:
+        job.token, job.where = next(self._tokens), "gpu"
+        self._gpu_q.put((job.rank, job.seq, job.token, job))
+
+    def _requeue(self, job: Job) -> None:
+        """Its rank changed: a new entry where it waits (the old one is skipped), and the threads look again."""
+        if job.where == "dl":
+            self._push_dl(job)
+        elif job.where == "gpu":
+            self._push_gpu(job)
+        self._q.notify_all()                     # it may now overtake, or get the next free place
+
+    def _put_dl(self, job: Job) -> None:
+        with self._q:
+            self._push_dl(job)
+            self._q.notify_all()
+
+    def _put_gpu(self, job: Job) -> None:
+        with self._q:
+            self._held.pop(id(job), None)
+            self._push_gpu(job)
+            self._q.notify_all()
+
+    def _let_go(self, job: Job) -> None:
+        """A download thread is done with this lecture (it failed, was cancelled, or waits to be tried again)."""
+        with self._q:
+            self._held.pop(id(job), None)
+            if job.where == "prep":
+                job.where = ""
+            self._q.notify_all()
+
+    def _take_dl(self, overtake: bool) -> Job:
+        """The next lecture to download. The overtaking thread only takes one that comes before every lecture the
+        other download threads hold (they may all be waiting for their turn with batch lectures)."""
+        with self._q:
+            while True:
+                while self._dl_heap and self._dl_heap[0][2] != self._dl_heap[0][3].token:
+                    heapq.heappop(self._dl_heap)          # it moved up the queue since: this is its old place
+                if self._dl_heap:
+                    head = self._dl_heap[0][3]
+                    others = [j for j, lane in self._held.values() if not lane]
+                    if not overtake or (len(others) >= self._lanes
+                                        and all((head.rank, head.seq) < (j.rank, j.seq) for j in others)):
+                        heapq.heappop(self._dl_heap)
+                        head.where = "prep"
+                        self._held[id(head)] = (head, overtake)
+                        return head
+                self._q.wait()
+
+    def _working(self, on: bool) -> None:
+        """While lectures are queued: the PC doesn't fall asleep (unless paused) and the programs you use come first."""
+        if on:
+            if self._run.is_set():
+                self._awake.on()         # Windows' idle timer must not put the PC to sleep mid-batch
+        else:
+            self._awake.off()
+            self._run.set()              # a pause ends with the queue
+        set_low_priority(on)
+
+    def _hold(self, job: Job, count: bool = False) -> None:
+        """Wait while the queue is paused (Cancel still works). ``count``: paused in the middle of transcribing."""
+        if self._run.is_set():
+            return
+        t0 = time.monotonic()
+        while not self._run.wait(0.25):
+            if job.cancel.is_set():
+                raise Cancelled()
+        if count:
+            job.paused_s += time.monotonic() - t0
 
     def active_ids(self) -> set[str]:
         with self._lock:
@@ -247,8 +468,11 @@ class JobManager:
         t.start()
 
     # ------------------------------------------------------------------ events
+    def queue_event(self) -> dict[str, Any]:
+        return {"type": "queue", "jobs": self.snapshot(), "batch": self.batch(), "paused": self.paused()}
+
     def _emit_queue(self) -> None:
-        self.emit({"type": "queue", "jobs": self.snapshot(), "batch": self.batch()})
+        self.emit(self.queue_event())
 
     def _update(self, job: Job, stage: str, progress: float, detail: str, force: bool = False) -> None:
         with self._lock:                 # _finish marks a job finished under this lock
@@ -268,26 +492,45 @@ class JobManager:
 
     def _take_audio_place(self, job: Job) -> None:
         """Wait until fewer than DECODED_MAX decoded lectures are in memory (a slow processor may take an hour per
-        lecture while the downloads are long done). Cancel works while waiting."""
+        lecture while the downloads are long done). Of the lectures waiting, the one first in the queue gets the
+        free place. Cancel works while waiting."""
         if job.holds_audio:
             return
-        if not self._audio_places.acquire(blocking=False):
-            self._update(job, "queued", 0.0, "Waiting for its turn" if job.local_path else
-                         "Downloaded — waiting for its turn", force=True)
-            while not self._audio_places.acquire(timeout=0.5):
-                if job.cancel.is_set():
-                    raise Cancelled()
-        job.holds_audio = True
+        if not self._try_place(job):
+            try:
+                self._update(job, "queued", 0.0, "Waiting for its turn" if job.local_path else
+                             "Downloaded — waiting for its turn", force=True)
+                while not self._try_place(job, 0.5):
+                    if job.cancel.is_set():
+                        raise Cancelled()
+            finally:
+                with self._q:
+                    self._place_wait.pop(id(job), None)
+                    self._q.notify_all()
         if job.cancel.is_set():          # cancelled just as its turn came
             self._drop_audio(job)
             raise Cancelled()
 
+    def _try_place(self, job: Job, wait: float = 0.0) -> bool:
+        with self._q:
+            self._place_wait[id(job)] = job
+            if wait:
+                self._q.wait(wait)
+            first = min(self._place_wait.values(), key=lambda j: (j.rank, j.seq))
+            if self._places > 0 and first is job:
+                self._places -= 1
+                job.holds_audio = True
+                del self._place_wait[id(job)]
+                return True
+            return False
+
     def _drop_audio(self, job: Job) -> None:
         job.audio = None
-        with self._lock:
+        with self._q:
             held, job.holds_audio = job.holds_audio, False
-        if held:
-            self._audio_places.release()
+            if held:
+                self._places += 1
+                self._q.notify_all()
 
     def _finish(self, job: Job, stage: str, error: str = "") -> None:
         with self._lock:
@@ -297,6 +540,7 @@ class JobManager:
             current = self._jobs.get(job.id) is job
         job.error = error
         self._drop_audio(job)
+        self._let_go(job)
         with self._lock:
             b = getattr(self, "_batch", None)
             if b is not None and current:
@@ -304,6 +548,11 @@ class JobManager:
                 if stage == "done":
                     b["done"] += 1
                     b["audio_done"] += job.duration_s
+                    b["last_done"] = {"id": job.id, "title": job.title, "local": job.local_path is not None}
+                elif stage in ("failed", "processing"):
+                    b["failed"] += 1
+            if current and not self._closing and job.local_path is None:
+                self._forget(job.id)          # done, failed, not ready, or cancelled: no longer waiting
         status = ""
         if job.local_path is None and current:
             if stage == "cancelled":
@@ -324,32 +573,40 @@ class JobManager:
                 self._last_emit.pop(job.id, None)
             idle = not self._jobs
             if idle:
-                self._awake.off()
-        self.emit({"type": "job", **job.view(), "final": True, "batch_done": idle, "status": status,
-                   "unwritten": job.unwritten})
+                self._working(False)
+            b = dict(getattr(self, "_batch", None) or {})
+        evt = {"type": "job", **job.view(), "final": True, "batch_done": idle, "status": status,
+               "unwritten": job.unwritten}
+        if idle and not self._closing:            # what the whole batch came to (the notification says it)
+            evt["batch_result"] = {"done": b.get("done", 0), "failed": b.get("failed", 0), "ended": b.get("ended", 0),
+                                   "last_done": b.get("last_done")}
+        self.emit(evt)
         self._emit_queue()
         if idle and self._engine is not None:
             self._schedule_idle_unload()
 
     # ------------------------------------------------------------------ download side
-    def _dl_loop(self) -> None:
+    def _dl_loop(self, overtake: bool = False) -> None:
+        """A download thread. ``overtake``: the extra one, for lectures that come before the ones the other
+        threads hold."""
         while True:
-            job = self._dl_q.get()
-            if job is None:
-                return
+            job = self._take_dl(overtake)
             if job.cancel.is_set():
+                self._let_go(job)
                 self._finish(job, "cancelled")
                 continue
             try:
+                self._hold(job)                   # paused: no new download starts
                 self._prepare(job)
                 if job.cancel.is_set():
                     raise Cancelled()
                 self._update(job, "queued", 0.0, "Waiting for its turn" if job.local_path else
                              "Downloaded — waiting for its turn")                              # Cancel ends it at once
-                self._gpu_q.put(job)
+                self._put_gpu(job)
                 continue
             except BaseException as exc:  # noqa: BLE001 - every way out gives back the place for its audio
                 self._drop_audio(job)
+                self._let_go(job)
                 error = exc
             if isinstance(error, Cancelled) or job.cancel.is_set():     # whatever the error, Cancel was pressed
                 self._finish(job, "cancelled")
@@ -363,7 +620,9 @@ class JobManager:
                 if job.attempts <= 2 and not lasting and not job.cancel.is_set():
                     self.log.info("Download problem for %s (%s); retrying", job.id, error)
                     self._update(job, "queued", 0.0, "Connection problem — retrying shortly", force=True)
-                    threading.Timer(4.0 * job.attempts, self._dl_q.put, args=(job,)).start()
+                    retry = threading.Timer(4.0 * job.attempts, self._put_dl, args=(job,))
+                    retry.daemon = True
+                    retry.start()
                 else:
                     self.log.warning("Download of %s failed: %s", job.id, error)
                     self._finish(job, "failed", plain_error(error) if lasting else
@@ -479,13 +738,24 @@ class JobManager:
 
     def _gpu_loop(self) -> None:
         while True:
-            job = self._gpu_q.get()
-            if job is None:
-                return
+            _, _, token, job = self._gpu_q.get()
+            with self._q:
+                if token != job.token:            # it moved up the queue since: this is its old place
+                    continue
+                before = lambda j: (j.rank, j.seq) < (job.rank, job.seq)    # noqa: E731
+                if (any(j.holds_audio and before(j) for j, _ in self._held.values())
+                        or (self._places > 0 and any(before(j) for j in self._place_wait.values()))):
+                    # a lecture that comes before this one is being decoded, or is about to take the place that just
+                    # came free: put this one back and take the first one in a moment
+                    self._push_gpu(job)
+                    self._q.wait(0.5)
+                    continue
+                job.where = "run"
             if job.cancel.is_set():
                 self._finish(job, "cancelled")
                 continue
             try:
+                self._hold(job)                   # paused: the next lecture doesn't start
                 self._transcribe(job)
             except Cancelled:
                 self._finish(job, "cancelled")
@@ -504,8 +774,16 @@ class JobManager:
         if phase:
             self.emit({"type": "engine", "phase": phase, "progress": round(frac, 3), "message": detail})
             self._update(job, "transcribing", 0.0, detail)
-        else:
-            self._update(job, "transcribing", frac, detail)
+            return
+        paused = job.paused_s             # this message's estimate was made before any pause that starts now
+        self._hold(job, count=stage == "transcribe")      # paused: stop between passages (a download never waits)
+        m = _ETA.search(detail)
+        done = (frac - 0.05) / 0.88                       # the share of passages done (see Engine._decode_units)
+        if m and paused and stage == "transcribe" and done > 0:
+            # the engine counts the time paused as time spent: take it out of its estimate
+            left = max(0, round(int(m.group(1)) - paused * (1 - done) / done))
+            detail = f"{detail[:m.start()]} · ~{left}s left{detail[m.end():]}"
+        self._update(job, "transcribing", frac, detail)
 
     def _transcribe(self, job: Job) -> None:
         settings = self.settings()
@@ -528,6 +806,7 @@ class JobManager:
         if job.local_path is None:
             self.lib.save_transcript(t, path, quality=quality.get("stats"))
             self.lib.set_warnings(job.id, warnings)
+        self.note_unwritten(job.id, True)         # until its files are written (closing now writes them next start)
         if job.slides is not None:
             self._update(job, "writing", 0.97, "Finishing slides", force=True)
             try:
@@ -537,6 +816,7 @@ class JobManager:
         self._update(job, "writing", 0.99, "Writing files", force=True)
         try:
             self.write_outputs(job.id)
+            self.note_unwritten(job.id, False)
         except OSError as exc:            # the transcript is saved: its files are written again at the next start
             self.log.warning("Writing the files of %s failed: %s", job.id, exc)
             self.note_unwritten(job.id, True)

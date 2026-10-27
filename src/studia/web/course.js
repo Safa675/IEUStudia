@@ -239,8 +239,7 @@
         ${sectionChip(c)}${ects}</div>
       <div class="stats">${cur ? `<button class="stat now" data-act="goto-week" data-no="${cur.no}" title="Show this week">${I("sparkle", "xs")}<b>Week ${cur.no}</b>${cur.exam ? "exam week" : "this week"}</button>` : ""}
         <div class="stat"><b>${d ? d.materials.total : "…"}</b>materials${d && d.materials.downloaded ? ` · ${d.materials.downloaded} saved` : ""}</div>
-        <div class="stat"><b>${c.counts.done}</b>of ${c.counts.total} lectures transcribed</div>
-        ${d && d.outcomes_en.length ? `<div class="stat"><b>${d.outcomes_en.length}</b>learning outcomes</div>` : ""}</div></div>
+        <div class="stat"><b>${c.counts.done}</b>of ${c.counts.total} lectures transcribed</div></div></div>
       <div class="hero-acts"><button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${ai.available && (c.counts.done_any ?? c.counts.done) ? "" : "disabled"} title="${ai.available ? ((c.counts.done_any ?? c.counts.done) ? `Chat with ${St.aiName()} about this course` : "Transcribe a lecture first") : St.aiHint()}">${I("chat", "sm")} Ask ${esc(St.aiName())}</button>
         <button class="btn sm" data-act="course-sync" data-id="${c.id}" title="Sync, then transcribe this course's lectures that aren't transcribed yet (your section) and download its materials">${I("zap", "sm")} Sync course</button>
         <button class="btn sm" data-act="plan-new" data-id="${c.id}" ${ai.available && ai.can_plans !== false ? "" : "disabled"} title="${ai.available ? "Find YouTube videos that teach this course's weeks, checked through their captions" : St.aiHint()}">${I("youtube", "sm")} Video plan</button>
@@ -299,7 +298,7 @@
     const saved = mats.filter((m) => m.downloaded).length, tx = w.days.filter((x) => x.transcribed).length;
     const summary = [mats.length ? `${plural(mats.length, "file")}${saved ? ` (${saved} saved)` : ""}` : "", w.days.length ? `${plural(w.days.length, "lecture")}${tx ? ` (${tx} transcribed)` : ""}` : ""].filter(Boolean).join(" · ");
     return `<div class="card week ${w.current ? "current" : ""} ${w.past ? "past" : ""} ${w.exam ? "exam" : ""} ${quiet ? "quiet" : ""} ${shut ? "shut" : ""}" id="week-${w.no}">
-      <div class="week-head" ${foldable ? `data-act="week-toggle" data-no="${w.no}" title="${shut ? "Show" : "Hide"} this week's files and lectures"` : ""}>
+      <div class="week-head" ${foldable ? `data-act="week-toggle" data-no="${w.no}" tabindex="0" role="button" aria-expanded="${!shut}" title="${shut ? "Show" : "Hide"} this week's files and lectures"` : ""}>
         <div class="week-no"><b>${w.no}</b><span>week</span></div>
         <div class="week-title"><div class="t">${esc(title)} ${w.current ? `<span class="pill now">${I("sparkle")}This week</span>` : ""} ${duePills || (w.exam ? `<span class="pill processing">${I("cap")}Exam</span>` : "")}</div>
           <div class="s">${esc(sub)}${shut && summary ? ` · <span class="week-sum">${esc(summary)}</span>` : ""}</div></div>
@@ -435,6 +434,7 @@
       const d = S.cd[c.id];
       return d ? upcoming(d).map((e) => ({ c, d, e, r: weekRel(d, e.week, e.kind) })).filter((x) => x.r.now || x.r.rel === "next week") : [];
     }).sort((x, y) => (y.r.now ? 1 : 0) - (x.r.now ? 1 : 0));
+    const twin = (c) => S.courses.filter((x) => x.code === c.code).length > 1;     // FENG 495 twice: which one
     let h = `<div class="view-inner home">
       <div class="home-hero"><div><h1>${greet}${first ? `, ${esc(first)}` : ""}</h1><div class="dim">${DAYS[now.getDay()]}, ${now.getDate()} ${MON[now.getMonth()]} ${now.getFullYear()}${S.sync.running ? ` · ${SPIN()} ${esc(S.sync.message || "Syncing…")}` : ""}</div>
         <div class="home-acts"><button class="btn sm" data-act="go" data-view="digest">${I("calendar", "sm")} Weekly digest</button>
@@ -442,15 +442,28 @@
           <button class="btn sm" data-act="full-sync" title="Sync every course, then transcribe your untranscribed lectures and download the materials (asks first)">${I("zap", "sm")} Full sync</button>
           <button class="btn sm" data-act="export-calendar" title="Save the announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or your phone">${I("calendar", "sm")} Add to calendar</button></div></div>
         <img class="home-logo" src="../assets/logo.svg" alt=""></div>`;
+    if (S.sync.error && !S.sync.running) {
+      h += `<div class="callout warning">${I("alert")}<div><b>IEUStudia couldn't check IEULearn.</b> ${esc(S.sync.error)}
+        Your courses and transcripts on this PC still work. <button class="link" data-act="sync">Try again</button></div></div>`;
+    }
+    if (S.resume && S.resume.count) {
+      const r = S.resume, n = r.days || r.count;                         // lectures (class days), not their parts
+      h += `<div class="card resume">${I("wave")}<div class="grow"><b>${plural(n, "lecture")} ${n === 1 ? "was" : "were"} still waiting to be transcribed when IEUStudia closed</b>
+        <div class="dim">${esc(r.courses.join(", "))} · ${St.fmtDur(r.audio_s)} of recordings</div></div>
+        <button class="btn ghost sm" data-act="resume-forget">Forget them</button><button class="btn primary sm" data-act="resume-go">${I("wave", "sm")} Continue</button></div>`;
+    }
     if (courses.length && !courses.some((c) => (c.counts || {}).done_any) && store("studia-howto") !== "seen") h += howToHTML();
     if (soon.length) {
       h += `<div class="section-title">${I("cap")} Coming up <span class="dim sm">this week and next, as announced</span></div>
         <div class="soon">${soon.map(({ c, d, e, r }) => `<button class="soon-card ${r.now ? "now" : ""}" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(`Get ready: what to transcribe, download and read${e.los.length ? "\n" + loTitle(d, e.los) : ""}`)}">
-          <span class="soon-code">${esc(c.code)}</span><b>${esc(e.name)}</b><span class="soon-when">${esc(r.rel)}${r.w && r.rel !== "today" ? ` · ${esc(relWhen(r))}` : ""}</span>
+          <span class="soon-code">${esc(c.code)}${twin(c) && c.section ? ` · ${esc(c.section)}` : ""}</span><b>${esc(e.name)}</b><span class="soon-when">${esc(r.rel)}${r.w && r.rel !== "today" ? ` · ${esc(relWhen(r))}` : ""}</span>
           ${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`).join("")}</div>`;
     }
-    h += `<div class="section-title">${I("book")} My courses <span class="dim sm">${courses.length}</span></div>
-      <div class="cc-grid">${courses.map(courseCard).join("") || skeleton()}</div>`;
+    h += `<div class="section-title">${I("book")} My courses <span class="dim sm">${courses.length}</span></div>`;
+    if (courses.length) h += `<div class="cc-grid">${courses.map(courseCard).join("")}</div>`;
+    else if (S.sync.running || (!S.lastSync && !S.sync.error)) h += `<div class="cc-grid">${skeleton()}</div>`;
+    else h += `${emptyHTML("book", "No courses yet", "IEUStudia lists the courses on your IEULearn dashboard after a sync.")}
+      <div style="text-align:center;margin:-8px 0 20px"><button class="btn sm" data-act="sync">${I("refresh", "sm")} Sync now</button></div>`;
     if (heads.length) {
       h += `<div class="section-title">${I("alert")} Heads-up <span class="dim sm">from your lecturers · last ${RECENT_DAYS} days</span></div>
         <div class="card heads home-heads"><div class="heads-list">${heads.slice(0, 5).map(({ a, c }) => alertHTML(a, c.id, c)).join("")}</div>
@@ -506,7 +519,8 @@
     const todo = days.filter((x) => !x.transcribed).flatMap((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || [])
       .filter((r) => r.part && r.mine !== false && r.status !== "done" && !["queued", "downloading", "transcribing"].includes(r.status)).map((r) => r.id));
     const busy = days.filter((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || []).some((r) => ["queued", "downloading", "transcribing"].includes(r.status)));
-    return { weeks, days, mats, said, stressed, todo, busy: busy.length,
+    const todoDays = new Set(days.filter((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || []).some((r) => todo.includes(r.id))).map((x) => x.day_key)).size;
+    return { weeks, days, mats, said, stressed, todo, todoDays, busy: busy.length,
       transcribed: days.filter((x) => x.transcribed).length, read: days.filter((x) => x.any_done && readDays.has(x.day_key)).length,
       readable: days.filter((x) => x.any_done).length, downloaded: mats.filter((m) => m.downloaded).length,
       missing: mats.filter((m) => !m.downloaded && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state))).map((m) => m.id) };
@@ -523,10 +537,11 @@
     const r = readiness(c, d, e), rel = weekRel(d, e.week, e.kind);
     const plans = (R.plans || []).filter((p) => p.course_id === c.id && (p.scope || {}).focus === e.name);
     const prep = plans.find((p) => (p.scope || {}).kind === "prep"), video = plans.find((p) => (p.scope || {}).kind !== "prep");
+    const left = r.todoDays;                                       // lectures (class days), not their parts
     const steps = [
       [r.days.length && r.transcribed === r.days.length, `Lectures transcribed: ${r.transcribed} of ${r.days.length}`,
-        r.busy ? `${plural(r.busy, "class day")} transcribing now` : r.days.length ? "your section, in the weeks it covers" : "no recorded lectures in these weeks yet",
-        r.todo.length ? `<button class="btn sm" data-act="rd-transcribe">${I("wave", "sm")} Transcribe ${r.todo.length}</button>` : ""],
+        r.busy ? `${plural(r.busy, "lecture")} transcribing now` : r.days.length ? "your section, in the weeks it covers" : "no recorded lectures in these weeks yet",
+        r.todo.length ? `<button class="btn sm" data-act="rd-transcribe" title="${plural(r.todo.length, "recording")}">${I("wave", "sm")} Transcribe ${left > 1 ? plural(left, "lecture") : "it"}</button>` : ""],
       [r.mats.length && !r.missing.length, `Files on this PC: ${r.downloaded} of ${r.mats.length}`, r.mats.length ? "slides and PDFs of those weeks" : "no files listed for these weeks",
         r.missing.length ? `<button class="btn sm" data-act="rd-download">${I("download", "sm")} Download ${r.missing.length}</button>` : ""],
       [r.readable && r.read === r.readable, `Lectures read: ${r.read} of ${r.readable}`, "ticked when you open a transcript, or tick them below", ""],
@@ -576,7 +591,10 @@
   // ------------------------------------------------------------------ wiring
   St.views.course = coursePage;
   St.views.home = homeView;
-  St.onGo.course = (v) => { if (!S.cd[v.courseId] || Date.now() - (loadedAt[v.courseId] || 0) > 20000) loadCourse(v.courseId); };
+  St.onGo.course = (v) => {
+    if (!v.tab && v.jumpWeek === undefined) { v.jumpWeek = "now"; St.after.course(v); }   // this week, not week 1
+    if (!S.cd[v.courseId] || Date.now() - (loadedAt[v.courseId] || 0) > 20000) loadCourse(v.courseId);
+  };
   St.onGo.home = () => S.courses.forEach((c) => { if (!S.cd[c.id]) loadCourse(c.id, true); });
   St.after.course = (v) => {
     if (v.annFocus) {          // opened from a heads-up item: scroll to that announcement once it is on screen
@@ -584,11 +602,18 @@
       if (el) { v.annFocus = null; el.scrollIntoView({ block: "center", behavior: "instant" }); }
       return;
     }
+    if (v.jumpWeek === "now") {                   // the week the course is in (or the next one), once it's loaded
+      const d = S.cd[v.courseId];
+      if (!d) return;
+      const w = d.weeks.find((x) => x.current) || d.weeks.find((x) => x.start && !x.past);
+      v.jumpWeek = w && !(w.no === 1 && !d.general.length) ? w.no : null;   // week 1 is at the top anyway
+    }
     if (v.jumpWeek && (v.tab || "weeks") === "weeks") {
       const el = $(`#week-${v.jumpWeek}`);
       if (el) { v.jumpWeek = null; el.scrollIntoView({ block: "start", behavior: "instant" }); }
     }
   };
+  St.openReady = openReady;
   St.onEvents.courses = () => {
     const v = S.view;
     if (v.name === "course") reloadSoon(v.courseId);
@@ -613,7 +638,7 @@
       if (prev.open) call("material_open", e.id);
       delete S.mat[e.id];
       reloadSoon(hit.cid);
-    } else if (e.state === "error") {
+    } else if (e.state === "error" && !e.quiet) {        // quiet: the rest of a batch that stopped for the same reason
       toast(`${hit ? hit.m.title : "Download"}: ${e.error || "failed"}`, "error");
     }
     updateMatRow(e.id);
@@ -625,6 +650,14 @@
   }
   Object.assign(A, {
     "howto-done": () => { store("studia-howto", "seen"); St.renderView(); },
+    "resume-go": async () => {
+      const n = (S.resume || {}).days || 0;
+      const r = await call("queue_resume");
+      S.resume = null; renderView();
+      if (!r.ok) toast(r.error, "error");
+      else if (r.queued) toast(`${n > 1 ? plural(n, "lecture") : n ? "The lecture" : plural(r.queued, "recording")} back in the queue`, "success");
+    },
+    "resume-forget": async () => { await call("queue_forget"); S.resume = null; renderView(); },
     "course-tab": (el) => {
       const v = S.view, scrolled = $("#view").scrollTop > 0;
       go({ name: "course", courseId: v.courseId, tab: el.dataset.tab });
@@ -639,10 +672,12 @@
       else go({ name: "course", courseId: v.courseId, tab: "weeks", jumpWeek: +el.dataset.no });
     },
     "week-toggle": (el) => {
-      const cid = S.view.courseId, no = +el.dataset.no;
+      const cid = S.view.courseId, no = +el.dataset.no, kb = document.activeElement === el;
       const open = S.weeksOpen[cid] || (S.weeksOpen[cid] = new Set());
       if (open.has(no)) open.delete(no); else open.add(no);
       renderView();
+      const head = kb && $(`#week-${no} .week-head`);                   // the keyboard stays where it was
+      if (head) head.focus({ preventScroll: true });
     },
     "lo-lang": (el) => { S.loLang = el.dataset.val; renderView(); },
     "mat-get": (el) => download([el.dataset.id], false),
@@ -694,11 +729,12 @@
     "rd-transcribe": async () => {
       const c = St.findCourse(R.cid), d = S.cd[R.cid];
       const e = d && ((d.alerts || {}).plan || []).find((x) => x.name === R.name);
-      const ids = c && e ? readiness(c, d, e).todo : [];
+      const rd = c && e ? readiness(c, d, e) : null, ids = rd ? rd.todo : [];
       if (!ids.length) return;
       const r = await call("transcribe", ids);
       if (!r.ok) { toast(r.error, "error"); return; }
-      toast(`${plural(r.queued, "lecture")} queued for transcription`, "success");
+      const n = rd.todoDays;
+      toast(`${plural(n, "lecture")} queued (${plural(r.queued, "part")}), before anything from a full sync`, "success");
       reloadSoon(R.cid);
     },
     "rd-download": () => {

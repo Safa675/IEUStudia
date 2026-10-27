@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.wintypes as wt
 import os
+import queue
 import subprocess
+import threading
 from pathlib import Path
+from typing import Iterator
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
@@ -290,6 +294,11 @@ class _FlashInfo(ctypes.Structure):
                 ("dwTimeout", wt.DWORD)]
 
 
+def is_foreground(hwnd: int) -> bool:
+    """Is this window the one you're using?"""
+    return bool(hwnd) and ctypes.WinDLL("user32").GetForegroundWindow() == hwnd
+
+
 def flash_taskbar(hwnd: int) -> None:
     """Flash the taskbar button until the user switches to the window (only when it is in the background)."""
     if not hwnd:
@@ -308,16 +317,126 @@ def set_app_id(app_id: str = "Studia.App") -> None:
         pass
 
 
+# ----------------------------------------------------------------------------- priority while transcribing
+_BELOW_NORMAL, _NORMAL = 0x4000, 0x20
+_prio_lock = threading.Lock()
+_low = False
+_starting = 0                                       # programs being started right now (see normal_priority)
+
+
+def _priority_class(value: int) -> bool:
+    try:
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentProcess.restype = wt.HANDLE
+        k32.SetPriorityClass.argtypes = [wt.HANDLE, wt.DWORD]
+        return bool(k32.SetPriorityClass(k32.GetCurrentProcess(), value))
+    except (AttributeError, OSError):
+        return False
+
+
+def set_low_priority(on: bool) -> None:
+    """Below-normal priority while IEUStudia transcribes: the programs you use come first, and with nothing else
+    running the transcription still gets the whole processor."""
+    global _low
+    with _prio_lock:
+        if on != _low and (_starting or _priority_class(_BELOW_NORMAL if on else _NORMAL)):
+            _low = on                                # (while a program starts, its end switches)
+
+
+@contextlib.contextmanager
+def normal_priority() -> Iterator[None]:
+    """For starting other programs (a PDF viewer, the browser): Windows gives a program started by a process at
+    below-normal priority that priority too, for as long as it runs."""
+    global _starting
+    with _prio_lock:
+        _starting += 1
+        if _low:
+            _priority_class(_NORMAL)
+    try:
+        yield
+    finally:
+        with _prio_lock:
+            _starting -= 1
+            if _low and not _starting:
+                _priority_class(_BELOW_NORMAL)
+
+
+def open_in_browser(url: str) -> None:
+    import webbrowser
+
+    with normal_priority():
+        webbrowser.open(url)
+
+
 def open_path(path: str | Path) -> None:
-    os.startfile(str(path))  # type: ignore[attr-defined]
+    with normal_priority():
+        os.startfile(str(path))  # type: ignore[attr-defined]
 
 
 def reveal(path: str | Path) -> None:
     p = Path(path)
-    if p.is_file():
-        subprocess.Popen(["explorer", "/select,", str(p)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    else:
-        os.startfile(str(p))  # type: ignore[attr-defined]
+    with normal_priority():
+        if p.is_file():
+            subprocess.Popen(["explorer", "/select,", str(p)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            os.startfile(str(p))  # type: ignore[attr-defined]
+
+
+class TaskbarProgress:
+    """The window's taskbar button as a progress bar (ITaskbarList3), set from one thread of its own. Cosmetic: if
+    Windows says no, nothing happens."""
+
+    OFF, INDETERMINATE, NORMAL, ERROR, PAUSED = 0x0, 0x1, 0x2, 0x4, 0x8
+
+    def __init__(self) -> None:
+        self._q: "queue.Queue[tuple[int, int, float]]" = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._dead = False                             # Windows said no: nothing more is queued
+
+    def set(self, hwnd: int, state: int, fraction: float = 0.0) -> None:
+        if not hwnd or self._dead:
+            return
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="taskbar", daemon=True)
+            self._thread.start()
+        self._q.put((hwnd, state, max(0.0, min(1.0, fraction))))
+
+    def _run(self) -> None:
+        class GUID(ctypes.Structure):
+            _fields_ = [("Data1", wt.DWORD), ("Data2", wt.WORD), ("Data3", wt.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+        try:
+            ole32 = ctypes.windll.ole32
+            ole32.CoInitializeEx(None, 0x2)                                   # COINIT_APARTMENTTHREADED
+            clsid, iid = GUID(), GUID()
+            ole32.CLSIDFromString("{56FDF344-FD6D-11d0-958A-006097C9A090}", ctypes.byref(clsid))   # TaskbarList
+            ole32.CLSIDFromString("{EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF}", ctypes.byref(iid))     # ITaskbarList3
+            obj = ctypes.c_void_p()
+            if ole32.CoCreateInstance(ctypes.byref(clsid), None, 0x1, ctypes.byref(iid), ctypes.byref(obj)) != 0:
+                self._dead = True
+                return
+            vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+
+            def method(index: int, *args: type) -> ctypes._CFuncPtr:
+                return ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *args)(vtable[index])
+
+            hr_init = method(3)
+            set_value = method(9, wt.HWND, ctypes.c_ulonglong, ctypes.c_ulonglong)
+            set_state = method(10, wt.HWND, ctypes.c_int)
+            hr_init(obj)
+        except (AttributeError, OSError, ValueError):
+            self._dead = True
+            return
+        while True:
+            hwnd, state, fraction = self._q.get()
+            while not self._q.empty():                 # only the newest counts
+                hwnd, state, fraction = self._q.get_nowait()
+            try:
+                set_state(obj, hwnd, state)
+                if state in (self.NORMAL, self.PAUSED, self.ERROR):
+                    set_value(obj, hwnd, round(fraction * 1000), 1000)
+            except OSError:
+                pass
 
 
 def work_area() -> tuple[float, float, float, float]:

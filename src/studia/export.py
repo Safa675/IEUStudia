@@ -175,9 +175,17 @@ def build_ai_pack(output_root: Path, course: Course, all_courses: Sequence[Cours
             z.write(stage / "PROMPT.md", "PROMPT.md")
             for name in sorted(set(image_for.values())):
                 z.write(stage / name, name, compress_type=zipfile.ZIP_STORED)
-        os.replace(tmp_zip, zip_path)
+        # an earlier pack may be open in a program that locks it (a PDF viewer): the message names the file to close
+        try:
+            os.replace(tmp_zip, zip_path)
+        except PermissionError as exc:
+            tmp_zip.unlink(missing_ok=True)
+            raise PermissionError(exc.errno, exc.strerror, str(zip_path)) from exc
         if pdf_ok:
-            shutil.copy2(stage / "pack.pdf", pdf_path)
+            try:
+                shutil.copy2(stage / "pack.pdf", pdf_path)
+            except PermissionError as exc:
+                raise PermissionError(exc.errno, exc.strerror, str(pdf_path)) from exc
     out = {"zip": zip_path, "folder": dest}
     if pdf_path.exists():
         out["pdf"] = pdf_path

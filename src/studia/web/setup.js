@@ -40,6 +40,7 @@
       llm: app.local_model && app.local_model !== "qwen3-1.7b" ? app.local_model : (v.recommended_llm || "qwen3-1.7b"),
       tray: app.onboarded ? app.tray : true, startup: app.onboarded ? r.startup : true,
       notify_recordings: app.notify_recordings, notify_announcements: app.notify_announcements, notify_materials: app.notify_materials,
+      notify_reminders: app.notify_reminders !== false,
     };
     U.accepted = !!app.terms_accepted;
     St.render();
@@ -258,7 +259,8 @@
       <div class="card set-card"><h3>Notify me about</h3>
         ${sw("notify_recordings", "New lecture recordings", "Of your own section.", !U.ch.tray)}
         ${sw("notify_announcements", "New announcements", "Quiz, exam and homework news is marked as a heads-up.", !U.ch.tray)}
-        ${sw("notify_materials", "New files", "Slides and PDFs added to a course.", !U.ch.tray)}</div>
+        ${sw("notify_materials", "New files", "Slides and PDFs added to a course.", !U.ch.tray)}
+        ${sw("notify_reminders", "Quizzes and exams coming up", "The evening before an announced quiz, and before an exam week. Also while IEUStudia is open.")}</div>
       <div class="dim su-note">${I("info", "xs")} You can change all of this later in Settings, or by right-clicking the IEUStudia icon next to the clock.</div>`;
   }
   function stepDownload() {
@@ -344,7 +346,7 @@
       }
       if (k === "background") {
         const r = await call("app_config", { tray: U.ch.tray, start_with_windows: U.ch.tray && U.ch.startup, notify_recordings: U.ch.notify_recordings,
-          notify_announcements: U.ch.notify_announcements, notify_materials: U.ch.notify_materials });
+          notify_announcements: U.ch.notify_announcements, notify_materials: U.ch.notify_materials, notify_reminders: U.ch.notify_reminders });
         if (!r.ok) { toast(r.error, "error"); return; }
       }
       go(U.step + 1);
@@ -469,7 +471,8 @@
         ${row("Start with Windows", "Start the background checks when you sign in to Windows.", sw("start_with_windows", !app.tray))}
         ${row("New lecture recordings", "Of your own section.", sw("notify_recordings", !app.tray))}
         ${row("New announcements", "Quiz, exam and homework news is marked as a heads-up.", sw("notify_announcements", !app.tray))}
-        ${row("New files", "Slides and PDFs added to a course.", sw("notify_materials", !app.tray))}</div>
+        ${row("New files", "Slides and PDFs added to a course.", sw("notify_materials", !app.tray))}
+        ${row("Quizzes and exams coming up", "A reminder the evening before an announced quiz, and before an exam week: from the background checks, or from IEUStudia itself while it's open.", sw("notify_reminders"))}</div>
       <div class="card set-card"><h3>Storage</h3>${use}
         ${removable.map(([id, l, mb]) => row(l, `${gb(mb)} · not in use`, `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}">${I("x", "sm")} Remove</button>`)).join("")}</div>
       <div class="card set-card"><h3>About</h3>
@@ -522,7 +525,7 @@
 
   // ------------------------------------------------------------------ browser preview (mock)
   St.mocks.setup_state = () => ({ ok: true, model: "large-v3-turbo", output_dir: "C:\\Users\\student\\Documents\\IEUStudia", frozen: true, startup: false,
-    app: { onboarded: false, terms_accepted: "", ai_provider: "", codex_model: "", local_model: "qwen3-1.7b", tray: false, start_with_windows: false, notify_recordings: true, notify_announcements: true, notify_materials: false },
+    app: { onboarded: false, terms_accepted: "", ai_provider: "", codex_model: "", local_model: "qwen3-1.7b", tray: false, start_with_windows: false, notify_recordings: true, notify_announcements: true, notify_materials: false, notify_reminders: true },
     facts: { disk: { data_dir: "C:\\Users\\student\\AppData\\Local\\IEUStudia", data_free_gb: 182.4 } },
     verdict: { ok: true, blockers: location.hash.includes("weak") ? ["This processor does not support AVX instructions, which the speech recognition needs."] : [], warnings: [], gpu: true, recommended_model: "large-v3-turbo", recommended_llm: "qwen3-4b",
       models: { "large-v3-turbo": { ok: true }, "large-v3": { ok: true }, medium: { ok: true }, small: { ok: true } },

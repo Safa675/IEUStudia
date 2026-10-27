@@ -189,13 +189,26 @@ def class_times(days: list[dict[str, Any]], today: dt.date) -> dict[int, str]:
     return out
 
 
+# Turkey's public holidays on a fixed date: no classes (New Year, 23 April, 1 May, 19 May, 15 July, 30 August, 29 October)
+HOLIDAYS = {(1, 1), (4, 23), (5, 1), (5, 19), (7, 15), (8, 30), (10, 29)}
+# Ramazan and Kurban Bayramı move every year (Diyanet's calendar): add the next academic year's here
+FEASTS = [("2026-03-20", 3), ("2026-05-27", 4), ("2027-03-09", 3), ("2027-05-16", 4)]
+FEAST_DAYS = {(dt.date.fromisoformat(d) + dt.timedelta(days=i)).isoformat() for d, n in FEASTS for i in range(n)}
+
+
+def holiday(d: dt.date) -> bool:
+    """A public holiday in Turkey: no classes that day."""
+    return (d.month, d.day) in HOLIDAYS or d.isoformat() in FEAST_DAYS
+
+
 def week_classes(start: str, end: str, times: dict[int, str]) -> list[dict[str, str]]:
-    """The course's classes in a week by its usual schedule: [{"date", "end"}] (none if the schedule is unknown)."""
+    """The course's classes in a week by its usual schedule, public holidays left out: [{"date", "end"}] (none if
+    the schedule is unknown)."""
     if not (start and times):
         return []
     a, b = dt.date.fromisoformat(start), dt.date.fromisoformat(end or start)
     days = (a + dt.timedelta(days=i) for i in range((b - a).days + 1))
-    return [{"date": d.isoformat(), "end": times[d.weekday()]} for d in days if d.weekday() in times]
+    return [{"date": d.isoformat(), "end": times[d.weekday()]} for d in days if d.weekday() in times and not holiday(d)]
 
 
 def classes_over(classes: list[dict[str, str]], now: dt.datetime) -> bool:

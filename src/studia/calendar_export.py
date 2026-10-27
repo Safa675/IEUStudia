@@ -35,11 +35,13 @@ def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None
             los = [f"LO{n}: {d['outcomes_en'][n - 1]}" if n <= len(d["outcomes_en"]) else f"LO{n}" for n in e["los"]]
             src = e["sources"][0]["title"] if e.get("sources") else ""
             # a quiz is held in one of the week's classes; midterms and finals follow the exam schedule
-            classes = [x["date"] for x in w.get("classes") or []] if e["kind"] == "quiz" else []
+            held = (w.get("classes") or []) if e["kind"] == "quiz" else []
+            classes, ends = [x["date"] for x in held], [x["end"] for x in held]
             when = (f"Probably in class on {_days(classes)}; the exact day was not announced: check IEULearn."
                     if classes else "The exact day was not announced: check IEULearn." if e["kind"] == "quiz"
                     else "The exact day and time come from the exam schedule: check IEULearn.")
             out.append({"uid": f"{c.id}-{e['kind']}-{e['no']}", "course": d["code"], "name": e["name"],
+                        "course_id": c.id, "kind": e["kind"], "classes": classes, "ends": ends, "los": list(e["los"]),
                         "start": classes[0] if classes else w["start"],
                         "end": classes[-1] if classes else w["end"] or w["start"], "week": w["no"],
                         "notes": [f"Week {w['no']}" + (f" ({w['topic_en'] or w['topic_tr']})" if w["topic_en"] or w["topic_tr"] else ""),
@@ -48,6 +50,7 @@ def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None
         for w in d["weeks"]:
             if w["exam"] and w["start"] and w["no"] not in covered:
                 out.append({"uid": f"{c.id}-syllabus-week{w['no']}", "course": d["code"], "name": w["exam_label"] or "Exam",
+                            "course_id": c.id, "kind": "exam", "classes": [], "ends": [], "los": [],
                             "start": w["start"], "end": w["end"] or w["start"], "week": w["no"],
                             "notes": [f"Week {w['no']} in the syllabus: {w['exam_label']}.",
                                       "The exact day and time come from the exam schedule: check IEULearn."]})

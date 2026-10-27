@@ -1303,7 +1303,7 @@ class PlanRunner:
         folder = course_dir(self._s.output_root, course, self._s.lib.courses(True)) / sub
         folder.mkdir(parents=True, exist_ok=True)
         stamp = (plan.get("created_at") or dt.datetime.now().isoformat())[:10]
-        path = folder / safe_name(f"{stamp} - {title}.md", 120)
+        path = folder / (safe_name(f"{stamp} - {title}", 117) + ".md")        # a long title keeps its .md
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_bytes(text.encode("utf-8"))
         tmp.replace(path)

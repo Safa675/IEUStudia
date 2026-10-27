@@ -33,6 +33,7 @@ class Settings:
     capture_slides: bool = True        # extract slides from Panopto's screen recording
     min_duration_s: int = 60
     theme: str = "system"              # system | light | dark
+    text_size: int = 100               # transcripts, notes and chat, in percent (90-130)
     parallel_downloads: int = 2
     first_run_done: bool = False
     ai_model: str = "sonnet"           # model alias passed to the Claude CLI (chat, study notes)
@@ -86,6 +87,7 @@ def _from_dict(raw: dict[str, Any]) -> Settings:
         if getattr(s, key) not in ("haiku", "sonnet", "opus") and not (key == "plan_model" and getattr(s, key) == ""):
             setattr(s, key, fallback)
     s.parallel_downloads = max(1, min(4, s.parallel_downloads))
+    s.text_size = max(90, min(130, s.text_size))
     return s
 
 

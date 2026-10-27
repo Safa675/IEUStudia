@@ -25,6 +25,7 @@ class AppConfig:
     notify_recordings: bool = True     # new lecture recordings (your section)
     notify_announcements: bool = True  # new announcements (assessment news first)
     notify_materials: bool = False     # new files on IEULearn
+    notify_reminders: bool = True      # the evening before an announced quiz, and before an exam week
     sync_minutes: int = 30             # how often the helper checks
     check_updates: bool = True         # look for a new version of IEUStudia on GitHub about once a day
     version: int = 0                   # 1: "codex" is only the Codex CLI (see migrate)

@@ -21,7 +21,7 @@
         <div><b>${esc(l.kind)} ${esc(l.label)}</b> ${l.any_done ? `<span class="pill done">${I("check")}Transcribed</span>` : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(l.day_key)}">${I("wave", "sm")} Transcribe</button>`}
           ${l.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(l.day_key)}">${I("file-text", "sm")} Read</button>` : ""}</div>
         ${l.stressed.length ? `<ul class="dg-stars">${l.stressed.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}</div></div>`).join("");
-    return `<div class="card dg-course"><div class="dg-head" data-act="go" data-view="course" data-id="${esc(c.id)}">
+    return `<div class="card dg-course"><div class="dg-head" data-act="go" data-view="course" data-id="${esc(c.id)}" tabindex="0" role="button">
         <span class="dg-code">${esc(c.code)}</span><div class="grow"><b>${esc(c.name)}</b>${c.week ? `<div class="dim">Week ${c.week.no} · ${esc(c.week.topic)}</div>` : ""}</div>${I("chevron-right", "sm")}</div>
       ${c.coming.length ? `<div class="dg-coming">${c.coming.map((e) => `<span class="plan-pill ${e.this_week && !e.done ? "now" : ""} ${e.done ? "done" : ""}"><b>${esc(e.name)}</b><span>${e.done ? "done" : e.this_week ? "this week" : `week ${e.week}`}</span>${e.los.length ? `<span class="lo">LO${e.los.join(", LO")}</span>` : ""}</span>`).join("")}</div>` : ""}
       ${lec ? `<div class="dg-sec">${lec}</div>` : ""}
@@ -39,7 +39,8 @@
     const todo = d.todo.map((t) => {
       const act = t.kind === "transcribe" ? `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(t.day_key)}">${I("wave", "sm")} Transcribe</button>`
         : t.kind === "download" ? `<button class="btn ghost sm" data-act="mat-get" data-id="${esc(t.resource_id)}">${I("download", "sm")} Download</button>`
-          : t.kind === "prepare" ? `<button class="btn ghost sm" data-act="plan-new" data-id="${esc(t.course_id)}">${I("youtube", "sm")} Make a plan</button>` : "";
+          : t.kind === "prepare" ? (t.name ? `<button class="btn ghost sm" data-act="ready-open" data-cid="${esc(t.course_id)}" data-name="${esc(t.name)}">${I("list-checks", "sm")} Get ready</button>`
+            : `<button class="btn ghost sm" data-act="plan-new" data-id="${esc(t.course_id)}">${I("youtube", "sm")} Make a plan</button>`) : "";
       return `<div class="dg-todo"><span class="dg-code">${esc(t.course)}</span><span class="grow">${esc(t.text)}</span>${act}</div>`;
     }).join("");
     const writing = g.running && g.busyOffset === d.week.offset;
@@ -80,7 +81,7 @@
 
   // browser preview
   St.mocks.digest = (offset) => ({ ok: true, summary: {}, digest: { week: { start: "2026-10-19", end: "2026-10-25", offset, label: "19 Oct – 25 Oct 2026" },
-    todo: [{ kind: "prepare", course: "MATH 240", course_id: "17933", text: "Quiz 2 is this week (LO3, LO4)" }, { kind: "transcribe", course: "EEE 242", course_id: "17653", day_key: "17653|x|lecture", text: "Transcribe the lecture of Friday 16 October" }],
+    todo: [{ kind: "prepare", course: "MATH 240", course_id: "17933", name: "Quiz 2", text: "Quiz 2 is this week (LO3, LO4)" }, { kind: "transcribe", course: "EEE 242", course_id: "17653", day_key: "17653|x|lecture", text: "Transcribe the lecture of Friday 16 October" }],
     courses: [{ id: "17933", code: "MATH 240", name: "Probability for Engineers", week: { no: 5, topic: "Bayes' rule" },
       lectures: [{ day_key: "17933|x|lecture", date: "2026-10-21", label: "Wednesday 21 October", kind: "Lecture", transcribed: true, any_done: true, stressed: ["Next week, we have a quiz.", "This denominator is the total probability — be careful."] }],
       new_files: [{ id: "m1", title: "Week05_Student", downloaded: false }], announcements: [{ id: "a1", title: "Class Rescheduling Announcement" }],
