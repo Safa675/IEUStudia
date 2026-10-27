@@ -151,6 +151,17 @@ def mark_instance(name: str, phase: str) -> None:
         pass
 
 
+def instance_held(name: str) -> bool:
+    """Does a running process hold the single-instance mutex ``name``?"""
+    k = ctypes.windll.kernel32
+    k.OpenMutexW.restype = ctypes.c_void_p
+    h = k.OpenMutexW(0x00100000, False, name)          # SYNCHRONIZE
+    if h:
+        k.CloseHandle(ctypes.c_void_p(h))
+        return True
+    return False
+
+
 def find_class_window(class_name: str) -> int:
     user32 = ctypes.WinDLL("user32")
     user32.FindWindowW.restype = wt.HWND

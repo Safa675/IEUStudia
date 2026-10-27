@@ -3,9 +3,11 @@ certificate bundle for every connection; how long a server that doesn't answer m
 
 import errno
 import ssl
+import sys
 import types
 
 import certifi
+import pytest
 import requests
 import urllib3.util.ssl_ as u3
 
@@ -13,6 +15,7 @@ from studia import net
 from studia.net import NetworkError, plain_error
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows paths and messages")
 def test_errors_are_said_plainly():
     assert plain_error(requests.ConnectionError("Max retries"), "https://huggingface.co/x").startswith(
         "Can't reach huggingface.co. Check your internet connection")

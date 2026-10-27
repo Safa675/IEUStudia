@@ -4,6 +4,7 @@ plan titles, a PDF held open, file downloads over a Wi-Fi drop, flashcards to pr
 notification."""
 
 import datetime as dt
+import sys
 import threading
 import types
 from pathlib import Path
@@ -177,6 +178,7 @@ def test_a_long_plan_title_keeps_its_md(tmp_path):
     assert path.suffix == ".md" and path.read_text(encoding="utf-8") == "# t\n"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file locking and its message")
 def test_a_pdf_held_open_by_a_viewer_is_named(tmp_path, monkeypatch):
     from studia import export
     from studia.net import plain_error
@@ -301,6 +303,7 @@ def test_a_batch_done_in_the_background_is_told(tmp_path, result, local, expect)
     assert told == ([expect] if expect else [])
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Inno Setup finds the Win32 tray window")
 def test_the_installer_still_finds_the_background_helper():
     """The installer closes the helper by its window class before it replaces files; notification icons of the app
     itself have classes of their own."""

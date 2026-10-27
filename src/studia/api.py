@@ -19,8 +19,8 @@ from .i18n import t, tn
 from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
 from .services import NOTE_KINDS, Services
-from .winutil import (TaskbarProgress, flash_taskbar, is_foreground, normal_priority, open_in_browser, open_path,
-                      reveal, set_clipboard)
+from .osutil import (TaskbarProgress, flash_taskbar, is_foreground, normal_priority, open_in_browser, open_path,
+                     reveal, set_clipboard)
 
 log = logging.getLogger("studia")
 AUTO_SYNC_S = 30 * 60        # while the app is open: look for new lectures, materials and announcements
@@ -197,7 +197,7 @@ class Api:
         self._notify(title, text, target)
 
     def _notify(self, title: str, text: str, target: str = "home") -> None:
-        from .tray import Notifier
+        from .osutil import Notifier
 
         with self._notify_lock:                           # one icon, however many threads tell something at once
             if self._notifier is None:
@@ -205,7 +205,7 @@ class Api:
             self._notifier.notify(title, text, target)
 
     def _notification_clicked(self, target: Optional[Any]) -> None:
-        from .winutil import bring_to_front
+        from .osutil import bring_to_front
 
         if self._hwnd:
             bring_to_front(self._hwnd)
@@ -408,7 +408,7 @@ class Api:
 
         from .components import download
         from .net import plain_error
-        from .winutil import KeepAwake
+        from .osutil import KeepAwake
 
         if self._setup_running:
             return {"ok": True, "running": True}
@@ -673,7 +673,7 @@ class Api:
     def _watch_open_requests(self) -> None:
         """Another start of the app (e.g. a notification was clicked) asks this window to show a page: it writes the
         page to a file and sets an event this thread waits for."""
-        from .winutil import instance_name, open_request_event, take_open_request, wait_event
+        from .osutil import instance_name, open_request_event, take_open_request, wait_event
 
         name = instance_name()
         event = open_request_event(name)

@@ -24,6 +24,7 @@ MIN_RAM_GB = 4.0
 MIN_CUDA_DRIVER = 527.0           # CUDA 12 on Windows
 WEBVIEW2_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 GB = 1024 ** 3
+WINDOWS = sys.platform == "win32"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -34,8 +35,23 @@ class _MemoryStatus(ctypes.Structure):
                 ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
 
 
+def _meminfo() -> dict[str, float]:
+    """Linux: /proc/meminfo in GB."""
+    out: dict[str, float] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, _, rest = line.partition(":")
+            out[key] = int(rest.split()[0]) * 1024 / GB
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
 def memory_gb() -> tuple[float, float]:
     """(total, available) physical memory in GB that Windows can use."""
+    if not WINDOWS:
+        m = _meminfo()
+        return m.get("MemTotal", 0.0), m.get("MemAvailable", 0.0)
     st = _MemoryStatus()
     st.dwLength = ctypes.sizeof(_MemoryStatus)
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
@@ -46,6 +62,8 @@ def memory_gb() -> tuple[float, float]:
 def installed_memory_gb() -> float:
     """The memory built into the PC, as its specs say ("8 GB"); 0 if unknown. Windows can use a little less: the
     firmware and the integrated graphics keep some, so an 8 GB laptop has about 7.7 GB usable."""
+    if not WINDOWS:
+        return 0.0                               # unknown on Linux: the checks go by what is usable
     kb = ctypes.c_ulonglong(0)
     try:
         if ctypes.windll.kernel32.GetPhysicallyInstalledSystemMemory(ctypes.byref(kb)):
@@ -80,6 +98,19 @@ def _reg(root: int, path: str, name: str) -> str:
 
 
 def cpu_info() -> dict[str, Any]:
+    if not WINDOWS:
+        name, flags = "", set()
+        try:
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                key, _, val = line.partition(":")
+                if key.strip() == "model name" and not name:
+                    name = val.strip()
+                elif key.strip() == "flags" and not flags:
+                    flags = set(val.split())
+        except OSError:
+            pass
+        return {"name": " ".join(name.split()) or platform.processor(), "cores": os.cpu_count() or 1,
+                "avx": "avx" in flags, "avx2": "avx2" in flags, "arch": platform.machine()}
     import winreg
 
     feature = ctypes.windll.kernel32.IsProcessorFeaturePresent
@@ -89,7 +120,22 @@ def cpu_info() -> dict[str, Any]:
             "arch": platform.machine()}
 
 
+def linux_info() -> dict[str, Any]:
+    """The Linux counterpart of :func:`windows_info` (same keys; ``build`` is not a Windows build)."""
+    name = ""
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if line.startswith("PRETTY_NAME="):
+                name = line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return {"name": name or "Linux", "build": 0, "version": platform.release(), "edition": "", "linux": True,
+            "x64": platform.machine().upper() in ("AMD64", "X86_64", "ARM64", "AARCH64") and sys.maxsize > 2 ** 32}
+
+
 def windows_info() -> dict[str, Any]:
+    if not WINDOWS:
+        return linux_info()
     v = sys.getwindowsversion()
     import winreg
 
@@ -101,6 +147,8 @@ def windows_info() -> dict[str, Any]:
 
 
 def webview2_version() -> str:
+    if not WINDOWS:
+        return ""                                # the window is Qt WebEngine on Linux
     import winreg
 
     for root, path in ((winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_GUID}"),
@@ -128,9 +176,9 @@ def nvidia_gpu() -> dict[str, Any]:
 
 
 def _driver_number(driver: str) -> float:
-    try:
-        major, _, minor = driver.partition(".")
-        return float(f"{int(major)}.{int(minor or 0):02d}")
+    try:                                         # "566.36" on Windows, "595.99.02" on Linux
+        major, _, rest = driver.partition(".")
+        return float(f"{int(major)}.{int(rest.split('.')[0] or 0):02d}")
     except ValueError:
         return 0.0
 
@@ -168,9 +216,10 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
     ram = float(facts.get("ram_gb") or 0)
     blockers: list[str] = []
     warnings: list[str] = []
+    linux = bool(w.get("linux"))
     if not w.get("x64"):
-        blockers.append(t("IEUStudia needs 64-bit Windows."))
-    if int(w.get("build") or 0) < MIN_BUILD:
+        blockers.append(t("IEUStudia needs a 64-bit system.") if linux else t("IEUStudia needs 64-bit Windows."))
+    if not linux and int(w.get("build") or 0) < MIN_BUILD:
         blockers.append(t("IEUStudia needs Windows 10 (version 1809 or newer) or Windows 11."))
     if not cpu.get("avx"):
         blockers.append(t("This processor can't run the speech recognition: it lacks the AVX instructions it needs "
@@ -184,7 +233,7 @@ def assess(facts: dict[str, Any], need_gb: float = 0.0) -> dict[str, Any]:
         blockers.append(t("Not enough free disk space: the downloads need about {need} GB plus room for your lectures, "
                           "but drive {drive} has {free} GB free.", need=num(need_gb, 1, group=False),
                           drive=Path(facts["disk"]["data_dir"]).anchor or "C:", free=num(free, 1, group=False)))
-    if not facts.get("webview2"):
+    if not linux and not facts.get("webview2"):
         warnings.append(t("The Microsoft Edge WebView2 Runtime wasn't found. IEUStudia's window needs it (it comes with "
                           "Windows 11 and up-to-date Windows 10)."))
     driver = _driver_number(gpu.get("driver", ""))
@@ -231,9 +280,12 @@ def _summary(facts: dict[str, Any], cuda: bool) -> list[dict[str, str]]:
     cpu_value = (t("{name} · {n} threads", name=cpu["name"], n=cpu["cores"]) if cpu.get("avx2") else
                  t("{name} · {n} threads · older type, slower", name=cpu["name"], n=cpu["cores"]) if cpu.get("avx") else
                  t("{name} · {n} threads · can't transcribe (no AVX)", name=cpu["name"], n=cpu["cores"]))
-    rows = [{"label": "Windows", "value": t("{name} {version} (build {build})", name=w["name"], version=w.get("version") or "",
-                                             build=w["build"]).replace("  ", " "),
-             "ok": "yes" if w.get("x64") and w["build"] >= MIN_BUILD else "no"},
+    system = ({"label": t("System"), "value": t("{name} · Linux {version}", name=w["name"], version=w.get("version") or ""),
+               "ok": "yes" if w.get("x64") else "no"} if w.get("linux") else
+              {"label": "Windows", "value": t("{name} {version} (build {build})", name=w["name"],
+                                              version=w.get("version") or "", build=w["build"]).replace("  ", " "),
+               "ok": "yes" if w.get("x64") and w["build"] >= MIN_BUILD else "no"})
+    rows = [system,
             {"label": t("Processor"), "value": cpu_value,
              "ok": "yes" if cpu.get("avx2") else ("warn" if cpu.get("avx") else "no")},
             {"label": t("Memory"), "value": t("{gb} GB", gb=num(facts.get("ram_installed_gb") or facts["ram_gb"])),

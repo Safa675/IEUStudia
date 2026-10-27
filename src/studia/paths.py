@@ -15,6 +15,7 @@ import functools
 import os
 import re
 import shutil
+import sys
 import uuid
 from pathlib import Path
 
@@ -50,6 +51,9 @@ def _home_override() -> Path | None:
 
 
 def _local_root() -> Path:
+    if sys.platform != "win32":                  # Linux: ~/.local/share (XDG_DATA_HOME)
+        data = os.environ.get("XDG_DATA_HOME", "").strip()
+        return Path(data) if data else Path.home() / ".local" / "share"
     local = os.environ.get("LOCALAPPDATA", "").strip()
     return Path(local) if local else Path.home() / "AppData" / "Local"
 
@@ -161,7 +165,17 @@ def logs_dir() -> Path:
 
 @functools.lru_cache(maxsize=1)
 def documents_dir() -> Path:
-    """The user's real Documents folder (honours OneDrive/known-folder redirection)."""
+    """The user's real Documents folder (honours OneDrive/known-folder redirection; on Linux, xdg-user-dirs)."""
+    if sys.platform != "win32":
+        import subprocess
+
+        try:
+            out = subprocess.run(["xdg-user-dir", "DOCUMENTS"], capture_output=True, text=True, timeout=5).stdout.strip()
+            if out and Path(out) != Path.home():     # xdg-user-dir answers $HOME when the folder isn't set up
+                return Path(out)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return Path.home() / "Documents"
     try:
         guid = ctypes.create_string_buffer(_FOLDERID_DOCUMENTS.bytes_le, 16)
         out = ctypes.c_void_p()

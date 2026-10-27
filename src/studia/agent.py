@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import Any, Optional
 from .i18n import date_short, t, tn
 
 log = logging.getLogger("studia")
+WINDOWS = sys.platform == "win32"
 
 CMD_OPEN, CMD_SYNC, CMD_PAUSE, CMD_STARTUP, CMD_QUIT = 1, 2, 3, 4, 9
 FIRST_CHECK_S = 90            # after signing in to Windows, let the PC settle first
@@ -32,37 +34,23 @@ REMIND_UNTIL = dt.time(14)    # ... or on the day itself until 14:00, if the PC 
 
 
 def instance_name() -> str:
-    from .winutil import instance_name as ui_name
+    from .osutil import instance_name as ui_name
 
     return ui_name().replace("SingleInstance", "Helper")
 
 
 def ui_running() -> bool:
     """Is the app window open (it holds its single-instance lock)?"""
-    import ctypes
+    from .osutil import instance_held, instance_name as ui_name
 
-    from .winutil import instance_name as ui_name
-
-    k = ctypes.windll.kernel32
-    k.OpenMutexW.restype = ctypes.c_void_p
-    h = k.OpenMutexW(0x00100000, False, ui_name())          # SYNCHRONIZE
-    if h:
-        k.CloseHandle(ctypes.c_void_p(h))
-        return True
-    return False
+    return instance_held(ui_name())
 
 
 def running() -> bool:
     """Is the helper running?"""
-    import ctypes
+    from .osutil import instance_held
 
-    k = ctypes.windll.kernel32
-    k.OpenMutexW.restype = ctypes.c_void_p
-    h = k.OpenMutexW(0x00100000, False, instance_name())
-    if h:
-        k.CloseHandle(ctypes.c_void_p(h))
-        return True
-    return False
+    return instance_held(instance_name())
 
 
 def ensure_running() -> bool:
@@ -272,7 +260,7 @@ class Helper:
         self.screen_on = True
         self.back_at = 0.0               # when the screen last came on or the PC woke up (wall clock)
         self.told_rejected = False       # said once that IEULearn refused the saved password
-        from .tray import Tray
+        from .osutil import Tray
 
         self.tray = Tray("IEUStudia", _icon(), self._menu, self._command, self._open, on_power=self._power)
 
@@ -285,7 +273,8 @@ class Helper:
                 (CMD_SYNC, t("Check IEULearn now"), False, not ui_running()),    # set in Settings applies at once
                 (0, "", False, False),
                 (CMD_PAUSE, t("Pause notifications"), self.paused, True),
-                (CMD_STARTUP, t("Start with Windows"), launch.startup_enabled(), True),
+                (CMD_STARTUP, t("Start with Windows") if WINDOWS else t("Start at login"), launch.startup_enabled(),
+                 True),
                 (0, "", False, False),
                 (CMD_QUIT, t("Stop background checks"), False, True)]
 
@@ -329,7 +318,7 @@ class Helper:
     # ---- work
     def _loop(self) -> None:
         from . import appconfig
-        from .winutil import background_work
+        from .osutil import background_work
 
         self.wake.wait(self.first_delay)
         while not self.stop.is_set():
@@ -440,7 +429,7 @@ class Helper:
 
 
 def _icon() -> Path:
-    return Path(__file__).with_name("assets") / "icon.ico"
+    return Path(__file__).with_name("assets") / ("icon.ico" if WINDOWS else "icon.png")
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -449,7 +438,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     from .accounts import activate
     from .log import setup_logging
     from .paths import migrate_legacy_data
-    from .winutil import acquire_single_instance, set_app_id
+    from .osutil import acquire_single_instance, set_app_id
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if not acquire_single_instance(instance_name()):
@@ -464,6 +453,6 @@ def main(argv: Optional[list[str]] = None) -> None:
         log.info("Helper: background mode is off; not starting")
         return
     i18n.load_language()
-    log.info("Helper started%s", " at Windows sign-in" if "--at-login" in argv else "")
+    log.info("Helper started%s", " at sign-in" if "--at-login" in argv else "")
     Helper("--at-login" in argv).run()
     log.info("Helper stopped")

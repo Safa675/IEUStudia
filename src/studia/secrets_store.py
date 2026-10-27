@@ -1,6 +1,8 @@
 """Credentials + session cookies, encrypted for the current Windows user with DPAPI.
 
-Only this Windows account on this PC can decrypt ``secrets.bin``; nothing is ever logged.
+Only this Windows account on this PC can decrypt ``secrets.bin``; nothing is ever logged. On Linux the file is
+encrypted with a key kept in the desktop's keyring instead (see :mod:`linux_secrets`); without a keyring nothing is
+stored, never in plain text.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -19,6 +22,7 @@ from typing import Any, Iterator, Optional
 from .paths import secrets_path
 
 log = logging.getLogger("studia")
+WINDOWS = sys.platform == "win32"
 _lock = threading.Lock()
 _ENTROPY = b"LectureScribe/secrets/v1"
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
@@ -48,10 +52,18 @@ def _crypt(data: bytes, protect: bool) -> bytes:
 
 
 def protect(data: bytes) -> bytes:
+    if not WINDOWS:
+        from .linux_secrets import protect as linux_protect
+
+        return linux_protect(data)
     return _crypt(data, True)
 
 
 def unprotect(data: bytes) -> bytes:
+    if not WINDOWS:
+        from .linux_secrets import unprotect as linux_unprotect
+
+        return linux_unprotect(data)
     return _crypt(data, False)
 
 
@@ -60,12 +72,13 @@ def _file(folder: Optional[Path]) -> Path:
     return Path(folder) / "secrets.bin" if folder else secrets_path()
 
 
-_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_k32.CreateMutexW.restype = wt.HANDLE
-_k32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
-_k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
-_k32.ReleaseMutex.argtypes = [wt.HANDLE]
-_k32.CloseHandle.argtypes = [wt.HANDLE]
+if WINDOWS:
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _k32.CreateMutexW.restype = wt.HANDLE
+    _k32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
+    _k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    _k32.ReleaseMutex.argtypes = [wt.HANDLE]
+    _k32.CloseHandle.argtypes = [wt.HANDLE]
 
 
 @contextlib.contextmanager
@@ -73,6 +86,10 @@ def _turn(folder: Optional[Path] = None) -> Iterator[None]:
     """One reader-and-writer of ``secrets.bin`` at a time: the threads of this process, and the app and its tray
     helper (two processes) through a named mutex. Without it, one could write back what it read before the other
     saved a new password."""
+    if not WINDOWS:
+        with _lock, _file_lock(_file(folder)):
+            yield
+        return
     with _lock:
         name = "Local\\IEUStudia-secrets-" + hashlib.sha1(str(_file(folder)).lower().encode("utf-8")).hexdigest()[:16]
         handle = _k32.CreateMutexW(None, False, name)
@@ -84,6 +101,20 @@ def _turn(folder: Optional[Path] = None) -> Iterator[None]:
                 _k32.ReleaseMutex(handle)
             if handle:
                 _k32.CloseHandle(handle)
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path) -> Iterator[None]:
+    """Linux: the app and its helper take turns through an flock on ``secrets.lock`` next to the file."""
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path.with_name(path.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)                                     # closing it lets go of the lock
 
 
 def _load(folder: Optional[Path] = None) -> dict[str, Any]:

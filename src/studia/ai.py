@@ -36,6 +36,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -73,6 +74,10 @@ def _candidates() -> list[str]:
     c += sorted(glob.glob(os.path.join(env.get("USERPROFILE", ""), ".vscode", "extensions",
                                        "anthropic.claude-code-*", "resources", "native-binary", "claude.exe")),
                 reverse=True)
+    if sys.platform != "win32":                  # Linux: the native installer's ~/.local/bin, npm, PATH
+        home = os.path.expanduser("~")
+        c += [os.path.join(home, ".local", "bin", "claude"), os.path.join(home, ".claude", "local", "claude"),
+              shutil.which("claude") or ""]
     return [p for p in c if p and os.path.isfile(p)]
 
 
@@ -758,6 +763,8 @@ def _codex_candidates() -> list[str]:
          os.path.join(env.get("LOCALAPPDATA", ""), "Programs", "codex", "codex.exe"),
          os.path.join(env.get("USERPROFILE", ""), ".local", "bin", "codex.exe"),
          shutil.which("codex.exe") or "", shutil.which("codex") or "", codex_exe()]
+    if sys.platform != "win32":
+        c.insert(0, os.path.join(os.path.expanduser("~"), ".local", "bin", "codex"))
     return [x for x in c if x and os.path.isfile(x)]
 
 
@@ -1049,6 +1056,17 @@ def codex_models() -> list[str]:
 _NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
 
+def _console(cmd: list[str], env: Optional[dict[str, str]] = None) -> None:
+    """A console window of its own for ``cmd`` (on Linux, a terminal window)."""
+    if sys.platform == "win32":
+        subprocess.Popen(cmd, creationflags=_NEW_CONSOLE, env=env)
+        return
+    from .osutil import run_in_terminal
+
+    if not run_in_terminal(cmd, env):
+        raise RuntimeError(t("No terminal app was found. Run this in a terminal: {command}", command=" ".join(cmd)))
+
+
 def start_login(which: str) -> None:
     """Open the vendor's own sign-in: a small console window from the vendor's tool, which opens the sign-in page in
     the browser and finishes by itself (IEUStudia never sees the password)."""
@@ -1058,12 +1076,12 @@ def start_login(which: str) -> None:
         info = claude_cli_info()
         if not info["available"]:
             raise RuntimeError(t("Install Claude Code first."))
-        subprocess.Popen([info["path"], "auth", "login", "--claudeai"], creationflags=_NEW_CONSOLE, env=_claude_env())
+        _console([info["path"], "auth", "login", "--claudeai"], _claude_env())
     elif which == "codex":
         info = codex_cli_info()
         if not info["available"]:
             raise RuntimeError(t("Install the Codex CLI first."))
-        subprocess.Popen([info["path"], "login"], creationflags=_NEW_CONSOLE)
+        _console([info["path"], "login"])
     else:
         raise ValueError(which)
     forget_test(which)

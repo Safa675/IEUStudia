@@ -139,6 +139,33 @@ minutes. Without one, the setup picks the small speech model, which runs on the 
 takes roughly 20 minutes to an hour, depending on the processor. It runs in the background, so you can keep using
 the app (or your PC) meanwhile.
 
+### On Linux
+
+IEUStudia also runs on Linux from its source (tested on Ubuntu 26.04 with GNOME). There's no installer: you need
+[uv](https://docs.astral.sh/uv/), and then
+
+```bash
+git clone https://github.com/mirzaisi/IEUStudia.git
+cd IEUStudia
+uv sync                        # add --extra gpu for an NVIDIA graphics card (cuBLAS and cuDNN, about 1.3 GB)
+uv run studia-gui              # the app; `uv run studia --help` lists the command-line version
+```
+
+What is different from Windows:
+
+- **Your EkoID password** is encrypted with a key kept in your desktop's keyring (GNOME Keyring or KWallet),
+  instead of Windows DPAPI. Without a keyring, IEUStudia doesn't store it at all and asks for it again.
+- **The window** is Qt WebEngine instead of WebView2 (installed by `uv sync`).
+- **Background checks** run without an icon next to the clock (GNOME has none); their notifications come from your
+  desktop, and *Start at login* adds an entry to `~/.config/autostart`.
+- **Claude** gets a Claude Code profile of its own (`~/.local/share/IEUStudia/tools/claude-config`), so you sign in
+  once in the setup and your own Claude Code settings, CLAUDE.md and hooks never come along. The Codex CLI isn't
+  installed for you: install it with `npm install -g @openai/codex`.
+- **Data** is in `~/.local/share/IEUStudia`, transcripts and notes in `~/Documents/IEUStudia`.
+- **Updates**: `git pull` and `uv sync`. The app's own updater only installs the Windows version.
+
+Linux support is looked after by the community: the Linux tests run in CI but don't block a change.
+
 ## AI features
 
 AI is optional. Transcripts, heads-ups, search and everything else work without it. There are five choices:
@@ -232,7 +259,7 @@ Claude needs Claude Pro or Max (Claude Code isn't part of the free plan). Everyt
 any subscription, and the offline model, which runs on your PC, is free.
 
 **Does it work on a Mac or on Linux?**
-Not right now. It depends on Windows parts such as WebView2, DPAPI and the notification area.
+On Linux, yes, from the source: see [On Linux](#on-linux). Not on a Mac yet.
 
 **Something stopped working after IEULearn changed.**
 That can happen. Please [open an issue](https://github.com/mirzaisi/IEUStudia/issues) and describe what you were

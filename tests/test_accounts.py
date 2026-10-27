@@ -2,6 +2,7 @@
 
 import ctypes
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -142,6 +143,7 @@ def test_restart_command(monkeypatch, tmp_path):
     assert calls == [[str(tmp_path / "pythonw.exe"), "-m", "studia.app", "--debug", "--restarted"]]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named mutex")
 def test_single_instance_waits_for_a_closing_copy():
     from studia import winutil
 
@@ -157,3 +159,22 @@ def test_single_instance_waits_for_a_closing_copy():
     assert winutil.acquire_single_instance(name, wait_s=5)
     assert 0.3 < time.monotonic() - t0 < 4
     kernel32.CloseHandle(winutil._mutex)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux flock")
+def test_single_instance_lock_on_linux_is_held_until_released(tmp_path, monkeypatch):
+    from studia import linuxutil
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    name = f"Local\\Studia-Test-{time.time_ns()}"
+    assert not linuxutil.instance_held(name)
+    assert linuxutil.acquire_single_instance(name)
+    assert linuxutil.instance_held(name)
+    fd = linuxutil._locks.pop(name)                       # as if another process held it
+    t0 = time.monotonic()
+    assert not linuxutil.acquire_single_instance(name, wait_s=0.3)
+    assert time.monotonic() - t0 >= 0.3
+    threading.Timer(0.4, lambda: os.close(fd)).start()
+    assert linuxutil.acquire_single_instance(name, wait_s=5)
+    linuxutil.release_single_instance()
+    assert not linuxutil.instance_held(name)

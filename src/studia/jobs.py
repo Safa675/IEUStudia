@@ -37,7 +37,7 @@ from .net import plain_error
 from .panopto import NeedPanoptoAuth, NotReady, Panopto
 from .paths import audio_cache_dir
 from .quality import SILENT_DBFS, NoSpeech, is_silent
-from .winutil import KeepAwake, set_low_priority
+from .osutil import KeepAwake, set_low_priority
 
 if TYPE_CHECKING:
     import numpy as np

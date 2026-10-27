@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 import zipfile
 from pathlib import Path
@@ -51,6 +52,13 @@ CUDA_WHEELS = [("nvidia-cublas-cu12", "12.8.", "nvidia/cublas/bin/"),
                ("nvidia-cuda-runtime-cu12", "12.8.", "nvidia/cuda_runtime/bin/")]
 CUDA_DLLS = ("cublas64_12.dll", "cublasLt64_12.dll")
 CUDA_SIZE_MB = 560                # download (the cuBLAS wheel); about 780 MB once unpacked
+CUDA_DISK_MB = 780
+WINDOWS = sys.platform == "win32"
+if not WINDOWS:                   # Linux: CTranslate2's Linux build brings neither cuBLAS nor cuDNN
+    CUDA_WHEELS = [("nvidia-cublas-cu12", "12.8.", "nvidia/cublas/lib/"),
+                   ("nvidia-cudnn-cu12", "9.", "nvidia/cudnn/lib/")]
+    CUDA_DLLS = ("libcublas.so.12", "libcublasLt.so.12", "libcudnn.so.9")
+    CUDA_SIZE_MB, CUDA_DISK_MB = 1250, 2100
 
 
 def _session() -> requests.Session:
@@ -88,6 +96,8 @@ def _dir_size(p: Path) -> int:
 # ----------------------------------------------------------------------------- CUDA runtime (cuBLAS)
 def cuda_sources() -> list[str]:
     """Folders that already provide cuBLAS for CUDA 12 (ours, the CUDA toolkit, or pip ``nvidia-*`` wheels)."""
+    if not WINDOWS:
+        return _linux_cuda_sources()
     found = []
     ours = cuda_dir()
     if (ours / ".complete").is_file() and all((ours / d).is_file() for d in CUDA_DLLS):   # not a download cut short
@@ -109,6 +119,23 @@ def cuda_sources() -> list[str]:
     return found
 
 
+def _linux_cuda_sources() -> list[str]:
+    """Linux: our folder, else the pip ``nvidia-*`` wheels' lib folders, when together they have every library."""
+    ours = cuda_dir()
+    if (ours / ".complete").is_file() and all((ours / d).is_file() for d in CUDA_DLLS):
+        return [str(ours)]
+    dirs: list[str] = []
+    try:
+        import nvidia  # type: ignore
+
+        for base in nvidia.__path__:
+            dirs += [str(Path(base) / sub / "lib") for sub in ("cublas", "cudnn") if (Path(base) / sub / "lib").is_dir()]
+    except ImportError:
+        pass
+    have = {f.name for d in dirs for f in Path(d).iterdir()}
+    return dirs if all(lib in have for lib in CUDA_DLLS) else []
+
+
 def cuda_ready() -> bool:
     return bool(cuda_sources())
 
@@ -124,9 +151,14 @@ def _pypi_wheel(package: str, prefix: str, session: requests.Session) -> dict[st
 
     for version in sorted((v for v in releases if v.startswith(prefix)), key=key, reverse=True):
         for f in releases[version]:
-            if f["filename"].endswith("win_amd64.whl") and not f.get("yanked"):
+            name = f["filename"]
+            built = name.endswith("win_amd64.whl") if WINDOWS else ("manylinux" in name and name.endswith("x86_64.whl"))
+            if built and not f.get("yanked"):
                 return {"version": version, "url": f["url"], "size": int(f["size"]), "sha256": f["digests"]["sha256"],
                         "filename": f["filename"]}
+    if not WINDOWS:
+        raise RuntimeError(t("No Linux build of {package} {version}x was found on PyPI.", package=package,
+                             version=prefix))
     raise RuntimeError(t("No Windows build of {package} {version}x was found on PyPI.", package=package, version=prefix))
 
 
@@ -163,7 +195,8 @@ def download_cuda(progress: Progress, cancel: Optional[threading.Event] = None) 
             raise RuntimeError(t("The download of {name} was damaged. Try again.", name=w["filename"]))
         with zipfile.ZipFile(dest) as z:
             for info in z.infolist():
-                if info.filename.startswith(member) and info.filename.lower().endswith(".dll"):
+                lib = info.filename.lower().endswith(".dll") if WINDOWS else ".so" in Path(info.filename).name
+                if info.filename.startswith(member) and lib:
                     out = target / Path(info.filename).name
                     part = out.with_name(out.name + ".part")
                     with z.open(info) as src, open(part, "wb") as dst:
@@ -234,7 +267,7 @@ def catalog(facts: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     return {
         "speech": [{"id": k, "label": t(v["label"]), "description": t(v["description"]), "size_mb": v["size_mb"],
                     "ready": model_is_downloaded(k)} for k, v in MODEL_PRESETS.items()],
-        "cuda": {"needed": gpu, "ready": cuda_ready(), "size_mb": CUDA_SIZE_MB, "disk_mb": 780},
+        "cuda": {"needed": gpu, "ready": cuda_ready(), "size_mb": CUDA_SIZE_MB, "disk_mb": CUDA_DISK_MB},
         "llm": [{"id": k, "label": t(v["label"]), "description": t(v["description"]), "size_mb": v["size_mb"],
                  "ready": llm_ready(k)} for k, v in LLM_PRESETS.items()],
     }

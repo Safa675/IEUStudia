@@ -12,6 +12,10 @@ dependencies = [
     "pypdfium2>=4.30",          # PDF text + page images of course materials
     "yt-dlp>=2025.1",           # video study plans: YouTube search, captions and chapters (no API key)
     "truststore>=0.10",         # HTTPS trusts what Windows trusts (antivirus HTTPS scanning, company proxies)
+    # Linux: the window (Qt WebEngine instead of WebView2) and the keyring that keeps the sign-in (instead of DPAPI)
+    "pywebview[qt]>=5.3; sys_platform == 'linux'",
+    "secretstorage>=3.3; sys_platform == 'linux'",
+    "cryptography>=42; sys_platform == 'linux'",
 ]
 
 [project.urls]
@@ -19,7 +23,7 @@ Homepage = "https://github.com/mirzaisi/IEUStudia"
 Issues = "https://github.com/mirzaisi/IEUStudia/issues"
 
 [project.optional-dependencies]
-# Only needed on machines WITHOUT the CUDA 12 toolkit on PATH (provides cuBLAS / cuDNN DLLs).
+# Only needed on machines WITHOUT the CUDA 12 toolkit on PATH (provides cuBLAS / cuDNN DLLs; on Linux, the .so files).
 gpu = ["nvidia-cublas-cu12>=12.4", "nvidia-cudnn-cu12>=9,<10"]
 
 [dependency-groups]

@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,7 @@ def test_no_translation_is_left_over():
     assert not stale, "Not in the code any more (or the English changed):\n" + "\n".join(f"  {v}: {k!r}" for k, v in stale.items())
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the start-up window is plain Win32")
 def test_the_start_up_window_has_its_turkish():
     from studia import splash
 

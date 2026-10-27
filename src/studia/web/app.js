@@ -1461,7 +1461,7 @@
         <button type="button" class="btn ghost icon sm" data-act="peek" title="${esc(t("Show password"))}">${I("eye", "sm")}</button></div></div>
       ${s.error ? `<div class="err">${I("alert-circle", "sm")}<span>${esc(s.error)}</span></div>` : ""}
       <button class="btn primary block" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? SPIN() + " " + t("Signing in…") : t("Sign in")}</button>
-      <div class="note">${I("lock", "sm")}<span>${t("Your password is sent only to learn.ieu.edu.tr. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: IEUStudia has none.")}</span></div>
+      <div class="note">${I("lock", "sm")}<span>${window.LS_LINUX ? t("Your password is sent only to learn.ieu.edu.tr. On this PC it is stored encrypted with a key in your desktop's keyring, so only your user account can read it. It never goes to any other server: IEUStudia has none.") : t("Your password is sent only to learn.ieu.edu.tr. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: IEUStudia has none.")}</span></div>
       <div class="note">${I("info", "sm")}<span>${t("IEUStudia is an independent student project, not affiliated with İzmir University of Economics, IEULearn or Panopto. Use it at your own risk.")}</span></div>
       ${others.length ? `<div class="si-others"><div class="lbl">${t("Or open another profile on this PC")}</div>${others.map((x) => `<button type="button" class="si-prof" data-act="profile-switch" data-id="${esc(x.id)}">
         <span class="avatar">${esc(initials(x.name || x.username))}</span><span class="who"><b>${esc(x.name || x.username)}</b><span>${esc(x.student_number || x.username)}</span></span>${I("chevron-right", "sm")}</button>`).join("")}</div>` : ""}
@@ -1477,7 +1477,7 @@
       <div class="field"><label for="aa-pass">${t("Password")}</label><div class="input-wrap"><input id="aa-pass" class="input" type="password" name="password" autocomplete="new-password">
         <button type="button" class="btn ghost icon sm" data-act="peek" data-for="aa-pass" title="${esc(t("Show password"))}">${I("eye", "sm")}</button></div></div>
       ${err ? `<div class="err">${I("alert-circle", "sm")}<span>${esc(err)}</span></div>` : ""}
-      <div class="note">${I("lock", "sm")}<span>${t("The password is only sent to learn.ieu.edu.tr. On this PC it is stored encrypted for each profile separately, so only this Windows account can read it.")}</span></div>
+      <div class="note">${I("lock", "sm")}<span>${window.LS_LINUX ? t("The password is only sent to learn.ieu.edu.tr. On this PC it is stored encrypted for each profile separately, so only your user account can read it.") : t("The password is only sent to learn.ieu.edu.tr. On this PC it is stored encrypted for each profile separately, so only this Windows account can read it.")}</span></div>
       <div class="actions"><button type="button" class="btn" data-act="modal-close">${t("Cancel")}</button>
         <button class="btn primary" type="submit" ${busy ? "disabled" : ""}>${busy ? SPIN() + " " + t("Signing in…") : t("Sign in and switch")}</button></div></form>`);
     setTimeout(() => { const f = $(user && !busy ? "#aa-pass" : "#aa-user"); if (f && !busy) f.focus(); }, 30);
@@ -2023,7 +2023,7 @@
   async function boot() {
     t.load(await call("i18n"));
     setSplash(t("Opening your library…"));
-    const slow = setTimeout(() => setSplash(t("Still starting… the first start after Windows boots can take a little longer.")), 9000);
+    const slow = setTimeout(() => setSplash(window.LS_LINUX ? t("Still starting… the first start after the PC boots can take a little longer.") : t("Still starting… the first start after Windows boots can take a little longer.")), 9000);
     const b = await call("get_bootstrap");
     clearTimeout(slow);
     if (!b.ok) { startupError(b.error || t("IEUStudia could not start.")); return; }

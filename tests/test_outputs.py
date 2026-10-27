@@ -1,4 +1,7 @@
 import datetime as dt
+import sys
+
+import pytest
 
 from studia.domain import Course, Recording, Segment, Transcript
 from studia.outputs.ai_copy import build_ai_text
@@ -103,6 +106,7 @@ def test_a_file_held_open_for_a_moment_is_still_replaced(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "new" and not (tmp_path / "a.md.tmp").exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows paths")
 def test_two_local_files_of_the_same_name_keep_both_transcripts(tmp_path):
     from studia.outputs.writer import write_local
 
@@ -114,6 +118,7 @@ def test_two_local_files_of_the_same_name_keep_both_transcripts(tmp_path):
     assert write_local(tmp_path, r"C:\Videos\EEE\Lecture.mp4", t) == a        # the same file again: same transcript
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows paths")
 def test_a_transcript_written_by_an_earlier_version_is_kept(tmp_path):
     from studia.outputs.writer import write_local
 

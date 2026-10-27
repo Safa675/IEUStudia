@@ -22,6 +22,7 @@ import datetime as dt
 import json
 import os
 import re
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Iterable
@@ -40,6 +41,12 @@ _lock = threading.Lock()
 def windows_language() -> str:
     """The language Windows shows its own menus in (the display language, not the regional format): "tr" for
     Turkish, otherwise "en"."""
+    if sys.platform != "win32":                  # Linux: the desktop's language (LANGUAGE, LC_ALL, LC_MESSAGES, LANG)
+        for var in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
+            value = os.environ.get(var, "")
+            if value:
+                return "tr" if value.split(":")[0].lower().startswith("tr") else "en"
+        return "en"
     try:
         import ctypes
 

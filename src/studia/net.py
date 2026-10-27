@@ -8,6 +8,7 @@ import html
 import logging
 import os
 import ssl
+import sys
 import threading
 import time
 import weakref
@@ -78,6 +79,10 @@ def plain_error(exc: BaseException, url: str = "") -> str:
         return t("Your disk is full. Free up some space, then try again.")
     if isinstance(exc, PermissionError):
         name = os.path.basename(str(exc.filename or ""))
+        if sys.platform != "win32":
+            return (t("IEUStudia isn't allowed to use {name}: check that your user account may read and write it.",
+                      name=name) if name else
+                    t("IEUStudia isn't allowed to use a file: check that your user account may read and write it."))
         return (t("Windows did not let IEUStudia use {name}: it may be open in another program (or syncing), or your "
                   "antivirus or Windows' ransomware protection blocked it.", name=name) if name else
                 t("Windows did not let IEUStudia use a file: it may be open in another program (or syncing), or your "

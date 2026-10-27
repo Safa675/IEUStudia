@@ -58,7 +58,11 @@ def find_browser() -> Optional[str]:
         path = os.path.expandvars(p)
         if os.path.isfile(path):
             return path
-    return shutil.which("msedge") or shutil.which("chrome")
+    for name in ("msedge", "chrome", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+                 "microsoft-edge"):                # the last ones: Linux
+        if shutil.which(name):
+            return shutil.which(name)
+    return None
 
 
 def html_to_pdf(html_path: Path, pdf_path: Path, timeout: int = 180) -> bool:

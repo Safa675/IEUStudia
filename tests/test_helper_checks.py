@@ -4,6 +4,7 @@ how a notification click reaches the open window."""
 import contextlib
 import ctypes
 import datetime as dt
+import sys
 import threading
 import types
 
@@ -81,13 +82,13 @@ class _Script:
 
 @pytest.fixture
 def helper(monkeypatch):
-    from studia import winutil
+    from studia import osutil
 
     appconfig.update({"tray": True, "sync_minutes": 30})
     clock = [1_000_000.0]
     monkeypatch.setattr(agent, "time", types.SimpleNamespace(time=lambda: clock[0], strftime=lambda f: "12:00"))
     monkeypatch.setattr(agent, "ui_running", lambda: False)
-    monkeypatch.setattr(winutil, "background_work", contextlib.nullcontext)   # this test process keeps its priority
+    monkeypatch.setattr(osutil.impl(), "background_work", contextlib.nullcontext)   # this test process keeps its priority
     h = agent.Helper(at_login=False)
     h.checks = []
     h._check = lambda: h.checks.append(clock[0]) or False
@@ -164,6 +165,7 @@ def test_the_screen_events_from_the_tray_window(helper):
     assert h.screen_on and h.wake.is_set() and h.back_at == clock[0]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows power messages")
 def test_the_tray_window_reads_the_power_broadcasts():
     from studia import tray
 
@@ -342,6 +344,7 @@ def test_the_reminders_plan_is_the_same_without_reading_the_lectures(tmp_path, m
 
 
 # ----------------------------------------------------------------------------- a notification click
+@pytest.mark.skipif(sys.platform != "win32", reason="a named Windows event (Linux's window polls the file)")
 def test_an_open_request_wakes_the_window_at_once(isolated_home):
     from studia.winutil import instance_name, open_request_event, request_open, take_open_request, wait_event
 
@@ -359,7 +362,7 @@ def test_an_open_request_wakes_the_window_at_once(isolated_home):
 
 def test_the_window_shows_the_page_a_click_asked_for(isolated_home, monkeypatch):
     from studia.api import Api
-    from studia.winutil import instance_name, request_open
+    from studia.osutil import instance_name, request_open
 
     pushed = []
     got = threading.Event()

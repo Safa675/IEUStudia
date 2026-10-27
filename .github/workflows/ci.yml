@@ -7,8 +7,14 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20          # a run that hangs fails in minutes, not after GitHub's 6 hours
+    # Linux support is looked after separately: a red Linux run shows, but never blocks a change
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
@@ -19,6 +25,7 @@ jobs:
       - name: Tests
         run: uv run pytest -q
       - name: UI scripts parse
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Get-ChildItem src/studia/web/*.js | ForEach-Object {

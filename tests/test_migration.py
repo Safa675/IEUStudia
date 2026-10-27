@@ -18,6 +18,7 @@ from studia.slides import Slide, load_index, save_index
 def _real_mode(tmp_path, monkeypatch):
     monkeypatch.delenv("STUDIA_HOME", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "local"))     # Linux
     monkeypatch.setattr(paths, "documents_dir", lambda: tmp_path / "docs")
     monkeypatch.setattr(accounts, "documents_dir", lambda: tmp_path / "docs")
     paths._legacy_in_use.cache_clear()
@@ -103,6 +104,7 @@ def test_a_merge_that_fails_keeps_the_old_folder_and_is_tried_again(tmp_path, mo
 
 def test_data_folder_is_not_touched_with_studia_home(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "local"))     # Linux
     (tmp_path / "local" / "Studia").mkdir(parents=True)
     (tmp_path / "local" / "Studia" / "library.db").write_text("db")
     assert paths.migrate_legacy_data() == "skipped"

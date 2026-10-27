@@ -21,6 +21,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -35,6 +36,7 @@ Emit = Callable[[dict[str, Any]], None]
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 NPM_REGISTRY = "https://registry.npmjs.org"
 CLAUDE_INSTALLER = "https://claude.ai/install.ps1"
+CLAUDE_INSTALLER_SH = "https://claude.ai/install.sh"
 # The plans that include the tool; anything else is said plainly (Claude Free has no Claude Code).
 CLAUDE_PLANS = {"pro": "Claude Pro", "max": "Claude Max", "team": "Claude Team", "enterprise": "Claude Enterprise"}
 CODEX_PLANS = {"plus": "ChatGPT Plus", "pro": "ChatGPT Pro", "team": "ChatGPT Business", "business": "ChatGPT Business",
@@ -87,6 +89,10 @@ def claude_env() -> dict[str, str]:
     """The environment for running Claude Code: tells it where Git's Bash is when Git was installed after IEUStudia
     started (so the PATH this process got does not have it yet). Optional: Claude Code works without Git."""
     env = dict(os.environ)
+    if sys.platform != "win32" and not env.get("CLAUDE_CONFIG_DIR"):
+        # Linux: a Claude Code profile of IEUStudia's own (signed in once in the setup), so a developer's personal
+        # CLAUDE.md, memory, hooks and plugins never come along with the lecture text
+        env["CLAUDE_CONFIG_DIR"] = str(tools_dir() / "claude-config")
     bash = git_bash()
     if bash and not env.get("CLAUDE_CODE_GIT_BASH_PATH"):
         env["CLAUDE_CODE_GIT_BASH_PATH"] = bash
@@ -201,6 +207,9 @@ def _install_error(which: str, message: str) -> str:
 
 
 def _claude_install_command() -> list[str]:
+    if sys.platform != "win32":                  # Anthropic's installer for Linux and macOS
+        return ["bash", "-c", "set -o pipefail; echo 'Downloading Claude Code from claude.ai...'; "
+                              f"curl -fsSL {CLAUDE_INSTALLER_SH} | bash"]
     return ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
             "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; "
             f"Write-Output 'Downloading Claude Code from claude.ai...'; irm {CLAUDE_INSTALLER} | iex"]
@@ -277,6 +286,8 @@ def unpack_codex(data: bytes, target: str, dest: Path) -> None:
 
 
 def _install_codex(emit: Emit) -> None:
+    if sys.platform != "win32":
+        raise RuntimeError(t("On Linux, install the Codex CLI yourself (npm install -g @openai/codex), then check again."))
     session = _session()
     _update("codex", emit, line=t("Looking up the latest Codex CLI on npm…"))
     pkg = codex_package(session)

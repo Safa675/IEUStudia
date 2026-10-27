@@ -33,6 +33,10 @@ def isolated_home(tmp_path, tmp_path_factory, monkeypatch):
     monkeypatch.setenv("STUDIA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("STUDIA_LANG", "en")          # the tests read English, also on a Turkish Windows
     i18n.set_language("en")
+    if sys.platform != "win32":                  # Linux: a fixed key instead of the desktop keyring (none on CI)
+        from studia import linux_secrets
+
+        monkeypatch.setattr(linux_secrets, "_key", lambda: b"k" * 32)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path_factory.mktemp("temp")))
     monkeypatch.setattr(net, "use_windows_certificates", lambda: None)
     paths.set_profile_dir("")

@@ -42,11 +42,11 @@ def splash_command(*args: str) -> list[str]:
 
 
 def spawn(cmd: list[str]) -> bool:
-    from .winutil import normal_priority
+    from .osutil import normal_priority
 
     try:
         with normal_priority():          # not the lower priority the app has while it transcribes
-            subprocess.Popen(cmd, close_fds=True, creationflags=DETACHED)
+            subprocess.Popen(cmd, close_fds=True, creationflags=DETACHED, start_new_session=sys.platform != "win32")
         return True
     except OSError:
         return False
@@ -58,6 +58,10 @@ def _quote(parts: list[str]) -> str:
 
 
 def startup_enabled() -> bool:
+    if sys.platform != "win32":
+        from .linuxutil import startup_enabled
+
+        return startup_enabled()
     import winreg
 
     try:
@@ -69,6 +73,11 @@ def startup_enabled() -> bool:
 
 def set_startup(on: bool) -> None:
     """Start the tray helper when you sign in to Windows (HKCU Run key: no admin rights needed)."""
+    if sys.platform != "win32":
+        from .linuxutil import set_startup as linux_startup
+
+        linux_startup(on, app_command("--agent", "--at-login"))
+        return
     import winreg
 
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:

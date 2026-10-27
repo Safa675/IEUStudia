@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import sys
 import threading
 import zipfile
 
@@ -61,7 +62,7 @@ def test_an_8_gb_laptop_counts_as_8_gb():
 
 def test_hardware_check_runs_on_this_pc(tmp_path):
     f = hardware.check(tmp_path)
-    assert f["windows"]["build"] > 0 and f["cpu"]["cores"] >= 1 and f["ram_gb"] > 0 and f["disk"]["data_free_gb"] > 0
+    assert (f["windows"]["build"] > 0 or f["windows"].get("linux")) and f["cpu"]["cores"] >= 1 and f["ram_gb"] > 0 and f["disk"]["data_free_gb"] > 0
     assert "summary" in hardware.assess(f)
 
 
@@ -87,6 +88,7 @@ class _Resp:
         return self._data
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows DLL wheels")
 def test_cuda_download_extracts_only_the_dlls_and_checks_the_hash(monkeypatch, tmp_path):
     def wheel(names):
         buf = io.BytesIO()
@@ -127,6 +129,41 @@ def test_cuda_download_extracts_only_the_dlls_and_checks_the_hash(monkeypatch, t
         components.download_cuda(lambda d, t: None)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the Linux .so wheels")
+def test_cuda_download_on_linux_takes_cublas_and_cudnn_from_the_manylinux_wheels(monkeypatch, tmp_path):
+    def wheel(names):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for n in names:
+                z.writestr(n, b"so-" + n.encode())
+        return buf.getvalue()
+
+    blobs = {"cublas.whl": wheel(["nvidia/cublas/lib/libcublas.so.12", "nvidia/cublas/lib/libcublasLt.so.12",
+                                  "nvidia/cublas/include/cublas.h"]),
+             "cudnn.whl": wheel(["nvidia/cudnn/lib/libcudnn.so.9", "nvidia/cudnn/lib/libcudnn_ops.so.9"])}
+
+    class Session:
+        def get(self, url, timeout=0):
+            pkg = url.split("/pypi/")[1].split("/")[0]
+            name, version = ("cublas.whl", "12.8.1") if "cublas" in pkg else ("cudnn.whl", "9.10.2")
+            files = [{"filename": f"{pkg}-{version}-py3-none-win_amd64.whl", "url": "wrong", "size": 1,
+                      "digests": {"sha256": "0" * 64}},
+                     {"filename": f"{pkg}-{version}-py3-none-manylinux_2_27_x86_64.whl", "url": name,
+                      "size": len(blobs[name]), "digests": {"sha256": hashlib.sha256(blobs[name]).hexdigest()}}]
+            return _Resp({"releases": {version: files}})
+
+    def fake_download(url, dest, session=None, progress=None, cancel=None, parts=1):
+        dest.write_bytes(blobs[url])
+        progress(len(blobs[url]), len(blobs[url]))
+
+    monkeypatch.setattr(components, "_session", Session)
+    monkeypatch.setattr(components.httpdl, "download", fake_download)
+    out = components.download_cuda(lambda d, t: None)
+    assert sorted(p.name for p in out.glob("lib*")) == ["libcublas.so.12", "libcublasLt.so.12", "libcudnn.so.9",
+                                                         "libcudnn_ops.so.9"]
+    assert not (out / "cublas.h").exists() and components.cuda_sources() == [str(out)]
+
+
 def test_app_config_round_trip():
     c = appconfig.load()
     assert not c.onboarded and c.ai_provider == "" and not c.tray
@@ -136,6 +173,7 @@ def test_app_config_round_trip():
     assert appconfig.update({"ai_provider": "gemini"}).ai_provider == ""             # unknown -> not chosen
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows Run key")
 def test_start_with_windows_registry(monkeypatch):
     import winreg
 
@@ -157,6 +195,20 @@ def test_start_with_windows_registry(monkeypatch):
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\IEUStudiaTests")
         except OSError:
             pass
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="XDG autostart")
+def test_start_at_login_on_linux(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    entry = tmp_path / "config" / "autostart" / "ieustudia-helper.desktop"
+    assert not launch.startup_enabled()
+    launch.set_startup(True)
+    assert launch.startup_enabled()
+    exec_line = next(line for line in entry.read_text().splitlines() if line.startswith("Exec="))
+    assert "--agent" in exec_line and "--at-login" in exec_line and "studia.app" in exec_line
+    launch.set_startup(False)
+    launch.set_startup(False)                                                         # twice is fine
+    assert not launch.startup_enabled() and not entry.exists()
 
 
 def test_launch_commands_from_source():

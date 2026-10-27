@@ -20,9 +20,10 @@ from typing import Any, Optional
 
 from . import APP_NAME, __version__
 from .i18n import t
-from .winutil import acquire_single_instance, focus_window, set_app_id
+from .osutil import acquire_single_instance, focus_window, set_app_id
 
 ASSETS = Path(__file__).parent / "assets"
+WINDOWS = sys.platform == "win32"
 WEB = Path(__file__).parent / "web"
 HANG_AFTER_S = 45
 log = logging.getLogger("studia")
@@ -41,7 +42,7 @@ def _early_language() -> None:
 
 def _on_shown(api: Any, instance: str = "") -> None:
     """Window handle (taskbar flash) and icon, with plain Win32 calls only (see the threading rule)."""
-    from .winutil import mark_instance, own_main_window, set_window_icon
+    from .osutil import mark_instance, own_main_window, set_window_icon
 
     if instance:
         mark_instance(instance, "shown")
@@ -52,7 +53,7 @@ def _on_shown(api: Any, instance: str = "") -> None:
             break
         time.sleep(0.05)
     api._hwnd = hwnd
-    from .winutil import process_age
+    from .osutil import process_age
 
     log.info("Window shown %.1f s after launch", process_age())
     ico = ASSETS / "icon.ico"
@@ -111,8 +112,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     try:
         _main(args)
     except Exception as exc:  # noqa: BLE001 - last resort: never fail silently under pythonw
-        import ctypes
         import traceback
+
+        from .osutil import message_box
 
         log.exception("IEUStudia crashed")
         try:                                     # the folder in use (an earlier name's until it is moved)
@@ -123,8 +125,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             where = "%LOCALAPPDATA%\\IEUStudia\\logs"
         _early_language()
         head, tail = t("IEUStudia could not start:"), t("Details are in the log folder ({where}).", where=where)
-        ctypes.windll.user32.MessageBoxW(None, f"{head}\n\n{exc}\n\n{traceback.format_exc(limit=3)}\n{tail}",
-                                         APP_NAME, 0x10)
+        message_box(f"{head}\n\n{exc}\n\n{traceback.format_exc(limit=3)}\n{tail}", APP_NAME, 0x10)
 
 
 def _selftest(out: str) -> int:
@@ -134,10 +135,10 @@ def _selftest(out: str) -> int:
 
     report: dict[str, Any] = {"version": __version__, "frozen": bool(getattr(sys, "frozen", False)), "ok": True,
                               "modules": {}, "files": {}}
+    gui = ("webview.platforms.winforms", "studia.tray", "studia.splash") if WINDOWS else \
+        ("webview.platforms.qt", "studia.linuxutil", "studia.linux_secrets")
     for mod in ("numpy", "requests", "av", "ctranslate2", "faster_whisper", "onnxruntime", "tokenizers", "pypdfium2",
-                "yt_dlp", "truststore", "webview", "webview.platforms.winforms", "studia.services", "studia.agent",
-                "studia.tray",
-                "studia.local_llm", "studia.splash"):
+                "yt_dlp", "truststore", "webview", "studia.services", "studia.agent", "studia.local_llm", *gui):
         try:
             m = importlib.import_module(mod)
             report["modules"][mod] = str(getattr(m, "__version__", "ok"))
@@ -145,7 +146,7 @@ def _selftest(out: str) -> int:
             report["modules"][mod] = f"FAILED: {exc!r}"
             report["ok"] = False
     files = ["web/index.html", "web/app.js", "web/setup.js", "web/styles.css", "assets/icon.ico", "assets/logo.svg"]
-    if not report["frozen"]:
+    if WINDOWS and not report["frozen"]:
         files.append("splash.py")               # a release runs the start-up window from the exe itself
     for rel in files:
         p = Path(__file__).parent / rel
@@ -177,8 +178,11 @@ def _start_splash(dark: bool, recovered: bool, marker: Optional[Path] = None, lo
                   lang: str = "en") -> None:
     """The native start-up window (its own process, so it shows and animates at once, whatever this one is busy
     with); it closes itself when the real window appears. ``marker``: the instance file where start-up notes its
-    phase; ``logs``: where a stuck start leaves its diagnostics."""
+    phase; ``logs``: where a stuck start leaves its diagnostics. Windows only (it is plain Win32)."""
     import subprocess
+
+    if not WINDOWS:
+        return
 
     from .launch import app_command, splash_command
 
@@ -194,11 +198,13 @@ def _start_splash(dark: bool, recovered: bool, marker: Optional[Path] = None, lo
 
 def _webview2_missing() -> bool:
     """Without the WebView2 runtime the window cannot show: say so (with the download) instead of failing."""
+    if not WINDOWS:
+        return False                             # Linux uses Qt WebEngine, a dependency of the package
     from .hardware import webview2_version
 
     if webview2_version():
         return False
-    from .winutil import message_box
+    from .osutil import message_box
 
     _early_language()
     if message_box(t("IEUStudia needs the Microsoft Edge WebView2 Runtime, which is not installed on this PC.")
@@ -214,7 +220,7 @@ def _note_window_creation(webview: Any, instance: str) -> None:
     """Mark the moment pywebview starts creating the WinForms window (after .NET has loaded). Creating it has
     been seen to hang inside Windows (CreateWindowEx waiting on an ALPC reply); the start-up window restarts
     the app when the window still isn't there well after this mark."""
-    from .winutil import mark_instance
+    from .osutil import mark_instance
 
     init = getattr(webview, "initialize", None)
     if init is None or getattr(init, "_studia_marks", False):
@@ -242,8 +248,8 @@ def _other_instance(name: str) -> bool:
     shown nothing for a while it is stuck: offer to replace it. True if this copy should start after all."""
     import time
 
-    from .winutil import (acquire_single_instance, bring_to_front, find_class_window, focus_window, is_hung, kill_tree,
-                          message_box, read_instance)
+    from .osutil import (acquire_single_instance, bring_to_front, find_class_window, focus_window, is_hung, kill_tree,
+                         message_box, read_instance)
 
     deadline = time.monotonic() + 3          # a double-click starts two copies at once: let the first one show up
     while True:
@@ -272,7 +278,7 @@ def _window_size() -> tuple[int, int, bool, Optional[int], Optional[int]]:
     """(width, height, maximized, x, y): 1280 x 820 in the middle of the screen's usable area, or maximized where that
     doesn't fit (a 1366 x 768 laptop, or 1920 x 1080 at 150 %), so the buttons at the bottom of the setup and the queue
     bar are never under the taskbar. (Windows would otherwise place it a little further down at every start.)"""
-    from .winutil import work_area
+    from .osutil import work_area
 
     try:
         left, top, w, h = work_area()
@@ -304,13 +310,13 @@ def _relaunch(argv: list[str]) -> None:
 def _main(argv: Optional[list[str]] = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     debug = "--debug" in argv
-    from .winutil import instance_name, write_instance
+    from .osutil import instance_name, write_instance
 
     name = instance_name()
     target = argv[argv.index("--open") + 1] if "--open" in argv[:-1] else ""
     if not acquire_single_instance(name, wait_s=30 if "--restarted" in argv else 0):
         if target:                               # e.g. a notification was clicked: the open window shows it
-            from .winutil import request_open
+            from .osutil import request_open
 
             request_open(name, target)
         if not _other_instance(name):
@@ -324,7 +330,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
     from .config import load_settings
     from .log import setup_logging
     from .paths import app_dir, logs_dir, migrate_legacy_data
-    from .winutil import process_age, windows_dark_mode
+    from .osutil import process_age, windows_dark_mode
 
     moved = migrate_legacy_data()            # before anything opens the data folder
     appconfig.migrate()                      # the AI choice as an earlier version stored it
@@ -332,7 +338,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
     account = activate()                     # whose library, settings and password this run uses
     theme = load_settings().theme
     dark = theme == "dark" or (theme == "system" and windows_dark_mode())
-    from .winutil import _instance_file
+    from .osutil import _instance_file
 
     _start_splash(dark, "--recovered" in argv, _instance_file(name), logs_dir(), i18n.language())   # on screen at once
     # HTTPS trusts Windows' certificates from here on: before any connection is made (nothing above connects), and
@@ -419,8 +425,9 @@ def _main(argv: Optional[list[str]] = None) -> None:
     window.events.loaded += on_loaded
     window.events.closing += on_closing
     _note_window_creation(webview, name)
-    webview.start(gui="edgechromium", debug=debug, private_mode=False,
-                  storage_path=str(app_dir() / "webview"))
+    # Qt's developer tools stop pywebview's first call into the page from returning: debug logs only on Linux
+    webview.start(gui="edgechromium" if WINDOWS else "qt", debug=debug and WINDOWS, private_mode=False,
+                  storage_path=str(app_dir() / "webview"), icon=None if WINDOWS else str(ASSETS / "icon.png"))
     _stop_watchdog(watchdog)
     if api._notifier is not None:                # its icon next to the clock goes with the window
         api._notifier.close()
@@ -431,11 +438,11 @@ def _main(argv: Optional[list[str]] = None) -> None:
         _relaunch(argv)
     elif api._update_installer:                  # its installer replaces this copy, then opens the new one
         from . import updates
-        from .winutil import release_single_instance
+        from .osutil import release_single_instance
 
         release_single_instance()
         if not updates.run_installer(api._update_installer):       # blocked by an antivirus, say
-            from .winutil import message_box
+            from .osutil import message_box
 
             message_box(t("IEUStudia couldn't start the update: Windows or your antivirus didn't let the installer "
                           "run. IEUStudia opens again. You can also download the new version from its release page."),

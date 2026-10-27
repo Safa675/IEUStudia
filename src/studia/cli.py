@@ -21,7 +21,7 @@ def cmd_login(args: argparse.Namespace) -> int:
     user = args.username or input("EkoID username: ").strip()
     pw = getpass.getpass("Password: ")
     p = s.sync.sign_in(user, pw)
-    print(f"Signed in as {p.name} ({p.student_number}). Credentials are stored encrypted (Windows DPAPI).")
+    print(f"Signed in as {p.name} ({p.student_number}). Credentials are stored encrypted ({'Windows DPAPI' if sys.platform == 'win32' else 'key in your keyring'}).")
     return 0
 
 

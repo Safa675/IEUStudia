@@ -174,9 +174,10 @@ def delete_model(model: str) -> None:
 
 @functools.lru_cache(maxsize=1)
 def setup_cuda_dlls() -> list[str]:
-    """Make cuBLAS/cuDNN DLLs findable on Windows (CUDA toolkit or pip `nvidia-*` wheels)."""
+    """Make cuBLAS/cuDNN DLLs findable on Windows (CUDA toolkit or pip `nvidia-*` wheels); on Linux, load the
+    shared libraries before CTranslate2 asks for them by name."""
     if sys.platform != "win32":
-        return []
+        return _preload_linux_cuda()
     dirs: list[str] = []
     try:  # downloaded on first start into <app data>/cuda (see components.py)
         from ..components import cuda_dir
@@ -208,6 +209,28 @@ def setup_cuda_dlls() -> list[str]:
     if added:
         os.environ["PATH"] = os.pathsep.join(added + [os.environ.get("PATH", "")])
     return added
+
+
+def _preload_linux_cuda() -> list[str]:
+    """Load cuBLAS and cuDNN (ours or the pip wheels', see components.cuda_sources) globally: CTranslate2 opens
+    them by soname, which then finds the copies already loaded, without LD_LIBRARY_PATH."""
+    import ctypes
+
+    try:
+        from ..components import cuda_sources
+
+        dirs = cuda_sources()
+    except Exception:  # noqa: BLE001
+        return []
+    order = ("libcublasLt.so", "libcublas.so", "libcudnn.so", "libcudnn_")    # dependencies first
+    libs = sorted((f for d in dirs for f in Path(d).glob("lib*.so.*")),
+                  key=lambda f: next((i for i, p in enumerate(order) if f.name.startswith(p)), len(order)))
+    for f in libs:
+        try:
+            ctypes.CDLL(str(f), mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            log.debug("could not load %s", f, exc_info=True)
+    return dirs
 
 
 @functools.lru_cache(maxsize=2)             # both forms (quick for the display and the offline AI)

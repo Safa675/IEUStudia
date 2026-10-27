@@ -4,6 +4,7 @@ Bash, the plan verdicts, the test message and the status the set-up shows. No ne
 import base64
 import hashlib
 import io
+import sys
 import tarfile
 import time
 
@@ -99,6 +100,7 @@ def _wait(which, timeout=5):
     raise AssertionError("install did not finish")
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="IEUStudia installs the Windows build of Codex")
 def test_codex_is_installed_from_the_npm_registry_without_node(monkeypatch):
     reg = _Registry()
     monkeypatch.setattr(ai_setup, "_session", lambda: reg)
@@ -120,6 +122,7 @@ def test_codex_is_installed_from_the_npm_registry_without_node(monkeypatch):
                             "https://registry.npmjs.org/@openai/codex/0.200.0-win32-x64"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="IEUStudia installs the Windows build of Codex")
 def test_a_damaged_codex_download_is_refused(monkeypatch):
     monkeypatch.setattr(ai_setup, "_session", lambda: _Registry(integrity=_sri(b"something else")))
     ai_setup.start_install("codex", lambda e: None)

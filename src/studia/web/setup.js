@@ -22,7 +22,7 @@
   // a function, not a constant: it is drawn in the language of the moment (also in Settings → About)
   const NOTICE = () => `<ul class="notice">
       <li>${t("<b>Independent student project.</b> IEUStudia is not made, endorsed or supported by İzmir University of Economics, IEULearn or Panopto. Use it at your own risk; it comes without any warranty and the authors take no responsibility for how it is used.")}</li>
-      <li>${t("<b>Your EkoID password stays with you.</b> It is sent only to learn.ieu.edu.tr to sign you in. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: there is no IEUStudia server.")}</li>
+      <li>${window.LS_LINUX ? t("<b>Your EkoID password stays with you.</b> It is sent only to learn.ieu.edu.tr to sign you in. On this PC it is stored encrypted with a key in your desktop's keyring, so only your user account can read it. It never goes to any other server: there is no IEUStudia server.") : t("<b>Your EkoID password stays with you.</b> It is sent only to learn.ieu.edu.tr to sign you in. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: there is no IEUStudia server.")}</li>
       <li>${t("<b>Your lectures stay on this PC.</b> Audio is transcribed on your own computer. Recordings, slides and materials belong to your lecturers and the university: keep them for your own study and do not share them.")}</li>
       <li>${t("<b>AI is optional and can make mistakes.</b> Nothing is sent to an AI service until you use an AI feature. Then the lectures and course files you chose are sent to the service you picked (OpenAI or Anthropic, under your own account). Always check AI answers against your lectures and materials.")}</li>
       <li>${t("<b>New versions.</b> About once a day IEUStudia asks GitHub, where it's published, whether there's a new version. That request says nothing about you or your courses. You can turn it off in Settings → About.")}</li></ul>`;
@@ -133,7 +133,7 @@
     return `<h2>${t("This PC")}</h2><p class="lead">${t("IEUStudia checked whether this computer can run it.")}</p>
       <div class="card su-rows">${pcRows()}</div>
       ${v.blockers.length ? `<div class="callout error su-block">${I("x-circle")}<div><b>${t("IEUStudia cannot run on this PC.")}</b><ul>${v.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>
-        <div class="dim">${t("Nothing was installed or changed. You can close IEUStudia and uninstall it from Windows Settings → Apps.")}</div></div></div>` : ""}
+        <div class="dim">${window.LS_LINUX ? t("Nothing was installed or changed. You can close IEUStudia.") : t("Nothing was installed or changed. You can close IEUStudia and uninstall it from Windows Settings → Apps.")}</div></div></div>` : ""}
       ${v.warnings.length ? `<div class="callout warning">${I("alert")}<div><ul>${v.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div></div>` : ""}
       ${!v.blockers.length ? `<div class="callout info">${I("check-circle")}<div>${v.gpu ? t("Your NVIDIA graphics card will transcribe lectures quickly.") : t("Everything works; transcription runs on the processor, so it is slower.")}</div></div>` : ""}`;
   }
@@ -281,15 +281,15 @@
   function stepBackground() {
     const sw = (key, label, d, dis) => `<div class="set-row"><div class="txt"><div class="t">${label}</div><div class="d">${d}</div></div>
       <input type="checkbox" class="switch" data-act="su-bool" data-key="${key}" ${U.ch[key] ? "checked" : ""} ${dis ? "disabled" : ""}></div>`;
-    return `<h2>${t("In the background")}</h2><p class="lead">${t("IEUStudia can keep checking IEULearn after you close its window and tell you when something new appears. Its icon then stays at the bottom right of the screen, next to the clock (or under the ^ arrow there).")}</p>
+    return `<h2>${t("In the background")}</h2><p class="lead">${window.LS_LINUX ? t("IEUStudia can keep checking IEULearn after you close its window and tell you when something new appears. Its notifications then come from your desktop (there is no icon next to the clock on Linux).") : t("IEUStudia can keep checking IEULearn after you close its window and tell you when something new appears. Its icon then stays at the bottom right of the screen, next to the clock (or under the ^ arrow there).")}</p>
       <div class="card set-card">${sw("tray", t("Keep checking after I close IEUStudia"), t("Uses about 50 MB of memory. Checks IEULearn every 30 minutes. It never transcribes or downloads anything on its own."))}
-        ${sw("startup", t("Start checking when I sign in to Windows"), t("So notifications arrive without opening IEUStudia first."), !U.ch.tray)}</div>
+        ${sw("startup", window.LS_LINUX ? t("Start checking when I log in") : t("Start checking when I sign in to Windows"), t("So notifications arrive without opening IEUStudia first."), !U.ch.tray)}</div>
       <div class="card set-card"><h3>${t("Notify me about")}</h3>
         ${sw("notify_recordings", t("New lecture recordings"), t("Of your own section."), !U.ch.tray)}
         ${sw("notify_announcements", t("New announcements"), t("Quiz, exam and homework news is marked as a heads-up."), !U.ch.tray)}
         ${sw("notify_materials", t("New files"), t("Slides and PDFs added to a course."), !U.ch.tray)}
         ${sw("notify_reminders", t("Quizzes and exams coming up"), t("The evening before an announced quiz, and before an exam week. Also while IEUStudia is open."))}</div>
-      <div class="dim su-note">${I("info", "xs")} ${t("You can change all of this later in Settings, or by right-clicking the IEUStudia icon next to the clock.")}</div>`;
+      <div class="dim su-note">${I("info", "xs")} ${window.LS_LINUX ? t("You can change all of this later in Settings.") : t("You can change all of this later in Settings, or by right-clicking the IEUStudia icon next to the clock.")}</div>`;
   }
   function dlRows(items) {
     return items.map((it) => {
@@ -322,7 +322,7 @@
     return `<h2>${t("Almost done")}</h2><p class="lead">${S.boot && S.boot.signed_in ? t.html("You are signed in as {name}. Finish to open IEUStudia.", { name: (S.profile || {}).name || "" }) : t("Last step: sign in with your IEULearn (EkoID) account.")}</p>
       <div class="card su-summary">${[[t("Transcription"), (U.st.catalog.speech.find((m) => m.id === U.ch.speech) || {}).label || U.ch.speech],
         [t("AI"), notYet ? t("{name} — not connected yet (Settings → AI)", { name: ai }) : ai],
-        [t("Background checks"), !U.ch.tray ? t("Off") : U.ch.startup ? t("On, starts with Windows") : t("On")]].map(([k, v]) => `<div class="su-row"><span class="grow">${k}</span><b>${esc(v)}</b></div>`).join("")}</div>`;
+        [t("Background checks"), !U.ch.tray ? t("Off") : U.ch.startup ? (window.LS_LINUX ? t("On, starts at login") : t("On, starts with Windows")) : t("On")]].map(([k, v]) => `<div class="su-row"><span class="grow">${k}</span><b>${esc(v)}</b></div>`).join("")}</div>`;
   }
 
   // ------------------------------------------------------------------ frame
@@ -570,8 +570,8 @@
     const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, t.html("Speech model “{name}”", { name: m.label }), m.size_mb]),
       ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, t.html("Offline model “{name}”", { name: m.label }), m.size_mb])] : [];
     return `<div class="card set-card" id="set-bg"><h3>${t("Background and notifications")}</h3>
-        ${row(t("Keep running in the background"), t("After you close the window, IEUStudia stays as a small icon next to the clock (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own."), sw("tray"))}
-        ${row(t("Start with Windows"), t("Start the background checks when you sign in to Windows."), sw("start_with_windows", !app.tray))}
+        ${row(t("Keep running in the background"), window.LS_LINUX ? t("After you close the window, IEUStudia keeps running in the background (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own.") : t("After you close the window, IEUStudia stays as a small icon next to the clock (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own."), sw("tray"))}
+        ${row(window.LS_LINUX ? t("Start at login") : t("Start with Windows"), window.LS_LINUX ? t("Start the background checks when you log in.") : t("Start the background checks when you sign in to Windows."), sw("start_with_windows", !app.tray))}
         ${row(t("New lecture recordings"), t("Of your own section."), sw("notify_recordings", !app.tray))}
         ${row(t("New announcements"), t("Quiz, exam and homework news is marked as a heads-up."), sw("notify_announcements", !app.tray))}
         ${row(t("New files"), t("Slides and PDFs added to a course."), sw("notify_materials", !app.tray))}

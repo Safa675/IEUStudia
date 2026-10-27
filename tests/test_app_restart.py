@@ -30,7 +30,9 @@ class FakeWindow:
 
 
 def test_switching_profiles_restarts_into_the_other_account(isolated_home, monkeypatch):
-    from studia import app, winutil
+    from studia import app, osutil
+
+    winutil = osutil.impl()          # winutil on Windows, linuxutil on Linux
 
     other = accounts.create("bob", "Bob B", "2024")
     seen = {}
@@ -60,13 +62,18 @@ def test_switching_profiles_restarts_into_the_other_account(isolated_home, monke
     restarts = [c for c in calls if c[1:3] == ["-m", "studia.app"]]
     splashes = [c for c in calls if any(str(x).endswith("splash.py") for x in c)]
     assert len(restarts) == 1 and restarts[0][3:] == ["--debug", "--restarted"]
+    if sys.platform != "win32":
+        assert not splashes                                              # no start-up window on Linux
+        return
     assert len(splashes) == 1 and splashes[0][1:3] == ["-I", "-S"] and splashes[0][5] in ("light", "dark")
     assert splashes[0][6:8] == ["--python", restarts[0][0]]             # a restart from it uses the app's Python
 
 
 @pytest.mark.parametrize("answers,closes", [([True, False], False), ([False], False), ([True, True], True)])
 def test_closing_asks_every_question_before_it_cancels_anything(isolated_home, monkeypatch, answers, closes):
-    from studia import app, winutil
+    from studia import app, osutil
+
+    winutil = osutil.impl()          # winutil on Windows, linuxutil on Linux
 
     seen = {}
     fake = types.ModuleType("webview")
@@ -100,7 +107,9 @@ def test_closing_asks_every_question_before_it_cancels_anything(isolated_home, m
 
 
 def test_an_update_windows_wont_start_is_said_and_the_app_opens_again(isolated_home, monkeypatch, tmp_path):
-    from studia import app, updates, winutil
+    from studia import app, updates, osutil
+
+    winutil = osutil.impl()          # winutil on Windows, linuxutil on Linux
 
     seen, shown, calls = {}, [], []
     fake = types.ModuleType("webview")
@@ -134,12 +143,15 @@ def test_an_update_windows_wont_start_is_said_and_the_app_opens_again(isolated_h
                                        ((0, 40, 1920, 1000), (1280, 820, False, 320, 130)),  # taskbar at the top
                                        ((0, 0, 0, 0), (1280, 820, False, None, None))])    # unknown
 def test_the_window_fits_the_screen(monkeypatch, area, size):
-    from studia import app, winutil
+    from studia import app, osutil
+
+    winutil = osutil.impl()          # winutil on Windows, linuxutil on Linux
 
     monkeypatch.setattr(winutil, "work_area", lambda: area)
     assert app._window_size() == size
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the start-up window and the Windows certificate store are Windows only")
 def test_windows_certificates_come_after_the_start_up_window_and_before_anything_connects(isolated_home, monkeypatch):
     from studia import app, net, winutil
 

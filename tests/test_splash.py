@@ -3,10 +3,16 @@ restarts it when the window is still missing well after that, and saves diagnost
 
 import json
 import os
+import sys
 import time
 import types
 
-from studia import splash, winutil
+import pytest
+
+if sys.platform != "win32":
+    pytest.skip("the start-up window is plain Win32", allow_module_level=True)
+
+from studia import splash, winutil  # noqa: E402
 
 
 def test_window_stall_is_judged_from_the_apps_marker(tmp_path):
