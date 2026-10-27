@@ -8,21 +8,13 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const I = (n, c = "") => (window.LSIcons ? LSIcons.svg(n, c) : "");
   const SPIN = () => (window.LSIcons ? LSIcons.spinner("spin") : "…");
-  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const fmtDur = (s) => { const m = Math.round((s || 0) / 60); if (m < 60) return `${m} min`; return `${Math.floor(m / 60)} h ${m % 60} min`; };
-  const pct = (p) => `${Math.round((p || 0) * 100)}%`;
-  const leftText = (s) => (s == null ? "" : s < 60 ? "less than a minute left" : `about ${fmtDur(s)} left`);
+  const fmtDur = t.dur;                                   // 1 h 5 min · 1 sa 5 dk
+  const pct = (p) => `${Math.round((p || 0) * 100)}%`;    // a CSS width: not text (text uses t.pct)
+  const pctText = (p) => t.pct(Math.round((p || 0) * 100) / 100);   // 45% · %45, rounded like the width
+  const leftText = t.left;
   const jobDetail = (j) => [j.detail, leftText(j.eta_s)].filter(Boolean).join(" · ");   // "Transcribing passage 40 of 600 · about 25 min left"
-  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
-  function rel(iso) {
-    if (!iso) return "never";
-    const d = (Date.now() - new Date(iso).getTime()) / 1000;
-    if (d < 45) return "just now";
-    if (d < 3600) return `${Math.round(d / 60)} min ago`;
-    if (d < 86400) return `${Math.round(d / 3600)} h ago`;
-    return `${Math.round(d / 86400)} d ago`;
-  }
-  const initials = (n) => (n || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  const rel = t.ago;
+  const initials = (n) => t.upper((n || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join(""));   // in Turkish i → İ
 
   // ------------------------------------------------------------------ state
   const S = {
@@ -60,9 +52,9 @@
 
   // ------------------------------------------------------------------ theme
   function applyTheme() {
-    const t = S.settings.theme || "system";
-    try { localStorage.setItem("studia-theme", t); } catch (e) { /* storage may be unavailable */ }
-    const dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+    const theme = S.settings.theme || "system";
+    try { localStorage.setItem("studia-theme", theme); } catch (e) { /* storage may be unavailable */ }
+    const dark = theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     document.documentElement.style.setProperty("--read", String((+S.settings.text_size || 100) / 100));   // reading text
   }
@@ -100,7 +92,7 @@
     else if (e.phase === "done") {
       S.sync = { running: false, message: e.message, error: "" }; S.lastSync = e.last_sync || new Date().toISOString();
       if (e.profile) S.profile = e.profile;
-      if (e.new_count) toast(`${plural(e.new_count, "new recording")} found`, "success");
+      if (e.new_count) toast(t.n(e.new_count, "{n} new recording found", "{n} new recordings found"), "success");
       if (!e.quiet) (e.errors || []).forEach((m) => toast(m, "warning"));   // the app's own half-hourly sync stays quiet
       renderSidebar();
       if (S.view.name === "home") renderView();          // its greeting line said "Syncing…"
@@ -109,7 +101,7 @@
       if (S.view.name === "home" && S.mode === "app") renderView();
       if (e.quiet) { renderTop(); return; }          // the app's own half-hourly sync: the top bar shows it, nothing pops up
       if (e.need_login) { S.mode = "signin"; S.signin.error = e.message; render(); return; }
-      toast(e.message || "Sync failed", "error");
+      toast(e.message || t("Sync failed"), "error");
     }
     renderTop();
   }
@@ -129,15 +121,17 @@
           r.status = "done"; r.is_new = false;
           const parts = hit.d.recordings.filter((x) => x.part && !x.hidden && ownRec(hit.c, x));   // its parts (your section's)
           if (!parts.some((x) => ["queued", "downloading", "transcribing"].includes(x.status))) {   // its last one
-            const all = parts.every((x) => x.status === "done");
-            const kind = hit.d.kind === "lab" ? "lab" : "lecture";
-            toast(`${hit.c.code} · ${shortDate(hit.d.date)}: ${all || !r.part ? `the ${kind}` : `part ${r.part} of the ${kind}`} is ready to read`,
-              "success", { label: "Read", act: "open-day", data: { day: hit.d.day_key } });
+            const whole = parts.every((x) => x.status === "done") || !r.part;
+            const v = { course: hit.c.code, date: shortDate(hit.d.date), part: r.part };
+            toast(hit.d.kind === "lab"
+              ? (whole ? t("{course} · {date}: the lab is ready to read", v) : t("{course} · {date}: part {part} of the lab is ready to read", v))
+              : (whole ? t("{course} · {date}: the lecture is ready to read", v) : t("{course} · {date}: part {part} of the lecture is ready to read", v)),
+              "success", { label: t("Read"), act: "open-day", data: { day: hit.d.day_key } });
           }
         }
-        else if (e.stage === "failed" && e.status === "done") { r.status = "done"; toast(`${e.title} could not be transcribed again: ${(e.error || "it failed").replace(/[.\s]+$/, "")}. The earlier transcript is kept.`, "warning"); }
-        else if (e.stage === "failed") { r.status = "failed"; r.error = e.error; toast(`${e.title}: ${e.error || "failed"}`, "error"); }
-        else if (e.stage === "processing") { r.status = "processing"; r.error = e.error; toast(e.error || "Not ready on Panopto yet", "warning"); }
+        else if (e.stage === "failed" && e.status === "done") { r.status = "done"; toast(t("{title} could not be transcribed again: {error}. The earlier transcript is kept.", { title: e.title, error: (e.error || t("it failed")).replace(/[.\s]+$/, "") }), "warning"); }
+        else if (e.stage === "failed") { r.status = "failed"; r.error = e.error; r.no_sound = !!e.no_sound; toast(`${e.title}: ${e.error || t("failed")}`, "error"); }
+        else if (e.stage === "processing") { r.status = "processing"; r.error = e.error; toast(e.error || t("Not ready on Panopto yet"), "warning"); }
         if (S.view.name === "day" && S.day && S.view.dayKey === hit.d.day_key) openDay(S.view.dayKey, true);
         refreshNewDay(hit, false);
       } else {
@@ -154,23 +148,24 @@
       }
       updateRow(r);
     } else if (e.final && e.local) {
-      toast(e.stage !== "done" ? `${e.title}: ${e.error || e.stage}` : e.unwritten ? `Transcribed ${e.title}, but its file could not be written to your IEUStudia folder yet: IEUStudia tries again the next time it starts.`
-        : `Transcribed ${e.title} (see "Local files" in your IEUStudia folder)`, e.stage !== "done" ? "error" : e.unwritten ? "warning" : "success");
+      toast(e.stage !== "done" ? `${e.title}: ${e.error || ({ failed: t("failed"), cancelled: t("cancelled") }[e.stage] || e.stage)}`
+        : e.unwritten ? t("Transcribed {title}, but its file could not be written to your IEUStudia folder yet: IEUStudia tries again the next time it starts.", { title: e.title })
+        : t("Transcribed {title} (see \"Local files\" in your IEUStudia folder)", { title: e.title }), e.stage !== "done" ? "error" : e.unwritten ? "warning" : "success");
     }
   }
   function onExport(e) {
-    if (e.phase === "start") { S.exporting = e.day_key; toast("Making the PDF, with the slides next to the transcript…", "info"); }
-    else if (e.phase === "done") { S.exporting = null; toast("PDF ready — shown in Explorer. You can also upload it to ChatGPT or Claude.", "success"); if (S.view.name === "day") openDay(S.view.dayKey, true); }
-    else { S.exporting = null; toast(e.message || "Export failed", "error"); }
+    if (e.phase === "start") { S.exporting = e.day_key; toast(t("Making the PDF, with the slides next to the transcript…"), "info"); }
+    else if (e.phase === "done") { S.exporting = null; toast(t("PDF ready — shown in Explorer. You can also upload it to ChatGPT or Claude."), "success"); if (S.view.name === "day") openDay(S.view.dayKey, true); }
+    else { S.exporting = null; toast(e.message || t("Export failed"), "error"); }
     if (S.view.name === "day") renderDayActions();
   }
   function onAi(e) {   // study notes being written ("start" may be coalesced away)
-    if (e.phase === "start" || e.phase === "progress") S.ai = { running: true, text: e.text || "", dayKey: e.day_key, kind: e.kind || "notes", label: e.label || "Study notes" };
+    if (e.phase === "start" || e.phase === "progress") S.ai = { running: true, text: e.text || "", dayKey: e.day_key, kind: e.kind || "notes", label: e.label || t("Study notes") };
     else if (e.phase === "done") {
       S.ai = { running: false, text: "", dayKey: e.day_key, kind: e.kind, label: e.label };
-      toast(`${e.label || "Study notes"} saved next to the transcript.`, "success");
+      toast(t("{label} saved next to the transcript.", { label: e.label || t("Study notes") }), "success");
       if (S.day && S.day.day_key === e.day_key) { S.day.notes = [{ kind: e.kind, label: e.label, md: e.text, cards: e.cards }, ...(S.day.notes || []).filter((n) => n.kind !== e.kind)]; S.notesKind = e.kind; }
-    } else if (e.phase === "error") { S.ai.running = false; if (e.cancelled) toast("Stopped.", "info"); else toast(e.message || "The AI could not finish", "error"); }
+    } else if (e.phase === "error") { S.ai.running = false; if (e.cancelled) toast(t("Stopped."), "info"); else toast(e.message || t("The AI could not finish"), "error"); }
     if (S.view.name === "day") renderNotes();
   }
   function onChat(e) {   // every event is a full snapshot of one answer
@@ -190,7 +185,7 @@
       }
     }
     if (e.state !== "streaming") {
-      if (e.state === "error" && !(here && S.view.name === "chat")) toast(e.error || `${aiName()} could not answer`, "error");
+      if (e.state === "error" && !(here && S.view.name === "chat")) toast(e.error || t("{ai} could not answer", { ai: aiName() }), "error");
       loadChats();
     }
   }
@@ -205,11 +200,11 @@
   }
   function startupError(msg) {
     const sp = $("#splash");
-    if (!sp) { $("#root").innerHTML = `<div class="signin"><div class="card signin-card"><h3>Something went wrong</h3><p>${esc(msg)}</p></div></div>`; return; }
+    if (!sp) { $("#root").innerHTML = `<div class="signin"><div class="card signin-card"><h3>${t("Something went wrong")}</h3><p>${esc(msg)}</p></div></div>`; return; }
     sp.querySelector(".splash-bar").remove();
     setSplash("");
     sp.insertAdjacentHTML("beforeend", `<div class="splash-error">${esc(msg)}</div>
-      <div class="splash-actions"><button class="btn primary" data-act="reload">${I("retry", "sm")} Try again</button><button class="btn" data-act="logs">${I("terminal", "sm")} Open logs</button></div>`);
+      <div class="splash-actions"><button class="btn primary" data-act="reload">${I("retry", "sm")} ${t("Try again")}</button><button class="btn" data-act="logs">${I("terminal", "sm")} ${t("Open logs")}</button></div>`);
   }
 
   // ------------------------------------------------------------------ shell
@@ -223,7 +218,7 @@
     root.innerHTML = `
       <div class="app">
         <aside class="sidebar">
-          <button class="brand" data-act="go" data-view="home" title="Home"><img class="logo-img" src="../assets/logo.svg" alt="">IEUStudia</button>
+          <button class="brand" data-act="go" data-view="home" title="${t("Home")}"><img class="logo-img" src="../assets/logo.svg" alt="">IEUStudia</button>
           <nav class="nav" id="nav"></nav>
           <div class="sidebar-footer" id="sfoot"></div>
         </aside>
@@ -238,7 +233,7 @@
 
   function courseSub(c) {   // two pages of one course (FENG 495 twice): tell them apart by section or lecturer
     const twins = S.courses.filter((x) => x.code === c.code).length > 1;
-    return twins ? `${c.section ? `Section ${c.section}` : c.instructor || c.id} · ${c.display_name}` : c.display_name;
+    return twins ? `${c.section ? t("Section {tag}", { tag: c.section }) : c.instructor || c.id} · ${c.display_name}` : c.display_name;
   }
   function newCount() { return S.courses.reduce((n, c) => n + (c.counts.new || 0), 0); }
   const courseNew = (c) => (c.counts.new || 0) + ((c.content || {}).materials_new || 0) + ((c.content || {}).announcements_new || 0);
@@ -250,33 +245,33 @@
     const nav = $("#nav"); if (!nav) return;
     const v = S.view;
     const nn = S.courses.reduce((n, c) => n + courseNew(c), 0);
-    let h = `<button class="nav-item ${v.name === "home" || v.name === "new" ? "active" : ""}" data-act="go" data-view="home">${I("home")}<span class="label"><span class="code">Home</span></span>${nn ? `<span class="count new">${nn}</span>` : ""}</button>`;
-    h += `<div class="nav-section">Courses</div>`;
-    if (!S.courses.length) h += `<div class="nav-item" style="cursor:default"><span class="label"><span class="sub">${S.sync.running ? "Loading your courses…" : "No courses yet"}</span></span></div>`;
+    let h = `<button class="nav-item ${v.name === "home" || v.name === "new" ? "active" : ""}" data-act="go" data-view="home">${I("home")}<span class="label"><span class="code">${t("Home")}</span></span>${nn ? `<span class="count new">${nn}</span>` : ""}</button>`;
+    h += `<div class="nav-section">${t("Courses")}</div>`;
+    if (!S.courses.length) h += `<div class="nav-item" style="cursor:default"><span class="label"><span class="sub">${S.sync.running ? t("Loading your courses…") : t("No courses yet")}</span></span></div>`;
     const item = (c, dim) => {
       const active = v.name === "course" && v.courseId === c.id;
       const n = dim ? 0 : courseNew(c);
-      const badge = n ? `<span class="count new" title="New recordings, materials and announcements">${n}</span>` : "";
+      const badge = n ? `<span class="count new" title="${t("New recordings, materials and announcements")}">${n}</span>` : "";
       const sub = courseSub(c);
       return `<button class="nav-item ${active ? "active" : ""} ${dim ? "earlier" : ""}" data-act="go" data-view="course" data-id="${esc(c.id)}" title="${esc(c.code + " — " + sub)}">
         <span class="label"><span class="code">${esc(c.code)}</span><span class="sub">${esc(sub)}</span></span>${badge}</button>`;
     };
     h += S.courses.map((c) => item(c, false)).join("");
-    if ((S.earlier || []).length) h += `<div class="nav-section" title="No longer on your IEULearn dashboard. What you saved from them stays here.">Earlier courses</div>` + S.earlier.map((c) => item(c, true)).join("");
+    if ((S.earlier || []).length) h += `<div class="nav-section" title="${t("No longer on your IEULearn dashboard. What you saved from them stays here.")}">${t("Earlier courses")}</div>` + S.earlier.map((c) => item(c, true)).join("");
     // the Study group stays in view at the bottom when many courses make the list scroll
-    h += `<div class="nav-study"><div class="nav-section">Study</div>
-      <button class="nav-item ${v.name === "chat" ? "active" : ""}" data-act="go" data-view="chat">${I("chat")}<span class="label"><span class="code">Ask ${esc(aiName())}</span></span></button>
+    h += `<div class="nav-study"><div class="nav-section">${t("Study")}</div>
+      <button class="nav-item ${v.name === "chat" ? "active" : ""}" data-act="go" data-view="chat">${I("chat")}<span class="label"><span class="code">${t.html("Ask {ai}", { ai: aiName() })}</span></span></button>
       ${Studia.navExtra ? Studia.navExtra(v) : ""}
-      <button class="nav-item ${v.name === "library" ? "active" : ""}" data-act="go" data-view="library">${I("search")}<span class="label"><span class="code">Search</span></span></button></div>`;
+      <button class="nav-item ${v.name === "library" ? "active" : ""}" data-act="go" data-view="library">${I("search")}<span class="label"><span class="code">${t("Search")}</span></span></button></div>`;
     nav.innerHTML = h;
     const p = S.profile || {};
     const others = S.profiles.filter((x) => !x.active).length;
     $("#sfoot").innerHTML = `
-      <button class="profile" data-act="menu-profile" title="${others ? "Switch profile, add an account or sign out" : "Add another account or sign out"}">
+      <button class="profile" data-act="menu-profile" title="${others ? t("Switch profile, add an account or sign out") : t("Add another account or sign out")}">
         <div class="avatar">${esc(initials(p.name))}</div>
-        <div class="who"><div class="name">${esc(p.name || "Signed in")}</div><div class="num">${esc(p.student_number || "")}</div></div>
+        <div class="who"><div class="name">${esc(p.name || t("Signed in"))}</div><div class="num">${esc(p.student_number || "")}</div></div>
         ${I("chevrons-up-down", "sm")}</button>
-      <button class="btn ghost icon ${v.name === "settings" ? "on" : ""}" data-act="go" data-view="settings" title="Settings">${I("settings")}</button>`;
+      <button class="btn ghost icon ${v.name === "settings" ? "on" : ""}" data-act="go" data-view="settings" title="${t("Settings")}">${I("settings")}</button>`;
   }
 
   function revealCourse() {   // the course just opened is not left hidden under the sidebar's Study group
@@ -286,31 +281,32 @@
 
   function crumbs() {
     const v = S.view;
-    if (v.name === "new") return `${I("sparkle")} New recordings`;
-    if (v.name === "home") return `${I("home")} Home`;
-    if (v.name === "library") return `${I("search")} Search`;
+    if (v.name === "new") return `${I("sparkle")} ${t("New recordings")}`;
+    if (v.name === "home") return `${I("home")} ${t("Home")}`;
+    if (v.name === "library") return `${I("search")} ${t("Search")}`;
     if (Studia.crumbs && Studia.crumbs[v.name]) return Studia.crumbs[v.name](v);
-    if (v.name === "settings") return `${I("settings")} Settings`;
-    if (v.name === "chat") return `${I("chat")} Ask ${esc(aiName())}`;
+    if (v.name === "settings") return `${I("settings")} ${t("Settings")}`;
+    if (v.name === "chat") return `${I("chat")} ${t.html("Ask {ai}", { ai: aiName() })}`;
     if (v.name === "course") { const c = findCourse(v.courseId); return c ? `${esc(c.code)} <span class="dim">· ${esc(c.display_name)}</span>` : ""; }
-    if (v.name === "day" && S.day) return `<button class="btn ghost sm" data-act="back">${I("arrow-left", "sm")} Back</button> ${esc(S.day.title)} <span class="dim">· ${esc(S.day.date_label)}</span>`;
+    if (v.name === "day" && S.day) return `<button class="btn ghost sm" data-act="back">${I("arrow-left", "sm")} ${t("Back")}</button> ${esc(S.day.title)} <span class="dim">· ${esc(S.day.date_label)}</span>`;
     return "";
   }
 
   function renderTop() {
     const top = $("#top"); if (!top) return;
     const g = S.system.gpu;
-    const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="Lectures are transcribed on your NVIDIA graphics card: ${esc(g.name)} · ${g.vram_mb} MB"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
-      : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="Your NVIDIA graphics card could transcribe much faster after a one-time download from NVIDIA: Settings → About → Run setup again."><span class="dot"></span>Graphics card not set up</span>` : "";
-    const syncLabel = S.sync.running ? `${SPIN()} ${esc(S.sync.message || "Syncing…")}`
-      : S.sync.error ? `${I("alert-circle", "sm")} Sync failed — retry` : `${I("refresh", "sm")} Synced ${rel(S.lastSync)}`;
+    const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="${t.html("Lectures are transcribed on your NVIDIA graphics card: {name} · {mb} MB", { name: g.name, mb: g.vram_mb })}"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
+      : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="${t("Your NVIDIA graphics card could transcribe much faster after a one-time download from NVIDIA: Settings → About → Run setup again.")}"><span class="dot"></span>${t("Graphics card not set up")}</span>` : "";
+    const syncLabel = S.sync.running ? `${SPIN()} ${esc(S.sync.message || t("Syncing…"))}`
+      : S.sync.error ? `${I("alert-circle", "sm")} ${t("Sync failed — retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
     const up = S.update || {};
     top.innerHTML = `<div class="crumbs">${crumbs()}</div>
-      ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="IEUStudia ${esc(up.version)} is available: see what's new and update">${I("download", "sm")} Update to ${esc(up.version)}</button>` : ""}
-      <button class="btn ghost sm ${S.sync.error && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running ? "disabled" : ""} title="${S.sync.error && !S.sync.running ? `${esc(S.sync.error)} Click to try again.` : "Check IEULearn now for new lectures, files and announcements (F5)"}">${syncLabel}</button>
-      <button class="btn ghost sm" data-act="full-sync" ${S.catchup && S.catchup.running ? "disabled" : ""} title="Sync every course, then transcribe all your untranscribed lectures and download the materials (asks first)">${S.catchup && S.catchup.running ? SPIN() : I("zap", "sm")} Full sync</button>
+      ${Studia.downloadChip ? Studia.downloadChip() : ""}
+      ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="${t.html("IEUStudia {version} is available: see what's new and update", { version: up.version })}">${I("download", "sm")} ${t.html("Update to {version}", { version: up.version })}</button>` : ""}
+      <button class="btn ghost sm ${S.sync.error && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running ? "disabled" : ""} title="${S.sync.error && !S.sync.running ? t.html("{error} Click to try again.", { error: S.sync.error }) : t("Check IEULearn now for new lectures, files and announcements (F5)")}">${syncLabel}</button>
+      <button class="btn ghost sm" data-act="full-sync" ${S.catchup && S.catchup.running ? "disabled" : ""} title="${t("Sync every course, then transcribe all your untranscribed lectures and download the materials (asks first)")}">${S.catchup && S.catchup.running ? SPIN() : I("zap", "sm")} ${t("Full sync")}</button>
       ${gpu}
-      <button class="btn ghost icon sm" data-act="menu-more" title="More">${I("more")}</button>`;
+      <button class="btn ghost icon sm" data-act="menu-more" title="${t("More")}">${I("more")}</button>`;
   }
   setInterval(() => { if (!S.sync.running) renderTop(); }, 30000);
 
@@ -353,19 +349,19 @@
     const prog = r.progress != null ? r.progress : null;
     const bar = (indet) => `<div class="bar ${indet ? "indet" : ""}"><i style="width:${pct(prog)}"></i></div>`;
     switch (r.status) {
-      case "queued": return `<span class="pill">${I("clock")}Queued</span><span class="detail">${esc(r.detail || "")}</span>`;
-      case "downloading": return `<span class="pill active">${I("download")}Downloading ${prog != null ? pct(prog) : ""}</span>${bar(prog == null)}<span class="detail">${esc(jobDetail(r))}</span>`;
-      case "transcribing": return `<span class="pill active">${I("wave")}Transcribing ${prog ? pct(prog) : ""}</span>${bar(!prog)}<span class="detail">${esc(jobDetail(r))}</span>`;
-      case "done": return `<span class="pill done">${I("check")}Transcribed</span>`;
+      case "queued": return `<span class="pill">${I("clock")}${t("Queued")}</span><span class="detail">${esc(r.detail || "")}</span>`;
+      case "downloading": return `<span class="pill active">${I("download")}${prog != null ? t("Downloading {pct}", { pct: pctText(prog) }) : t("Downloading")}</span>${bar(prog == null)}<span class="detail">${esc(jobDetail(r))}</span>`;
+      case "transcribing": return `<span class="pill active">${I("wave")}${prog ? t("Transcribing {pct}", { pct: pctText(prog) }) : t("Transcribing")}</span>${bar(!prog)}<span class="detail">${esc(jobDetail(r))}</span>`;
+      case "done": return `<span class="pill done">${I("check")}${t("Transcribed")}</span>`;
       case "failed":
-        if (r.no_sound || /no sound|no speech/i.test(r.error || "")) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}No sound on Panopto</span><span class="detail" title="${esc(r.error || "")}">microphone was off</span>`;
-        return `<span class="pill failed" title="${esc(r.error || "")}">${I("alert")}Failed</span><span class="detail" title="${esc(r.error || "")}">${esc(r.error || "")}</span>`;
-      case "processing": return `<span class="pill processing" title="Panopto is still preparing this recording. Try again later.">${I("hourglass")}Not ready on Panopto yet</span>`;
+        if (r.no_sound || /no sound|no speech/i.test(r.error || "")) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No sound on Panopto")}</span><span class="detail" title="${esc(r.error || "")}">${t("microphone was off")}</span>`;
+        return `<span class="pill failed" title="${esc(r.error || "")}">${I("alert")}${t("Failed")}</span><span class="detail" title="${esc(r.error || "")}">${esc(r.error || "")}</span>`;
+      case "processing": return `<span class="pill processing" title="${t("Panopto is still preparing this recording. Try again later.")}">${I("hourglass")}${t("Not ready on Panopto yet")}</span>`;
     }
-    if (r.duplicate) return `<span class="pill">Duplicate</span>`;
-    if (r.too_short) return `<span class="pill">Too short</span>`;
-    if (r.is_new) return `<span class="pill new">${I("sparkle")}NEW</span>`;
-    return `<span class="detail">Not transcribed</span>`;
+    if (r.duplicate) return `<span class="pill">${t("Duplicate")}</span>`;
+    if (r.too_short) return `<span class="pill">${t("Too short")}</span>`;
+    if (r.is_new) return `<span class="pill new">${I("sparkle")}${t("NEW")}</span>`;
+    return `<span class="detail">${t("Not transcribed")}</span>`;
   }
   function selectable(r) { return !r.duplicate && !r.too_short && !["queued", "downloading", "transcribing"].includes(r.status); }
   function recHTML(r, d) {
@@ -374,14 +370,14 @@
       ? `<span class="warn-icon ${r.warn_level === "error" ? "error" : ""}" title="${esc(r.warnings.map((w) => w.message).join("\n"))}">${I("alert", "sm")}</span>` : "";
     const busy = ["queued", "downloading", "transcribing"].includes(r.status);
     const acts = [
-      busy ? `<button class="btn ghost icon sm" data-act="cancel" data-id="${r.id}" title="Cancel">${I("x", "sm")}</button>` : "",
-      r.status === "failed" ? `<button class="btn ghost icon sm" data-act="retry" data-id="${r.id}" title="Try again">${I("retry", "sm")}</button>` : "",
-      r.status === "done" ? `<button class="btn ghost icon sm" data-act="open-day" data-day="${esc(d.day_key)}" title="Read the transcript">${I("file-text", "sm")}</button>` : "",
-      `<button class="btn ghost icon sm" data-act="url" data-url="${esc(r.viewer_url)}" title="Watch on Panopto">${I("external", "sm")}</button>`,
+      busy ? `<button class="btn ghost icon sm" data-act="cancel" data-id="${r.id}" title="${t("Cancel")}">${I("x", "sm")}</button>` : "",
+      r.status === "failed" ? `<button class="btn ghost icon sm" data-act="retry" data-id="${r.id}" title="${t("Try again")}">${I("retry", "sm")}</button>` : "",
+      r.status === "done" ? `<button class="btn ghost icon sm" data-act="open-day" data-day="${esc(d.day_key)}" title="${t("Read the transcript")}">${I("file-text", "sm")}</button>` : "",
+      `<button class="btn ghost icon sm" data-act="url" data-url="${esc(r.viewer_url)}" title="${t("Watch on Panopto")}">${I("external", "sm")}</button>`,
     ].join("");
     return `<div class="rec ${dim ? "dim" : ""}" data-rid="${r.id}">
-      <input type="checkbox" class="check" data-act="sel" data-id="${r.id}" ${selectable(r) ? "" : "disabled"} aria-label="Select">
-      <span class="part">${r.part ? `Part ${r.part}` : "—"}</span>
+      <input type="checkbox" class="check" data-act="sel" data-id="${r.id}" ${selectable(r) ? "" : "disabled"} aria-label="${t("Select")}">
+      <span class="part">${r.part ? t("Part {n}", { n: r.part }) : "—"}</span>
       <span class="time">${esc(r.time)}–${esc(r.end_time)}</span>
       <span class="dur">${fmtDur(r.duration_s)}</span>
       <span class="state">${statusHTML(r)}${warn}</span>
@@ -408,18 +404,18 @@
     const selIds = d.recordings.filter(selectable).map((r) => r.id);
     const todo = d.recordings.filter((r) => selectable(r) && !["done", "processing"].includes(r.status) && !r.hidden && !r.no_sound);
     const others = d.recordings.filter((r) => r.mine === false && c.show_mode === "mine");
-    const status = d.transcribed ? `<span class="pill done">${I("check")}Transcribed</span>`
-      : d.is_new ? `<span class="pill new">${I("sparkle")}New</span>` : d.any_done ? `<span class="pill">Partly transcribed</span>` : "";
-    const warn = d.warn_level && d.warn_level !== "info" ? `<span class="warn-icon ${d.warn_level === "error" ? "error" : ""}" title="See the notes on the transcript page">${I("alert", "sm")}</span>` : "";
+    const status = d.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>`
+      : d.is_new ? `<span class="pill new">${I("sparkle")}${t("New")}</span>` : d.any_done ? `<span class="pill">${t("Partly transcribed")}</span>` : "";
+    const warn = d.warn_level && d.warn_level !== "info" ? `<span class="warn-icon ${d.warn_level === "error" ? "error" : ""}" title="${t("See the notes on the transcript page")}">${I("alert", "sm")}</span>` : "";
     return `<div class="card day" data-day="${esc(d.day_key)}">
       <div class="day-head">
-        <input type="checkbox" class="check" data-act="sel-day" data-day="${esc(d.day_key)}" ${selIds.length ? "" : "disabled"} aria-label="Select day">
-        <div class="day-date"><div class="d">${dt.getDate()}</div><div class="m">${MONTHS[dt.getMonth()]}</div></div>
-        <div class="day-title"><div class="t">${esc(d.label)} ${d.kind === "lab" ? `<span class="pill lab">${I("lab")}Lab</span>` : ""} ${status} ${warn}</div>
-          <div class="s">${plural(d.parts, "part")} · ${fmtDur(d.duration_s)}${d.mine === false ? " · other section" : ""}</div></div>
+        <input type="checkbox" class="check" data-act="sel-day" data-day="${esc(d.day_key)}" ${selIds.length ? "" : "disabled"} aria-label="${t("Select day")}">
+        <div class="day-date"><div class="d">${dt.getDate()}</div><div class="m">${t.date(dt, "mon")}</div></div>
+        <div class="day-title"><div class="t">${esc(d.label)} ${d.kind === "lab" ? `<span class="pill lab">${I("lab")}${t("Lab")}</span>` : ""} ${status} ${warn}</div>
+          <div class="s">${t.n(d.parts, "{n} part", "{n} parts")} · ${fmtDur(d.duration_s)}${d.mine === false ? ` · ${t("other section")}` : ""}</div></div>
         <div class="day-actions">
-          ${d.any_done ? `<button class="btn sm" data-act="open-day" data-day="${esc(d.day_key)}">${I("file-text", "sm")} Open transcript</button>` : ""}
-          ${todo.length ? `<button class="btn sm ${d.any_done ? "" : "primary"}" data-act="tx-day" data-day="${esc(d.day_key)}">${I("wave", "sm")} ${d.any_done ? "Transcribe rest" : "Transcribe day"}</button>` : ""}
+          ${d.any_done ? `<button class="btn sm" data-act="open-day" data-day="${esc(d.day_key)}">${I("file-text", "sm")} ${t("Open transcript")}</button>` : ""}
+          ${todo.length ? `<button class="btn sm ${d.any_done ? "" : "primary"}" data-act="tx-day" data-day="${esc(d.day_key)}">${I("wave", "sm")} ${d.any_done ? t("Transcribe rest") : t("Transcribe day")}</button>` : ""}
         </div>
       </div>
       ${d.recordings.filter((r) => !others.includes(r)).map((r) => recHTML(r, d)).join("")}
@@ -428,9 +424,9 @@
   }
 
   function courseHTML(c, opts = {}) {   // opts.bare: only the recordings (inside the course page's Lectures tab)
-    if (!c) return emptyHTML("book", "Course not found", "");
+    if (!c) return emptyHTML("book", t("Course not found"), "");
     const wrap = (inner) => (opts.bare ? inner : `<div class="view-inner">${heroHTML(c)}${inner}</div>`);
-    if (!c.has_panopto) return wrap(emptyHTML("video", "No Panopto recordings", "This course has no Panopto folder on IEULearn."));
+    if (!c.has_panopto) return wrap(emptyHTML("video", t("No Panopto recordings"), t("This course has no Panopto folder on IEULearn.")));
     const mineMode = c.show_mode === "mine" && c.available_sections.length;
     const days = c.days.filter((d) => !mineMode || d.mine !== false);
     const otherDays = mineMode ? c.days.filter((d) => d.mine === false) : [];
@@ -438,17 +434,17 @@
     const sections = c.available_sections.length > 1 && c.my_section;     // the header's chip picks your section
     let h = `
       <div class="toolbar">
-        ${sections ? `<span class="dim sm">${mineMode ? `Section ${esc(c.my_section)}'s lectures` : "Every section's lectures"}</span>
-          <button class="btn ghost sm" data-act="show-mode" data-mode="${mineMode ? "all" : "mine"}" data-id="${c.id}">${mineMode ? "Show all sections" : "Only my section"}</button>` : ""}
+        ${sections ? `<span class="dim sm">${mineMode ? t.html("Section {tag}'s lectures", { tag: c.my_section }) : t("Every section's lectures")}</span>
+          <button class="btn ghost sm" data-act="show-mode" data-mode="${mineMode ? "all" : "mine"}" data-id="${c.id}">${mineMode ? t("Show all sections") : t("Only my section")}</button>` : ""}
         <span class="spacer"></span>
-        ${c.counts.new ? `<button class="btn ghost sm" data-act="mark-seen" data-id="${c.id}">Mark as seen</button>` : ""}
-        <button class="btn sm" data-act="select-new" data-id="${c.id}" ${c.counts.new ? "" : "disabled"}>${I("list-checks", "sm")} Select new</button>
-        <button class="btn primary sm" data-act="tx-selected" id="tx-sel" disabled>${I("wave", "sm")} Transcribe selected</button>
+        ${c.counts.new ? `<button class="btn ghost sm" data-act="mark-seen" data-id="${c.id}">${t("Mark as seen")}</button>` : ""}
+        <button class="btn sm" data-act="select-new" data-id="${c.id}" ${c.counts.new ? "" : "disabled"}>${I("list-checks", "sm")} ${t("Select new")}</button>
+        <button class="btn primary sm" data-act="tx-selected" id="tx-sel" disabled>${I("wave", "sm")} ${t("Transcribe selected")}</button>
       </div>`;
-    if (!c.days.length) h += emptyHTML("inbox", S.sync.running ? "Looking for recordings…" : "No recordings yet", "New lectures appear here after Panopto has processed them.");
+    if (!c.days.length) h += emptyHTML("inbox", S.sync.running ? t("Looking for recordings…") : t("No recordings yet"), t("New lectures appear here after Panopto has processed them."));
     h += days.map((d) => dayCardHTML(d, c)).join("");
     if (otherDays.length) {
-      h += `<button class="group-toggle card" style="margin-top:6px" data-act="toggle-others" data-id="${c.id}">${I(exp ? "chevron-down" : "chevron-right", "sm")} Other sections · ${plural(otherDays.length, "class day")} (same material, different section)</button>`;
+      h += `<button class="group-toggle card" style="margin-top:6px" data-act="toggle-others" data-id="${c.id}">${I(exp ? "chevron-down" : "chevron-right", "sm")} ${t.n(otherDays.length, "Other sections · {n} class day (same material, different section)", "Other sections · {n} class days (same material, different section)")}</button>`;
       if (exp) h += otherDays.map((d) => dayCardHTML(d, c)).join("");
     }
     return wrap(h);
@@ -456,13 +452,13 @@
   function heroHTML(c) {
     const code = esc(c.code).replace(" ", "<br>");
     const ai = S.system.ai || {};
-    const ask = (c.counts.done_any ?? c.counts.done) ? `<button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${ai.available ? "" : "disabled"} title="${ai.available ? `Chat with ${aiName()} about this course's lectures` : aiHint()}">${I("chat", "sm")} Ask ${esc(aiName())}</button>` : "";
+    const ask = (c.counts.done_any ?? c.counts.done) ? `<button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${ai.available ? "" : "disabled"} title="${ai.available ? t.html("Chat with {ai} about this course's lectures", { ai: aiName() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>` : "";
     return `<div class="card hero"><div class="badge">${code}</div><div class="grow">
       <h1>${esc(c.display_name)}</h1>
-      <div class="meta">${c.instructor ? `<span>${I("user", "sm")}${esc(c.instructor)}</span>` : ""}${c.term ? `<span>${I("calendar", "sm")}${esc(c.term)}</span>` : ""}${(c.my_section || c.section) ? `<span>${I("users", "sm")}Section ${esc(c.available_sections.length && c.my_section ? c.my_section : c.section)}</span>` : ""}</div>
-      <div class="stats"><div class="stat"><b>${c.counts.total}</b>recordings</div><div class="stat"><b>${c.counts.done}</b>transcribed</div>
-        ${c.counts.new ? `<div class="stat"><b>${c.counts.new}</b>new</div>` : ""}${c.counts.processing ? `<div class="stat"><b>${c.counts.processing}</b>processing</div>` : ""}</div>
-      </div><div class="hero-acts">${ask}<button class="btn sm" data-act="open-folder" data-id="${c.id}" title="Open this course's transcript folder">${I("folder-open", "sm")} Folder</button></div></div>`;
+      <div class="meta">${c.instructor ? `<span>${I("user", "sm")}${esc(c.instructor)}</span>` : ""}${c.term ? `<span>${I("calendar", "sm")}${esc(c.term)}</span>` : ""}${(c.my_section || c.section) ? `<span>${I("users", "sm")}${t.html("Section {tag}", { tag: c.available_sections.length && c.my_section ? c.my_section : c.section })}</span>` : ""}</div>
+      <div class="stats"><div class="stat">${t.html("<b>{n}</b>recordings", { n: c.counts.total })}</div><div class="stat">${t.html("<b>{n}</b>transcribed", { n: c.counts.done })}</div>
+        ${c.counts.new ? `<div class="stat">${t.html("<b>{n}</b>new", { n: c.counts.new })}</div>` : ""}${c.counts.processing ? `<div class="stat">${t.html("<b>{n}</b>processing", { n: c.counts.processing })}</div>` : ""}</div>
+      </div><div class="hero-acts">${ask}<button class="btn sm" data-act="open-folder" data-id="${c.id}" title="${t("Open this course's transcript folder")}">${I("folder-open", "sm")} ${t("Folder")}</button></div></div>`;
   }
   const otherSection = (c, d) => c.show_mode === "mine" && d.mine === false;
   const ownRec = (c, r) => !(c.show_mode === "mine" && r.mine === false);   // not another section's (when you follow yours)
@@ -477,17 +473,17 @@
   const newToDo = (g) => g.days.flatMap((d) => newOwn(g.c, d).filter((r) => selectable(r) && r.status !== "done" && !r.hidden).map((r) => r.id));
   function newDayStateHTML(d) {
     const busy = d.recordings.find((r) => ["queued", "downloading", "transcribing"].includes(r.status));
-    return busy ? statusHTML(busy) : d.transcribed ? `<span class="pill done">${I("check")}Transcribed</span>`
-      : d.any_done ? `<span class="pill">Partly transcribed</span>` : `<span class="pill new">${I("sparkle")}New</span>`;
+    return busy ? statusHTML(busy) : d.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>`
+      : d.any_done ? `<span class="pill">${t("Partly transcribed")}</span>` : `<span class="pill new">${I("sparkle")}${t("New")}</span>`;
   }
   function newDayRowHTML(d, c) {   // Home: one row per class day
     const busy = d.recordings.some((r) => ["queued", "downloading", "transcribing"].includes(r.status));
     const todo = d.recordings.some((r) => ownRec(c, r) && selectable(r) && !["done", "processing"].includes(r.status) && !r.hidden && !r.no_sound);
     return `<div class="new-day" data-day="${esc(d.day_key)}"><span class="nd-date">${shortDate(d.date)}</span>
-      <span class="nd-what">${d.kind === "lab" ? "Lab" : "Lecture"} · ${plural(d.parts, "part")} · ${fmtDur(d.duration_s)}</span>
+      <span class="nd-what">${d.kind === "lab" ? t("Lab") : t("Lecture")} · ${t.n(d.parts, "{n} part", "{n} parts")} · ${fmtDur(d.duration_s)}</span>
       <span class="nd-state">${newDayStateHTML(d)}</span><span class="nd-acts">
-      ${d.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(d.day_key)}">${I("file-text", "sm")} Read</button>` : ""}
-      ${todo && !busy ? `<button class="btn sm" data-act="tx-day" data-day="${esc(d.day_key)}">${I("wave", "sm")} Transcribe</button>` : ""}</span></div>`;
+      ${d.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(d.day_key)}">${I("file-text", "sm")} ${t("Read")}</button>` : ""}
+      ${todo && !busy ? `<button class="btn sm" data-act="tx-day" data-day="${esc(d.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>` : ""}</span></div>`;
   }
   function refreshNewDay(hit, stateOnly) {    // stateOnly: progress, so the row's buttons stay where they are
     const row = document.querySelector(`.new-day[data-day="${CSS.escape(hit.d.day_key)}"]`);
@@ -501,21 +497,21 @@
     if (opts.embedded) {
       const ids = groups.flatMap(newToDo);
       const days = groups.reduce((n, g) => n + g.days.filter((d) => d.recordings.some((r) => ids.includes(r.id))).length, 0);
-      return `<div class="toolbar" style="margin-top:4px"><span class="spacer"></span><button class="btn ghost sm" data-act="mark-seen">Mark all as seen</button>
-          ${ids.length ? `<button class="btn primary sm" data-act="tx-new" title="${plural(ids.length, "recording")}">${I("wave", "sm")} Transcribe all ${days > 1 ? plural(days, "class day") : ""}</button>` : ""}</div>
+      return `<div class="toolbar" style="margin-top:4px"><span class="spacer"></span><button class="btn ghost sm" data-act="mark-seen">${t("Mark all as seen")}</button>
+          ${ids.length ? `<button class="btn primary sm" data-act="tx-new" title="${t.n(ids.length, "{n} recording", "{n} recordings")}">${I("wave", "sm")} ${days > 1 ? t("Transcribe all {n} class days", { n: days }) : t("Transcribe all")}</button>` : ""}</div>
         <div class="card new-days">${groups.map((g) => `<div class="nd-course"><span class="pill new">${esc(g.c.code)}</span> ${esc(g.c.display_name)}
-          ${g.others ? `<span class="dim sm">· +${plural(g.others, "class day")} of other sections on the course page</span>` : ""}</div>
+          ${g.others ? `<span class="dim sm">· ${t.n(g.others, "+{n} class day of other sections on the course page", "+{n} class days of other sections on the course page")}</span>` : ""}</div>
           ${g.days.map((d) => newDayRowHTML(d, g.c)).join("")}`).join("")}</div>`;
     }
     const tools = `<div class="toolbar"><span class="spacer"></span>
-        ${groups.length ? `<button class="btn ghost sm" data-act="mark-seen">Mark all as seen</button>
-        <button class="btn sm" data-act="select-new">${I("list-checks", "sm")} Select all new</button>` : ""}
-        <button class="btn primary sm" data-act="tx-selected" id="tx-sel" disabled>${I("wave", "sm")} Transcribe selected</button></div>`;
+        ${groups.length ? `<button class="btn ghost sm" data-act="mark-seen">${t("Mark all as seen")}</button>
+        <button class="btn sm" data-act="select-new">${I("list-checks", "sm")} ${t("Select all new")}</button>` : ""}
+        <button class="btn primary sm" data-act="tx-selected" id="tx-sel" disabled>${I("wave", "sm")} ${t("Transcribe selected")}</button></div>`;
     let h = `<div class="view-inner"><div class="card hero"><div class="badge">${I("sparkle", "lg")}</div><div class="grow">
-      <h1>New recordings</h1><div class="meta"><span>Recordings that appeared since your last visit. Nothing is transcribed until you choose it.</span></div></div></div>
+      <h1>${t("New recordings")}</h1><div class="meta"><span>${t("Recordings that appeared since your last visit. Nothing is transcribed until you choose it.")}</span></div></div></div>
       ${tools}`;
-    if (!groups.length) h += emptyHTML("check-circle", S.sync.running ? "Checking for new recordings…" : "You're all caught up",
-      "Recordings that appear on Panopto after this sync show up here. Pick a course on the left to browse everything already there.");
+    if (!groups.length) h += emptyHTML("check-circle", S.sync.running ? t("Checking for new recordings…") : t("You're all caught up"),
+      t("Recordings that appear on Panopto after this sync show up here. Pick a course on the left to browse everything already there."));
     for (const g of groups) {
       h += `<div class="course-group-title"><span class="pill new">${esc(g.c.code)}</span> ${esc(g.c.display_name)}</div>`;
       h += g.days.map((d) => dayCardHTML(d, g.c)).join("");
@@ -540,7 +536,7 @@
       card.classList.toggle("has-sel", n > 0);
     });
     const btn = $("#tx-sel");
-    if (btn) { btn.disabled = S.selected.size === 0; btn.innerHTML = `${I("wave", "sm")} Transcribe ${S.selected.size ? `${S.selected.size} selected` : "selected"}`; }
+    if (btn) { btn.disabled = S.selected.size === 0; btn.innerHTML = `${I("wave", "sm")} ${S.selected.size ? t("Transcribe {n} selected", { n: S.selected.size }) : t("Transcribe selected")}`; }
   }
 
   // ---- day / transcript view
@@ -576,27 +572,27 @@
       <div class="tx-head"><div style="flex:1;min-width:0"><h1>${esc(d.title)} · ${esc(d.date_label)}</h1>
         <div class="sub">${esc(d.subtitle)}</div>
         <div class="langs" style="margin-top:8px">${(en || tr) ? `<span class="langbar"><i class="en" style="width:${en * 100}%"></i><i class="tr" style="width:${tr * 100}%"></i></span>
-          English ${Math.round(en * 100)}%${tr ? ` · <span style="color:var(--teal)">Turkish ${Math.max(1, Math.round(tr * 100))}%</span>` : ""}` : ""}
-          · ${plural(d.parts.length, "part")}</div></div>
-        <input class="input find" placeholder="Find in transcript  (Ctrl+F)" data-act="find" value="${esc(S.dayFind)}"></div>
+          ${t("English {pct}", { pct: pctText(en) })}${tr ? ` · <span style="color:var(--teal)">${t("Turkish {pct}", { pct: t.pct(Math.max(1, Math.round(tr * 100)) / 100) })}</span>` : ""}` : ""}
+          · ${t.n(d.parts.length, "{n} part", "{n} parts")}</div></div>
+        <input class="input find" placeholder="${t("Find in transcript  (Ctrl+F)")}" data-act="find" value="${esc(S.dayFind)}"></div>
       <div class="toolbar" id="day-actions">${dayActionsHTML()}</div>`;
-    if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>${warns.some((w) => w.code === "not_written") ? "Notes" : "Transcript quality"}</b><ul>${warns.map((w) => `<li>Part ${w.part}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
-    h += `<div id="notes-slot">${notesHTML()}</div>`;
+    if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>${warns.some((w) => w.code === "not_written") ? t("Notes") : t("Transcript quality")}</b><ul>${warns.map((w) => `<li>${t("Part {n}", { n: w.part })}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
+    h += `<div id="notes-slot">${notesHTML()}</div><div id="marks-slot">${marksHTML()}</div>`;
     if (d.highlights.length) {
-      h += `<div class="card hl-card"><h3>${I("star")} Highlights <span class="count">${d.highlights.length}</span></h3>` +
-        d.highlights.map((x) => `<div class="hl-item" data-act="jump" data-part="${x.part}" data-t="${x.t}" tabindex="0" role="button"><span class="when">Part ${x.part} · ${esc(x.ts)}</span>
+      h += `<div class="card hl-card"><h3>${I("star")} ${t("Highlights")} <span class="count">${d.highlights.length}</span></h3>` +
+        d.highlights.map((x) => `<div class="hl-item" data-act="jump" data-part="${x.part}" data-t="${x.t}" tabindex="0" role="button"><span class="when">${t("Part {n}", { n: x.part })} · ${esc(x.ts)}</span>
           <span class="tags">${esc(x.tags.join(", "))}</span><span class="para-text">${esc(x.text)}</span></div>`).join("") + `</div>`;
     }
     for (const p of d.parts) {
-      h += `<div class="part-h" id="part-${p.index}"><h2>Part ${p.index}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${plural(p.slides, "slide")}` : ""}</span>
-        <span style="flex:1"></span><button class="btn ghost sm" data-act="url" data-url="${esc(p.viewer_url)}">${I("play", "sm")} Watch</button></div>`;
-      if (!p.paragraphs.length) { h += `<div class="empty" style="padding:20px">${p.status === "done" ? "No speech was recognised in this part." : "Not transcribed yet."}</div>`; continue; }
+      h += `<div class="part-h" id="part-${p.index}"><h2>${t("Part {n}", { n: p.index })}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${t.n(p.slides, "{n} slide", "{n} slides")}` : ""}</span>
+        <span style="flex:1"></span><button class="btn ghost sm" data-act="url" data-url="${esc(p.viewer_url)}">${I("play", "sm")} ${t("Watch")}</button></div>`;
+      if (!p.paragraphs.length) { h += `<div class="empty" style="padding:20px">${p.status === "done" ? t("No speech was recognised in this part.") : t("Not transcribed yet.")}</div>`; continue; }
       let slide = null;
       for (const para of p.paragraphs) {
         if (para.slide_image && para.slide !== slide) {
           slide = para.slide;
           const size = para.slide_w ? ` width="${+para.slide_w}" height="${+para.slide_h}"` : "";   // space reserved before it loads
-          h += `<div class="slide" data-act="zoom" data-src="${esc(para.slide_image)}" tabindex="0" role="button" title="Show it larger"><img loading="lazy" src="${esc(para.slide_image)}"${size} alt="Slide ${para.slide}"><span class="cap">Slide ${para.slide}</span></div>`;
+          h += `<div class="slide" data-act="zoom" data-src="${esc(para.slide_image)}" tabindex="0" role="button" title="${t("Show it larger")}"><img loading="lazy" src="${esc(para.slide_image)}"${size} alt="${t("Slide {n}", { n: para.slide })}"><span class="cap">${t("Slide {n}", { n: para.slide })}</span></div>`;
         }
         h += paraHTML(para, p);
       }
@@ -609,10 +605,10 @@
     const days = c.days.filter((x) => x.parts && !otherSection(c, x)).sort((a, b) => (a.date + a.kind).localeCompare(b.date + b.kind));
     const i = days.findIndex((x) => x.day_key === d.day_key);
     if (i < 0 || days.length < 2) return "";
-    const what = (x) => `${shortDate(x.date)} ${x.kind === "lab" ? "lab" : "lecture"}`;
+    const what = (x) => (x.kind === "lab" ? t("{date} lab", { date: shortDate(x.date) }) : t("{date} lecture", { date: shortDate(x.date) }));
     const btn = (x, back) => !x ? "<span></span>" : x.any_done
       ? `<button class="btn ghost" data-act="open-day" data-day="${esc(x.day_key)}">${back ? I("arrow-left", "sm") : ""} ${what(x)} ${back ? "" : I("arrow-right", "sm")}</button>`
-      : `<button class="btn ghost" data-act="tx-day" data-day="${esc(x.day_key)}" title="Not transcribed yet">${I("wave", "sm")} Transcribe the ${what(x)}</button>`;
+      : `<button class="btn ghost" data-act="tx-day" data-day="${esc(x.day_key)}" title="${t("Not transcribed yet")}">${I("wave", "sm")} ${x.kind === "lab" ? t("Transcribe the {date} lab", { date: shortDate(x.date) }) : t("Transcribe the {date} lecture", { date: shortDate(x.date) })}</button>`;
     return `<div class="day-nav">${btn(days[i - 1], true)}${btn(days[i + 1], false)}</div>`;
   }
   // lower case for finding, with the Turkish i's as one letter ("İşte" = "işte", "SINAV" = "sınav"); same length
@@ -628,25 +624,27 @@
     const text = q.length > 1 ? markFind(para.text, q) : esc(para.text);
     const hidden = q.length > 1 && !fold(para.text).includes(fold(q));
     const marks = [para.tag ? `<span class="pill tr">${esc(para.tag)}</span>` : "", para.star ? `<span class="pill processing" title="${esc((para.tags || []).join(", "))}">${I("star")}</span>` : "",
-      para.uncertain ? `<span class="pill" title="Unclear audio — check the recording">${I("alert")}unclear</span>` : ""].join("");
-    return `<div class="para ${para.tag ? "tr" : ""} ${para.star ? "star" : ""} ${para.uncertain ? "uncertain" : ""}" data-part="${p.index}" data-t="${para.t}" data-e="${para.e ?? para.t}" ${hidden ? 'style="display:none"' : ""}>
-      <span class="ts-col"><span class="ts" data-act="ts" data-url="${esc(p.viewer_url)}" data-t="${para.t}" tabindex="0" role="button" title="Open in Panopto at this moment">${esc(para.ts)}</span>
-        <button class="ts-link" data-act="copy-moment" data-part="${p.index}" data-t="${para.t}" title="Copy a link to this moment (for classmates: they open it with their own IEU login)">${I("link", "xs")}</button></span>
+      para.uncertain ? `<span class="pill" title="${t("Unclear audio — check the recording")}">${I("alert")}${t("unclear")}</span>` : ""].join("");
+    const mk = para.mark;
+    return `<div class="para ${para.tag ? "tr" : ""} ${para.star ? "star" : ""} ${para.uncertain ? "uncertain" : ""} ${mk ? "marked" : ""}" data-part="${p.index}" data-t="${para.t}" data-e="${para.e ?? para.t}" ${hidden ? 'style="display:none"' : ""}>
+      <span class="ts-col"><span class="ts" data-act="ts" data-url="${esc(p.viewer_url)}" data-t="${para.t}" tabindex="0" role="button" title="${t("Open in Panopto at this moment")}">${esc(para.ts)}</span>
+        <button class="ts-link" data-act="copy-moment" data-part="${p.index}" data-t="${para.t}" title="${t("Copy a link to this moment (for classmates: they open it with their own IEU login)")}">${I("link", "xs")}</button>
+        <button class="ts-mark ${mk ? "on" : ""}" data-act="mark" data-part="${p.index}" data-t="${para.t}" title="${mk ? t("Remove your mark") : t("Mark this passage to come back to it")}">${I("bookmark", "xs")}</button></span>
       <div class="para-text">${marks ? `<span class="marks">${marks}</span>` : ""}${text}</div></div>`;
   }
   function dayActionsHTML() {
     const d = S.day; if (!d) return "";
     const ai = S.system.ai || {};
     const hasText = d.parts.some((p) => p.paragraphs.length);
-    return `<button class="btn primary sm" data-act="menu-copy" ${hasText ? "" : "disabled"}>${I("copy", "sm")} Copy for AI ${I("chevron-down", "sm caret")}</button>
-      <button class="btn sm" data-act="export" ${hasText && S.exporting !== d.day_key ? "" : "disabled"} title="PDF with slides next to the transcript + ZIP, for ChatGPT / Claude">
-        ${S.exporting === d.day_key ? SPIN() : I("download", "sm")} Save as PDF</button>
-      <button class="btn grad sm" data-act="ask-day" ${hasText && ai.available ? "" : "disabled"} title="${ai.available ? `Chat with ${aiName()} about this lecture (${aiPlan()})` : aiHint()}">${I("chat", "sm")} Ask ${esc(aiName())}</button>
-      <button class="btn sm" data-act="claude" ${hasText && ai.available && !S.ai.running ? "" : "disabled"} title="${ai.available ? `Write study notes with ${aiPlan()}` : aiHint()}">${I("ai", "sm")} Study notes</button>
+    return `<button class="btn primary sm" data-act="menu-copy" ${hasText ? "" : "disabled"}>${I("copy", "sm")} ${t("Copy for AI")} ${I("chevron-down", "sm caret")}</button>
+      <button class="btn sm" data-act="export" ${hasText && S.exporting !== d.day_key ? "" : "disabled"} title="${t("PDF with slides next to the transcript + ZIP, for ChatGPT / Claude")}">
+        ${S.exporting === d.day_key ? SPIN() : I("download", "sm")} ${t("Save as PDF")}</button>
+      <button class="btn grad sm" data-act="ask-day" ${hasText && ai.available ? "" : "disabled"} title="${ai.available ? t.html("Chat with {ai} about this lecture ({plan})", { ai: aiName(), plan: aiPlan() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>
+      <button class="btn sm" data-act="claude" ${hasText && ai.available && !S.ai.running ? "" : "disabled"} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
       <span class="spacer"></span>
       ${d.files.pdf ? `<button class="btn ghost sm" data-act="file" data-what="pdf">${I("file", "sm")} PDF</button>` : ""}
-      <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="The transcript as a text file (Markdown) in your IEUStudia folder">${I("file-text", "sm")} Text file</button>
-      <button class="btn ghost sm" data-act="file" data-what="folder">${I("folder-open", "sm")} Folder</button>`;
+      <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="${t("The transcript as a text file (Markdown) in your IEUStudia folder")}">${I("file-text", "sm")} ${t("Text file")}</button>
+      <button class="btn ghost sm" data-act="file" data-what="folder">${I("folder-open", "sm")} ${t("Folder")}</button>`;
   }
   function renderDayActions() { const el = $("#day-actions"); if (el) el.innerHTML = dayActionsHTML(); }
   function notesHTML() {   // the AI notes of this day: the kind being written, else the chosen (or newest) kind
@@ -657,13 +655,52 @@
     if (!shown) return "";
     const kinds = !writing && notes.length > 1 ? `<span class="seg sm">${notes.map((n) => `<button class="${n.kind === shown.kind ? "on" : ""}" data-act="notes-kind" data-val="${n.kind}">${esc(n.label)}</button>`).join("")}</span>` : "";
     const cards = !writing && shown.kind === "flashcards" ? (shown.cards || []).length : 0;
-    return `<div class="card notes-card"><h3>${I("ai")} ${esc(shown.label || "Study notes")} ${writing ? `<span class="pill active">${SPIN()} ${esc(aiName())} is writing…</span>
-      <button class="btn ghost sm" data-act="ai-cancel">Stop</button>` : `<span class="pill done">${I("check")}Saved</span>${kinds}
-      ${cards >= 3 ? `<button class="btn sm" data-act="cards-practise" title="One card at a time: think of the answer, then check it">${I("list-checks", "sm")} Practise ${cards} cards</button>` : ""}
-      <button class="btn ghost sm" data-act="file" data-what="notes:${esc(shown.kind)}">${I("file-text", "sm")} Open file</button>`}</h3>
+    return `<div class="card notes-card"><h3>${I("ai")} ${esc(shown.label || t("Study notes"))} ${writing ? `<span class="pill active">${SPIN()} ${t.html("{ai} is writing…", { ai: aiName() })}</span>
+      <button class="btn ghost sm" data-act="ai-cancel">${t("Stop")}</button>` : `<span class="pill done">${I("check")}${t("Saved")}</span>${kinds}
+      ${cards >= 3 ? `<button class="btn sm" data-act="cards-practise" title="${t("One card at a time: think of the answer, then check it")}">${I("list-checks", "sm")} ${t("Practise {n} cards", { n: cards })}</button>` : ""}
+      <button class="btn ghost sm" data-act="file" data-what="notes:${esc(shown.kind)}">${I("file-text", "sm")} ${t("Open file")}</button>`}</h3>
       <div class="notes-body md">${shown.md ? mdToHtml(shown.md, { cites: true }) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
   }
   function renderNotes() { const el = $("#notes-slot"); if (el) el.innerHTML = notesHTML(); renderDayActions(); }
+  function marksHTML() {   // the passages you marked, in the lecture's order
+    const d = S.day, m = (d && d.marks) || [];
+    if (!m.length) return "";
+    const ai = S.system.ai || {};
+    return `<div class="card hl-card marks-card"><h3>${I("bookmark")} ${t("Your marks")} <span class="count">${m.length}</span><span class="spacer"></span>
+        ${ai.available ? `<button class="btn ghost sm" data-act="marks-ask" title="${t("Start a chat about this lecture that asks about these passages")}">${I("chat", "sm")} ${t.html("Ask {ai} about them", { ai: aiName() })}</button>` : ""}</h3>` +
+      m.map((x) => `<div class="hl-item mk-item" data-act="jump" data-part="${x.part}" data-t="${x.t}" tabindex="0" role="button">
+        <span class="when">${t("Part {n}", { n: x.part })} · ${esc(x.ts)}</span><span class="para-text">${esc(x.text)}${x.note ? `<span class="mk-note">${I("pencil", "xs")} ${esc(x.note)}</span>` : ""}</span>
+        <span class="mk-acts"><button class="btn ghost icon sm" data-act="mark-note" data-id="${esc(x.id)}" data-t="${x.t}" title="${x.note ? t("Change the note") : t("Add a note")}">${I("pencil", "sm")}</button>
+        <button class="btn ghost icon sm" data-act="mark-del" data-id="${esc(x.id)}" data-t="${x.t}" title="${t("Remove the mark")}">${I("x", "sm")}</button></span></div>`).join("") + `</div>`;
+  }
+  function renderMarks(part, at) {   // the marks card, and the paragraph whose mark changed (at: its time in s)
+    const el = $("#marks-slot"); if (el) el.innerHTML = marksHTML();
+    const p = S.day && S.day.parts.find((x) => x.index === part);
+    const para = p && p.paragraphs.find((x) => Math.abs(x.t - at) < 0.05);
+    const node = para && document.querySelector(`.para[data-part="${part}"][data-t="${para.t}"]`);
+    if (node) node.outerHTML = paraHTML(para, p);
+  }
+  async function setMark(part, at, on, note) {   // at: the passage's time in s; true once saved and shown
+    const d = S.day, p = d && d.parts.find((x) => x.index === part);
+    if (!p) return false;
+    const para = p.paragraphs.find((x) => Math.abs(x.t - at) < 0.05);
+    const r = on ? await call("mark_set", p.id, at, para ? para.text : "", note) : await call("mark_delete", p.id, at);
+    if (!r.ok) { toast(r.error, "error"); return false; }
+    if (S.day !== d) return false;
+    const here = (x) => x.part === part && Math.abs(x.t - at) < 0.05;
+    // the listed mark keeps its saved time and passage, also when no paragraph starts there any more (transcribed again)
+    const prev = (d.marks || []).find(here);
+    d.marks = (d.marks || []).filter((x) => !here(x));
+    if (on) {
+      const old = (para && para.mark) || prev || {};
+      if (para) para.mark = { note: note != null ? note : old.note || "" };
+      d.marks.push({ part, id: p.id, t: at, ts: prev ? prev.ts : para ? para.ts : "", text: prev ? prev.text : para ? para.text : "",
+        note: note != null ? note : old.note || "" });
+      d.marks.sort((a, b) => a.part - b.part || a.t - b.t);
+    } else if (para) para.mark = null;
+    renderMarks(part, at);
+    return true;
+  }
 
   // ---- LaTeX → HTML for formulas in answers/notes: a small best-effort renderer (no library needed).
   // Text is escaped; unknown commands are shown as written.
@@ -797,7 +834,7 @@
     }
     try { return seq(null); } catch (e) { return esc(s); }
   }
-  const unesc = (t) => t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+  const unesc = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
   const mathSpan = (escaped) => `<span class="math">${texToHtml(unesc(escaped))}</span>`;
 
   // ---- Markdown (Claude's answers and notes): escaped first, then our own tags only
@@ -808,7 +845,7 @@
   const CITE_FILLER = /^(?:[\s,;·–-]|and|at|ve|&amp;)*$/;
   function citeBtn(l, p, ts, ts2) {
     const secs = ts.split(":").reduce((a, x) => a * 60 + +x, 0);
-    return `<button class="cite" data-act="cite" data-l="${l || ""}" data-p="${p}" data-t="${secs}" title="Open the transcript at this moment">${I("play", "xs")}${l ? `L${l} · ` : ""}Part ${p} · ${ts}${ts2 ? `–${ts2}` : ""}</button>`;
+    return `<button class="cite" data-act="cite" data-l="${l || ""}" data-p="${p}" data-t="${secs}" title="${t("Open the transcript at this moment")}">${I("play", "xs")}${l ? `L${l} · ` : ""}${t("Part {n}", { n: p })} · ${ts}${ts2 ? `–${ts2}` : ""}</button>`;
   }
   function citeGroup(content, hold) {
     let l = "", p = "", last = 0, out = "", n = 0, located = false, m;
@@ -825,20 +862,20 @@
   function mdInline(s, opts) {
     const keep = [];
     const hold = (html) => `\u0000${keep.push(html) - 1}\u0000`;
-    let t = esc(s);
-    t = t.replace(/`([^`\n]+)`/g, (_, c) => hold(`<code>${c}</code>`));
-    t = t.replace(/\$\$([^$\n]+)\$\$/g, (_, c) => hold(mathSpan(c)));
-    t = t.replace(/\\\((.+?)\\\)/g, (_, c) => hold(mathSpan(c)));
-    t = t.replace(/(^|[^\\$\w])\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?![\w$])/g, (_, pre, c) => pre + hold(mathSpan(c)));
+    let out = esc(s);
+    out = out.replace(/`([^`\n]+)`/g, (_, c) => hold(`<code>${c}</code>`));
+    out = out.replace(/\$\$([^$\n]+)\$\$/g, (_, c) => hold(mathSpan(c)));
+    out = out.replace(/\\\((.+?)\\\)/g, (_, c) => hold(mathSpan(c)));
+    out = out.replace(/(^|[^\\$\w])\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?![\w$])/g, (_, pre, c) => pre + hold(mathSpan(c)));
     const emph = (x) => x.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>").replace(/__([^_\n]+)__/g, "<b>$1</b>")
       .replace(/(^|[^\w*])\*([^*\s](?:[^*\n]*?[^*\s])?)\*(?![\w*])/g, "$1<i>$2</i>")
       .replace(/(^|[^\w])_([^_\s](?:[^_\n]*?[^_\s])?)_(?!\w)/g, "$1<i>$2</i>")
       .replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
-    t = t.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, txt, url) => hold(`<a class="ext" data-act="url" data-url="${url}" title="${url}">${emph(txt)}</a>`));
-    if (opts.cites) t = t.replace(/\[([^[\]\n]{1,160})\]|\(([^()\n]{1,160})\)/g, (m, a, b) => citeGroup(a != null ? a : b, hold) ?? m);
-    t = emph(t);
-    for (let k = 0; k < 4 && t.includes("\u0000"); k++) t = t.replace(/\u0000(\d+)\u0000/g, (_, n) => keep[+n]);   // held parts may hold others
-    return t;
+    out = out.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, txt, url) => hold(`<a class="ext" data-act="url" data-url="${url}" title="${url}">${emph(txt)}</a>`));
+    if (opts.cites) out = out.replace(/\[([^[\]\n]{1,160})\]|\(([^()\n]{1,160})\)/g, (m, a, b) => citeGroup(a != null ? a : b, hold) ?? m);
+    out = emph(out);
+    for (let k = 0; k < 4 && out.includes("\u0000"); k++) out = out.replace(/\u0000(\d+)\u0000/g, (_, n) => keep[+n]);   // held parts may hold others
+    return out;
   }
   function mdToHtml(md, opts = {}) {
     try { return mdRender(md, opts); } catch (e) { console.error(e); return `<p>${esc(md).replace(/\n/g, "<br>")}</p>`; }
@@ -935,15 +972,15 @@
     }, 220);
   }
   function libraryHTML() {
-    let h = `<div class="view-inner"><div class="search-big">${I("search")}<input class="input" placeholder="Search your lectures and course files… (English or Turkish)" data-act="search" value="${esc(S.search.q)}"></div>
+    let h = `<div class="view-inner"><div class="search-big">${I("search")}<input class="input" placeholder="${t("Search your lectures and course files… (English or Turkish)")}" data-act="search" value="${esc(S.search.q)}"></div>
       <div id="search-results"></div>`;
     if (S.lib == null) h += skeleton();
-    else if (!S.lib.length) h += emptyHTML("library", "No transcripts yet", "Transcribed lectures appear here, grouped by course.");
+    else if (!S.lib.length) h += emptyHTML("library", t("No transcripts yet"), t("Transcribed lectures appear here, grouped by course."));
     else for (const c of S.lib) {
-      const ask = (S.system.ai || {}).available ? `<span class="spacer"></span><button class="btn ghost sm" data-act="ask-course" data-id="${esc(c.course_id)}">${I("chat", "sm")} Ask ${esc(aiName())}</button>` : "";
+      const ask = (S.system.ai || {}).available ? `<span class="spacer"></span><button class="btn ghost sm" data-act="ask-course" data-id="${esc(c.course_id)}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>` : "";
       h += `<div class="course-group-title"><span class="pill new">${esc(c.code)}</span> ${esc(c.name)}${ask}</div><div class="lib-grid">` +
         c.days.map((d) => `<div class="card lib-day" data-act="open-day" data-day="${esc(d.day_key)}" tabindex="0" role="button"><div class="t">${esc(d.label)}</div>
-          <div class="s">${esc(d.kind_label)} · ${plural(d.parts, "part")} · ${fmtDur(d.duration_s)} ${d.transcribed ? "" : "· partly"}</div></div>`).join("") + `</div>`;
+          <div class="s">${esc(d.kind_label)} · ${t.n(d.parts, "{n} part", "{n} parts")} · ${fmtDur(d.duration_s)} ${d.transcribed ? "" : `· ${t("partly")}`}</div></div>`).join("") + `</div>`;
     }
     return h + `</div>`;
   }
@@ -951,13 +988,13 @@
     const el = $("#search-results"); if (!el) return;
     const r = S.search.results, m = S.search.materials || [];
     if (r == null) { el.innerHTML = ""; return; }
-    if (!r.length && !m.length) { el.innerHTML = `<div class="card" style="padding:16px;margin-bottom:16px;color:var(--text-2)">No matches for “${esc(S.search.q)}”.</div>`; return; }
+    if (!r.length && !m.length) { el.innerHTML = `<div class="card" style="padding:16px;margin-bottom:16px;color:var(--text-2)">${t.html("No matches for “{q}”.", { q: S.search.q })}</div>`; return; }
     const snip = (s) => esc(s).replace(/\u0002([^\u0003]*)\u0003/g, "<em>$1</em>");     // the words found
-    el.innerHTML = (r.length ? `<div class="section-title">${I("wave")} In your lectures <span class="dim sm">${r.length}</span></div><div class="card" style="margin-bottom:18px">` + r.map((x) => `<button class="result" data-act="open-hit" data-day="${esc(x.day_key)}" data-id="${esc(x.delivery_id)}" data-t="${x.t}">
-      <span class="where"><b>${esc(x.course_code)}</b> ${esc(shortDate(x.date))} · ${esc(x.time)} · at ${esc(x.ts)}</span>
+    el.innerHTML = (r.length ? `<div class="section-title">${I("wave")} ${t("In your lectures")} <span class="dim sm">${r.length}</span></div><div class="card" style="margin-bottom:18px">` + r.map((x) => `<button class="result" data-act="open-hit" data-day="${esc(x.day_key)}" data-id="${esc(x.delivery_id)}" data-t="${x.t}">
+      <span class="where"><b>${esc(x.course_code)}</b> ${esc(shortDate(x.date))} · ${esc(x.time)} · ${t.html("at {ts}", { ts: x.ts })}</span>
       <span class="snippet">${snip(x.snippet)}</span></button>`).join("") + `</div>` : "") +
-      (m.length ? `<div class="section-title">${I("layers")} In your course files <span class="dim sm">${m.length}</span></div><div class="card" style="margin-bottom:18px">` + m.map((x) => `<button class="result" data-act="open-mat-hit" data-id="${esc(x.resource_id)}" title="Open the file">
-      <span class="where"><b>${esc(x.course_code)}</b> ${esc(x.title)} · page ${x.page}</span>
+      (m.length ? `<div class="section-title">${I("layers")} ${t("In your course files")} <span class="dim sm">${m.length}</span></div><div class="card" style="margin-bottom:18px">` + m.map((x) => `<button class="result" data-act="open-mat-hit" data-id="${esc(x.resource_id)}" title="${t("Open the file")}">
+      <span class="where"><b>${esc(x.course_code)}</b> ${esc(x.title)} · ${t("page {n}", { n: x.page })}</span>
       <span class="snippet">${snip(x.snippet)}</span></button>`).join("") + `</div>` : "");
   }
 
@@ -965,147 +1002,162 @@
   function settingsHTML() {
     const s = S.settings, sys = S.system, p = S.profile || {};
     const slowHere = (id) => sys.gpu && !gpuUsed(sys.gpu) && id !== "small";      // hours per lecture on a processor
+    const small = ((sys.presets || []).find((x) => x.id === "small") || { label: "Small" }).label;   // its name as its card shows it
     const presets = (sys.presets || []).map((x) => `<button class="preset ${x.id === s.model ? "on" : ""}" data-act="set" data-key="model" data-val="${x.id}">
-      <div class="n">${esc(x.label)} <span class="sz">${(x.size_mb / 1000).toFixed(1)} GB${x.downloaded ? " · ✓" : ""}</span></div><div class="d">${esc(x.description)}</div>
-      ${slowHere(x.id) ? `<div class="d warn-txt">${I("alert", "xs")} Very slow on this PC (no NVIDIA graphics card in use): Small is the one for it.</div>` : ""}</button>`).join("");
+      <div class="n">${esc(x.label)} <span class="sz">${t.num(+(x.size_mb / 1000).toFixed(1), 1)} GB${x.downloaded ? " · ✓" : ""}</span></div><div class="d">${esc(x.description)}</div>
+      ${slowHere(x.id) ? `<div class="d warn-txt">${I("alert", "xs")} ${t.html("Very slow on this PC (no NVIDIA graphics card in use): {model} is the one for it.", { model: small })}</div>` : ""}</button>`).join("");
     const g = sys.gpu;
-    const row = (t, d, ctl) => `<div class="set-row"><div class="txt"><div class="t">${t}</div><div class="d">${d}</div></div>${ctl}</div>`;
+    const row = (title, d, ctl) => `<div class="set-row"><div class="txt"><div class="t">${title}</div><div class="d">${d}</div></div>${ctl}</div>`;
     const sw = (key) => `<input type="checkbox" class="switch" data-act="set-bool" data-key="${key}" ${s[key] ? "checked" : ""}>`;
     const profs = S.profiles.length ? S.profiles : [{ id: "main", main: true, active: true, has_login: true, ...p }];
+    const sections = [["set-profiles", t("Profiles")], ["set-tx", t("Transcription")], ["set-files", t("Files")], ["set-ai", t("AI")],
+      ["set-bg", t("Notifications")], ["set-storage", t("Storage")], ["set-about", t("About")], ["set-look", t("Appearance")]];
     return `<div class="view-inner" style="max-width:820px">
-      <div class="card set-card"><h3>Profiles <span class="dim sm">one per IEULearn account</span></h3>
+      <nav class="set-nav">${sections.map(([id, l]) => `<button class="btn ghost sm" data-act="set-jump" data-id="${id}">${l}</button>`).join("")}</nav>
+      <div class="card set-card" id="set-profiles"><h3>${t("Profiles")} <span class="dim sm">${t("one per IEULearn account")}</span></h3>
         ${profs.map((x) => `<div class="set-row prof-row"><div class="avatar">${esc(initials(x.name || x.username))}</div>
-          <div class="txt"><div class="t">${esc(x.name || x.username || "New profile")} ${x.active ? `<span class="pill">This profile</span>` : ""}</div>
-            <div class="d">${esc([x.student_number, x.username].filter(Boolean).join(" · ") || "Not signed in yet")}${x.active ? " · password stored encrypted on this PC" : x.has_login ? "" : " · signed out"}</div></div>
-          <div class="prof-acts">${x.active ? `<button class="btn danger sm" data-act="signout">${I("logout", "sm")} Sign out</button>`
-            : `<button class="btn sm" data-act="profile-switch" data-id="${esc(x.id)}">Switch</button>${x.main ? "" : `<button class="btn ghost icon sm" data-act="profile-remove" data-id="${esc(x.id)}" title="Remove this profile from this PC">${I("x", "sm")}</button>`}`}</div></div>`).join("")}
-        ${row("Add another account", "Someone else uses this PC, or you have a second IEULearn account? Each profile keeps its own courses, transcripts, notes and settings; switch from the menu at the bottom left.",
-          `<button class="btn sm" data-act="profile-add">${I("plus", "sm")} Add account</button>`)}</div>
-      <div class="card set-card"><h3>Transcription</h3>
+          <div class="txt"><div class="t">${esc(x.name || x.username || t("New profile"))} ${x.active ? `<span class="pill">${t("This profile")}</span>` : ""}</div>
+            <div class="d">${esc([x.student_number, x.username].filter(Boolean).join(" · ") || t("Not signed in yet"))}${x.active ? ` · ${t("password stored encrypted on this PC")}` : x.has_login ? "" : ` · ${t("signed out")}`}</div></div>
+          <div class="prof-acts">${x.active ? `<button class="btn danger sm" data-act="signout">${I("logout", "sm")} ${t("Sign out")}</button>`
+            : `<button class="btn sm" data-act="profile-switch" data-id="${esc(x.id)}">${t("Switch")}</button>${x.main ? "" : `<button class="btn ghost icon sm" data-act="profile-remove" data-id="${esc(x.id)}" title="${t("Remove this profile from this PC")}">${I("x", "sm")}</button>`}`}</div></div>`).join("")}
+        ${row(t("Add another account"), t("Someone else uses this PC, or you have a second IEULearn account? Each profile keeps its own courses, transcripts, notes and settings; switch from the menu at the bottom left."),
+          `<button class="btn sm" data-act="profile-add">${I("plus", "sm")} ${t("Add account")}</button>`)}</div>
+      <div class="card set-card" id="set-tx"><h3>${t("Transcription")}</h3>
         <div class="presets">${presets || `<div class="skel" style="height:70px"></div>`}</div>
-        ${row("Transcribe with", !g ? "Checking…" : s.device === "cpu" && g.available ? `Processor only, as chosen here: your ${esc(g.name || "NVIDIA graphics card")} is not used.`
-            : gpuUsed(g) ? `Your NVIDIA graphics card: ${esc(g.name)} (${g.vram_mb} MB)`
-            : gpuFits(g) && !g.libraries ? `Your ${esc(g.name || "NVIDIA graphics card")} needs a one-time download from NVIDIA before it can transcribe (About → Run setup again, below). Until then the processor does it, more slowly.`
-            : g.available ? `Your ${esc(g.name || "NVIDIA graphics card")} can't transcribe (too little graphics memory or an old driver): the processor does it, slower.`
-            : "No NVIDIA graphics card found: the processor transcribes (slower).",
-          `<select class="input" style="width:170px" data-act="set-sel" data-key="device">${["auto", "cuda", "cpu"].map((v) => `<option value="${v}" ${s.device === v ? "selected" : ""}>${{ auto: "Automatic", cuda: "Graphics card", cpu: "Processor only" }[v]}</option>`).join("")}</select>`)}
-        ${row("Languages", "English with Turkish passages: each passage is transcribed in the language actually spoken and tagged [TR].", `<span class="chip">English + Turkish</span>`)}
-        ${row("Capture slides", "Takes the slides and board from Panopto's screen recording and shows them next to the transcript (adds about a minute of downloading per lecture).", sw("capture_slides"))}
-        ${row("Hide very short recordings", "Recordings shorter than this (usually started by mistake) are greyed out.", `<select class="input" style="width:110px" data-act="set-sel" data-key="min_duration_s">${[30, 60, 120, 300].map((v) => `<option value="${v}" ${+s.min_duration_s === v ? "selected" : ""}>${v < 60 ? v + " s" : v / 60 + " min"}</option>`).join("")}</select>`)}
+        ${row(t("Transcribe with"), !g ? t("Checking…") : s.device === "cpu" && g.available ? t.html("Processor only, as chosen here: your {name} is not used.", { name: g.name || t("NVIDIA graphics card") })
+            : gpuUsed(g) ? t.html("Your NVIDIA graphics card: {name} ({mb} MB)", { name: g.name, mb: g.vram_mb })
+            : gpuFits(g) && !g.libraries ? t.html("Your {name} needs a one-time download from NVIDIA before it can transcribe (About → Run setup again, below). Until then the processor does it, more slowly.", { name: g.name || t("NVIDIA graphics card") })
+            : g.available ? t.html("Your {name} can't transcribe (too little graphics memory or an old driver): the processor does it, slower.", { name: g.name || t("NVIDIA graphics card") })
+            : t("No NVIDIA graphics card found: the processor transcribes (slower)."),
+          `<select class="input" style="width:170px" data-act="set-sel" data-key="device">${["auto", "cuda", "cpu"].map((v) => `<option value="${v}" ${s.device === v ? "selected" : ""}>${{ auto: t("Automatic"), cuda: t("Graphics card"), cpu: t("Processor only") }[v]}</option>`).join("")}</select>`)}
+        ${row(t("Languages"), t("English with Turkish passages: each passage is transcribed in the language actually spoken and tagged [TR]."), `<span class="chip">${t("English + Turkish")}</span>`)}
+        ${row(t("Capture slides"), t("Takes the slides and board from Panopto's screen recording and shows them next to the transcript (adds about a minute of downloading per lecture)."), sw("capture_slides"))}
+        ${row(t("Hide very short recordings"), t("Recordings shorter than this (usually started by mistake) are greyed out."), `<select class="input" style="width:110px" data-act="set-sel" data-key="min_duration_s">${[30, 60, 120, 300].map((v) => `<option value="${v}" ${+s.min_duration_s === v ? "selected" : ""}>${v < 60 ? t("{n} s", { n: v }) : t("{m} min", { m: v / 60 })}</option>`).join("")}</select>`)}
       </div>
-      <div class="card set-card"><h3>Files</h3>
-        ${row("Save transcripts and notes in", `<span class="path">${esc(s.output_dir)}</span>`, `<div style="display:flex;gap:6px"><button class="btn sm" data-act="pick-folder">Change…</button><button class="btn ghost sm" data-act="open-output">${I("folder-open", "sm")}</button></div>`)}
-        ${row("Subtitles (.srt)", "Also write a subtitle file per recording.", sw("write_srt"))}
-        ${row("Keep downloaded audio", "Keep the audio files (≈40 MB per hour) after transcription.", sw("keep_audio"))}
+      <div class="card set-card" id="set-files"><h3>${t("Files")}</h3>
+        ${row(t("Save transcripts and notes in"), `<span class="path">${esc(s.output_dir)}</span>`, `<div style="display:flex;gap:6px"><button class="btn sm" data-act="pick-folder">${t("Change…")}</button><button class="btn ghost sm" data-act="open-output">${I("folder-open", "sm")}</button></div>`)}
+        ${row(t("Subtitles (.srt)"), t("Also write a subtitle file per recording."), sw("write_srt"))}
+        ${row(t("Keep downloaded audio"), t("Keep the audio files (≈40 MB per hour) after transcription."), sw("keep_audio"))}
       </div>
-      <div class="card set-card"><h3>AI (optional)</h3>
+      <div class="card set-card" id="set-ai"><h3>${t("AI (optional)")}</h3>
         ${Studia.settingsAI ? Studia.settingsAI() : ""}
         ${(() => {
           const ai = sys.ai || {};
           if (!ai.available || ai.provider === "local") return "";
           const pick = (key, opts) => `<select class="input" style="width:220px" data-act="set-sel" data-key="${key}">${opts.map(([v, l]) => `<option value="${v}" ${s[key] === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
-          const M = isChatGPT(ai) ? [["haiku", "Quick"], ["sonnet", "Standard (recommended)"], ["opus", "Thorough"]]
-            : [["haiku", "Haiku (lightest)"], ["sonnet", "Sonnet (recommended)"], ["opus", "Opus (best, heavy)"]];
-          return row("Chat and study notes", "Ask, study notes, exam focus and flashcards.", pick("ai_model", M))
-            + row("Study plans and prep packs", "Works out what to learn from your material and builds the plan or writes the pack.", pick("plan_model", [["", "Same as chat"], ...M]))
-            + row("Checking videos", "Reads candidate videos' captions against the course — many small requests, so a light setting is plenty.", pick("verify_model", M.slice(0, 2)))
-            + row("Weekly digest", "The short written summary of your week.", pick("ai_model_light", M.slice(0, 2)));
+          const M = isChatGPT(ai) ? [["haiku", t("Quick")], ["sonnet", t("Standard (recommended)")], ["opus", t("Thorough")]]
+            : [["haiku", t("Haiku (lightest)")], ["sonnet", t("Sonnet (recommended)")], ["opus", t("Opus (best, heavy)")]];
+          return row(t("Chat and study notes"), t("Ask, study notes, exam focus and flashcards."), pick("ai_model", M))
+            + row(t("Study plans and prep packs"), t("Works out what to learn from your material and builds the plan or writes the pack."), pick("plan_model", [["", t("Same as chat")], ...M]))
+            + row(t("Checking videos"), t("Reads candidate videos' captions against the course — many small requests, so a light setting is plenty."), pick("verify_model", M.slice(0, 2)))
+            + row(t("Weekly digest"), t("The short written summary of your week."), pick("ai_model_light", M.slice(0, 2)));
         })()}
       </div>
       ${Studia.settingsMore ? Studia.settingsMore() : ""}
-      <div class="card set-card"><h3>Appearance</h3>
-        ${row("Theme", "", `<div class="seg">${["system", "light", "dark"].map((t) => `<button class="${s.theme === t ? "on" : ""}" data-act="set" data-key="theme" data-val="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div>`)}
-        ${row("Reading text", "Transcripts, notes and chat. Ctrl and + or − change it too, anywhere in IEUStudia.", `<div class="seg">${TEXT_SIZES.map(([v, l]) => `<button class="${+(s.text_size || 100) === v ? "on" : ""}" data-act="set-size" data-val="${v}">${l}</button>`).join("")}</div>`)}
+      <div class="card set-card" id="set-look"><h3>${t("Appearance")}</h3>
+        ${row(t.lang() === "en" ? "Language" : `${t("Language")} · Language`, t("IEUStudia starts in the language Windows uses. Pick one here to keep it."), langSeg())}
+        ${row(t("Theme"), "", `<div class="seg">${[["system", t.c("theme", "System")], ["light", t.c("theme", "Light")], ["dark", t.c("theme", "Dark")]].map(([v, l]) => `<button class="${s.theme === v ? "on" : ""}" data-act="set" data-key="theme" data-val="${v}">${l}</button>`).join("")}</div>`)}
+        ${row(t("Reading text"), t("Transcripts, notes and chat. Ctrl and + or − change it too, anywhere in IEUStudia."), `<div class="seg">${TEXT_SIZES().map(([v, l]) => `<button class="${+(s.text_size || 100) === v ? "on" : ""}" data-act="set-size" data-val="${v}">${l}</button>`).join("")}</div>`)}
       </div></div>`;
   }
 
-  const TEXT_SIZES = [[90, "Smaller"], [100, "Normal"], [115, "Larger"], [130, "Largest"]];
+  const TEXT_SIZES = () => [[90, t("Smaller")], [100, t("Normal")], [115, t("Larger")], [130, t("Largest")]];   // a function: labels in the current language
+  // "" follows Windows; the names of the languages are in their own language
+  const langSeg = () => `<div class="seg">${[["", t("As Windows ({name})", { name: t.windows() === "tr" ? "Türkçe" : "English" })], ["en", "English"], ["tr", "Türkçe"]]
+    .map(([v, l]) => `<button class="${t.setting() === v ? "on" : ""}" data-act="set-lang" data-val="${v}">${esc(l)}</button>`).join("")}</div>`;
+  Studia.langSeg = langSeg;
 
   // ---- chat with Claude
-  const SUGGEST_ONE = [
-    "What will most likely be on the quiz or exam from this lecture?",
-    "What did the lecturer emphasise the most?",
-    "Summarise this lecture in 10 bullet points.",
-    "Were any homework, deadlines or announcements mentioned?",
-    "Explain the hardest part of this lecture step by step.",
-    "Give me 5 practice questions with answers.",
+  // functions, not arrays: the text is in the language of the moment. A suggestion becomes the student's own question
+  // when clicked (the AI answers in the language it is asked in).
+  const SUGGEST_ONE = () => [
+    t("What will most likely be on the quiz or exam from this lecture?"),
+    t("What did the lecturer emphasise the most?"),
+    t("Summarise this lecture in 10 bullet points."),
+    t("Were any homework, deadlines or announcements mentioned?"),
+    t("Explain the hardest part of this lecture step by step."),
+    t("Give me 5 practice questions with answers."),
   ];
-  const SUGGEST_MANY = [
-    "What are the likely quiz topics, based on these lectures?",
-    "List every announcement about quizzes, exams and homework.",
-    "Which topics did the lecturer stress the most?",
-    "Make a one-page revision sheet of these lectures.",
-    "In which order should I study these topics, and why?",
-    "Give me 8 practice questions in the lecturer's style.",
+  const SUGGEST_MANY = () => [
+    t("What are the likely quiz topics, based on these lectures?"),
+    t("List every announcement about quizzes, exams and homework."),
+    t("Which topics did the lecturer stress the most?"),
+    t("Make a one-page revision sheet of these lectures."),
+    t("In which order should I study these topics, and why?"),
+    t("Give me 8 practice questions in the lecturer's style."),
   ];
-  const MODELS = [["haiku", "Haiku", "lightest"], ["sonnet", "Sonnet", "recommended"], ["opus", "Opus", "best, uses the most"]];
-  const aiName = () => ((S.system.ai || {}).label || "AI");          // ChatGPT, Claude or Offline model
-  const aiPlan = () => ({ chatgpt: "your own ChatGPT plan", claude: "your own Claude plan", codex: "your own ChatGPT plan", local: "the offline model on this PC" }[(S.system.ai || {}).provider] || "the AI you chose");
+  const MODELS = () => [["haiku", "Haiku", t("lightest")], ["sonnet", "Sonnet", t("recommended")], ["opus", "Opus", t("best, uses the most")]];
+  const aiName = () => ((S.system.ai || {}).label || t("AI"));          // ChatGPT, Claude or Offline model
+  // a noun phrase that sentences take as {plan} (the Turkish ones keep it in the nominative)
+  const aiPlan = () => ({ chatgpt: t("your own ChatGPT plan"), claude: t("your own Claude plan"), codex: t("your own ChatGPT plan"), local: t("the offline model on this PC") }[(S.system.ai || {}).provider] || t("the AI you chose"));
   const aiHint = () => { const ai = S.system.ai || {};   // why an AI button is greyed out
-    return ai.provider === "local" ? "Download the offline model in Settings → AI to use this"
-      : ai.label ? `Connect ${ai.label} in Settings → AI to use this` : "Turn on AI in Settings → AI to use this"; };
+    return ai.provider === "local" ? t("Download the offline model in Settings → AI to use this")
+      : ai.label ? t("Connect {ai} in Settings → AI to use this", { ai: ai.label }) : t("Turn on AI in Settings → AI to use this"); };
   // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons
   const isChatGPT = (ai) => ["chatgpt", "codex"].includes((ai || S.system.ai || {}).provider);
   const gpuUsed = (g) => !!g && !!g.available && !!g.libraries && S.settings.device !== "cpu";    // does the graphics card transcribe?
   const gpuFits = (g) => !!g && g.available && (g.fits != null ? g.fits : (g.vram_mb || 0) >= 3500);   // what the setup asks of a card
-  const REASONING = [["haiku", "Quick", "light reasoning"], ["sonnet", "Standard", "recommended"], ["opus", "Thorough", "slowest, uses the most"]];
-  const modelsFor = () => (isChatGPT() ? REASONING : MODELS);
-  const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const fmtK = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : String(Math.round(n || 0)));
-  const shortDate = (iso) => { const d = new Date(iso + "T00:00:00"); return `${WD[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`; };
-  function resetAt(ts) {
+  const REASONING = () => [["haiku", t("Quick"), t("light reasoning")], ["sonnet", t("Standard"), t("recommended")], ["opus", t("Thorough"), t("slowest, uses the most")]];
+  const modelsFor = () => (isChatGPT() ? REASONING() : MODELS());
+  const dec = (x, digits) => t.num(+x.toFixed(digits), digits);    // rounded as toFixed rounds, written the language's way: 11.4 · 11,4
+  const fmtK = (n) => (n >= 1000 ? t("{n}k", { n: dec(n / 1000, n >= 100000 ? 0 : 1) }) : t.num(Math.round(n || 0)));   // 31.2k · 31,2 bin
+  const shortDate = (iso) => t.date(iso, "short");      // Wed 14 Oct · 14 Eki Çar
+  function resetAt(ts) {                                 // 14:05, or Wed 14:05 · Çar 14:05 on another day
     if (!ts) return "";
-    const d = new Date(ts * 1000);
-    const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    return d.toDateString() === new Date().toDateString() ? hm : `${WD[d.getDay()]} ${hm}`;
+    const d = new Date(ts * 1000), hm = t.date(d, "time");
+    return d.toDateString() === new Date().toDateString() ? hm : `${t.date(d, "weekday")} ${hm}`;
   }
   function limitsHTML() {
     if ((S.system.ai || {}).provider !== "claude") return "";       // only Claude Code reports them
     const L = S.limits || {};
-    const one = (k, label) => {
+    const one = (k, five) => {
       const w = L[k]; if (!w || w.used == null) return "";
-      const p = Math.min(100, Math.round(w.used * 100));
-      return `<span class="lim ${p >= 90 ? "hot" : p >= 70 ? "warm" : ""}" title="${label} limit: ${p}% used${w.resets_at ? ` · resets ${resetAt(w.resets_at)}` : ""}"><span class="lim-bar"><i style="width:${p}%"></i></span>${p}% ${label}</span>`;
+      const p = Math.min(100, Math.round(w.used * 100)), pc = t.pct(p / 100);
+      const tip = (five ? t("5-hour limit: {pct} used", { pct: pc }) : t("weekly limit: {pct} used", { pct: pc }))
+        + (w.resets_at ? " · " + t("resets {when}", { when: resetAt(w.resets_at) }) : "");
+      return `<span class="lim ${p >= 90 ? "hot" : p >= 70 ? "warm" : ""}" title="${esc(tip)}"><span class="lim-bar"><i style="width:${p}%"></i></span>${esc(five ? t("{pct} 5-hour", { pct: pc }) : t("{pct} weekly", { pct: pc }))}</span>`;
     };
-    const parts = [one("five_hour", "5-hour"), one("seven_day", "weekly")].filter(Boolean);
+    const parts = [one("five_hour", true), one("seven_day", false)].filter(Boolean);
     if (!parts.length) return "";
-    const age = L.at ? `, ${rel(new Date(L.at * 1000).toISOString())}` : "";
-    return `<span class="limits" title="Your Claude subscription usage, as last reported by Claude Code${age}">${I("zap", "sm")}${parts.join("")}</span>`;
+    const tip = L.at ? t("Your Claude subscription usage, as last reported by Claude Code, {when}", { when: rel(new Date(L.at * 1000).toISOString()) })
+      : t("Your Claude subscription usage, as last reported by Claude Code");
+    return `<span class="limits" title="${esc(tip)}">${I("zap", "sm")}${parts.join("")}</span>`;
   }
   function tokensText(u) {
     const cached = u.cache_read_input_tokens || 0;
     const read = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + cached;
     if (!read && !u.output_tokens) return "";
-    return `${fmtK(read)} read${cached ? ` (${Math.round((cached / read) * 100)}% from cache)` : ""} · ${fmtK(u.output_tokens || 0)} written`;
+    const p = { k: fmtK(read), out: fmtK(u.output_tokens || 0), pct: t.pct(Math.round((cached / read) * 100) / 100) };
+    return cached ? t("{k} read ({pct} from cache) · {out} written", p) : t("{k} read · {out} written", p);
   }
 
   function chatHTML() {
     return `<div class="chat-layout"><aside class="chat-list">
-        <button class="btn grad sm block" data-act="chat-new" ${(S.system.ai || {}).available ? "" : "disabled"}>${I("plus", "sm")} New chat</button>
+        <button class="btn grad sm block" data-act="chat-new" ${(S.system.ai || {}).available ? "" : "disabled"}>${I("plus", "sm")} ${t("New chat")}</button>
         <div class="chat-items" id="chat-items">${chatItemsHTML()}</div></aside>
       <section class="chat-main" id="chat-main">${chatMainHTML()}</section></div>`;
   }
   function chatItemsHTML() {
     const l = S.chat.list;
     if (l == null) return `<div class="skel" style="height:46px;margin:8px 2px"></div><div class="skel" style="height:46px;margin:8px 2px"></div>`;
-    if (!l.length) return `<div class="chat-none">Your chats appear here.</div>`;
+    if (!l.length) return `<div class="chat-none">${t("Your chats appear here.")}</div>`;
     return l.map((c) => `<button class="chat-item ${S.chat.id === c.id && !S.chat.draft ? "on" : ""}" data-act="chat-open" data-id="${esc(c.id)}">
-      <span class="t">${c.running ? SPIN() : ""}${esc(c.title)}</span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
+      <span class="t">${c.running ? SPIN() : ""}${esc(c.title || t("New chat"))}</span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
       <span class="s">${esc(rel(c.updated_at))} · ${esc((S.system.ai || {}).provider === "local" ? aiName() : levelLabel(c.model))}</span></button>`).join("");
   }
   function chatMainHTML() {
     const d = S.chat.draft, c = S.chat.data;
     if (!(S.system.ai || {}).available) {
       const ai = S.system.ai || {};
-      const [title, text, btn] = ai.provider === "local" ? ["The offline model isn't downloaded yet", "Download it to chat about your lectures on this PC. Everything else in IEUStudia works without it.", "Download it"]
-        : ai.label ? [`${ai.label} isn't connected yet`, `Connect your ${ai.label} plan to chat about your lectures. Everything else in IEUStudia works without it.`, `Connect ${ai.label}`]
-        : ["AI is off", "Pick ChatGPT (with your ChatGPT plan), Claude (your Claude Pro or Max plan) or the offline model to chat about your lectures. Everything else in IEUStudia works without it.", "Turn on AI"];
+      const [title, text, btn] = ai.provider === "local" ? [t("The offline model isn't downloaded yet"), t("Download it to chat about your lectures on this PC. Everything else in IEUStudia works without it."), t("Download it")]
+        : ai.label ? [t("{ai} isn't connected yet", { ai: ai.label }), t("Connect your {ai} plan to chat about your lectures. Everything else in IEUStudia works without it.", { ai: ai.label }), t("Connect {ai}", { ai: ai.label })]
+        : [t("AI is off"), t("Pick ChatGPT (with your ChatGPT plan), Claude (your Claude Pro or Max plan) or the offline model to chat about your lectures. Everything else in IEUStudia works without it."), t("Turn on AI")];
       return `<div class="chat-scroll">${emptyHTML("chat", title, text)}<div style="text-align:center"><button class="btn primary" data-act="setup-ai">${I("ai", "sm")} ${btn}</button></div></div>`;
     }
     if (!d && !S.chat.id) {
-      return `<div class="chat-scroll"><div class="chat-empty"><div class="art">${I("chat")}</div><h3>Ask ${esc(aiName())} about your lectures</h3>
-        <div class="sub">Pick one lecture or several and ask anything: likely quiz topics, explanations, practice questions… It uses ${esc(aiPlan())}, only when you ask. AI can make mistakes — check important answers.</div>
-        <button class="btn grad" data-act="chat-new">${I("plus", "sm")} New chat</button>${limitsHTML() ? `<div class="limits-row">${limitsHTML()}</div>` : ""}</div></div>`;
+      return `<div class="chat-scroll"><div class="chat-empty"><div class="art">${I("chat")}</div><h3>${t.html("Ask {ai} about your lectures", { ai: aiName() })}</h3>
+        <div class="sub">${t.html("Pick one lecture or several and ask anything: likely quiz topics, explanations, practice questions… It uses {plan}, only when you ask. AI can make mistakes — check important answers.", { plan: aiPlan() })}</div>
+        <button class="btn grad" data-act="chat-new">${I("plus", "sm")} ${t("New chat")}</button>${limitsHTML() ? `<div class="limits-row">${limitsHTML()}</div>` : ""}</div></div>`;
     }
     if (!d && (!c || c.id !== S.chat.id)) return `<div class="chat-scroll"><div class="chat-msgs-inner">${skeleton()}</div></div>`;
     return `<header class="chat-head" id="chat-head">${chatHeadHTML()}</header>
@@ -1113,34 +1165,35 @@
       <form class="composer" data-form="chat">${Studia.chatToolsHTML ? Studia.chatToolsHTML() : ""}<div class="composer-inner">
         <textarea id="chat-input" rows="1" placeholder="${esc(composerPlaceholder())}">${esc(S.chat.input)}</textarea>
         <span id="composer-btn">${composerBtnHTML()}</span></div>
-        <div class="composer-note">Enter to send · Shift+Enter for a new line · uses ${esc(aiPlan())} · AI can make mistakes</div></form>`;
+        <div class="composer-note">${t.html("Enter to send · Shift+Enter for a new line · uses {plan} · AI can make mistakes", { plan: aiPlan() })}</div></form>`;
   }
   function chatHeadHTML() {
     const d = S.chat.draft, c = S.chat.data, x = d || c;
     const days = d ? d.labels : c.days;
-    const chips = days.slice(0, 6).map((day) => `<button class="day-chip ${day.gone ? "gone" : ""}" data-act="chat-day" data-key="${esc(day.key)}" title="${esc(day.long || day.label)} — open the transcript">${days.length > 1 ? `<b>L${day.n}</b>` : ""}${esc(day.label)} · ${esc(day.kind)}</button>`).join("")
-      + (days.length > 6 ? `<span class="dim">+${days.length - 6} more</span>` : "");
+    const chips = days.slice(0, 6).map((day) => `<button class="day-chip ${day.gone ? "gone" : ""}" data-act="chat-day" data-key="${esc(day.key)}" title="${esc(t("{day} — open the transcript", { day: day.long || day.label }))}">${days.length > 1 ? `<b>L${day.n}</b>` : ""}${esc(day.label)} · ${esc(day.kind)}</button>`).join("")
+      + (days.length > 6 ? `<span class="dim">${t("+{n} more", { n: days.length - 6 })}</span>` : "");
     const model = x.model || "sonnet";
-    const sel = `<select class="input model-sel" data-act="${d ? "draft-model" : "chat-model"}" title="Model">${modelsFor().map(([v, l, h]) => `<option value="${v}" ${v === model ? "selected" : ""}>${l} · ${h}</option>`).join("")}</select>`;
-    const slides = d ? (d.slidesTotal ? `<label class="mini-toggle" title="Attach the slide images (≈${fmtK(Math.min(d.slidesTotal, 60) * 800)} more tokens)"><input type="checkbox" class="switch sm" data-act="draft-slides" ${d.slides ? "checked" : ""}>Slides (${Math.min(d.slidesTotal, 60)})</label>` : "")
-      : (c.slides ? `<span class="pill">${I("monitor", "sm")}${plural(c.images, "slide")}</span>` : "");
-    const focus = x.focus === "highlights" ? `<span class="pill processing">${I("star", "sm")}Highlights only</span>`
-      : x.focus === "course" ? `<span class="pill processing">${I("library", "sm")}Whole course</span>` : "";
+    const sel = `<select class="input model-sel" data-act="${d ? "draft-model" : "chat-model"}" title="${esc(t("Model"))}">${modelsFor().map(([v, l, h]) => `<option value="${v}" ${v === model ? "selected" : ""}>${l} · ${h}</option>`).join("")}</select>`;
+    const slides = d ? (d.slidesTotal ? `<label class="mini-toggle" title="${esc(t("Attach the slide images (≈{k} more tokens)", { k: fmtK(Math.min(d.slidesTotal, 60) * 800) }))}"><input type="checkbox" class="switch sm" data-act="draft-slides" ${d.slides ? "checked" : ""}>${t("Slides ({n})", { n: Math.min(d.slidesTotal, 60) })}</label>` : "")
+      : (c.slides ? `<span class="pill">${I("monitor", "sm")}${t.n(c.images, "{n} slide", "{n} slides")}</span>` : "");
+    const focus = x.focus === "highlights" ? `<span class="pill processing">${I("star", "sm")}${t("Highlights only")}</span>`
+      : x.focus === "course" ? `<span class="pill processing">${I("library", "sm")}${t("Whole course")}</span>` : "";
     const tokens = d ? d.tokens : c.context_tokens;
-    const title = d ? "New chat" : c.title;
-    return `<div class="ch-top"><div class="ch-title"><h2 title="${esc(title)}">${esc(title)}</h2>${d ? "" : `<button class="btn ghost icon sm" data-act="chat-rename" title="Rename">${I("pencil", "sm")}</button>`}</div>
-        ${sel}${d ? `<button class="btn ghost sm" data-act="draft-change">${I("list-checks", "sm")} Change…</button>` : `<button class="btn ghost icon sm" data-act="chat-menu" title="More">${I("more")}</button>`}</div>
+    const title = d || !c.title ? t("New chat") : c.title;
+    return `<div class="ch-top"><div class="ch-title"><h2 title="${esc(title)}">${esc(title)}</h2>${d ? "" : `<button class="btn ghost icon sm" data-act="chat-rename" title="${esc(t("Rename"))}">${I("pencil", "sm")}</button>`}</div>
+        ${sel}${d ? `<button class="btn ghost sm" data-act="draft-change">${I("list-checks", "sm")} ${t("Change…")}</button>` : `<button class="btn ghost icon sm" data-act="chat-menu" title="${esc(t("More"))}">${I("more")}</button>`}</div>
       <div class="ch-scope"><span class="pill new">${esc(x.course_code || "")}</span>${chips}${focus}${slides}
-        ${tokens ? `<span class="ch-meta" title="${esc(aiName())} reads this with your first question">~${fmtK(tokens)} tokens of lectures</span>` : ""}<span class="spacer"></span>${limitsHTML()}</div>`;
+        ${tokens ? `<span class="ch-meta" title="${esc(t("{ai} reads this with your first question", { ai: aiName() }))}">${t("~{k} tokens of lectures", { k: fmtK(tokens) })}</span>` : ""}<span class="spacer"></span>${limitsHTML()}</div>`;
   }
   function chatMsgsHTML() {
     const c = S.chat.data, d = S.chat.draft;
     const msgs = d ? [] : c.messages;
     if (!msgs.length) {
       const multi = (d ? d.labels : c.days).length > 1;
-      return `<div class="chat-empty"><div class="art">${I("chat")}</div><h3>Ask anything about ${multi ? "these lectures" : "this lecture"}</h3>
-        <div class="sub">${esc(aiName())} reads ${multi ? "the transcripts" : "the transcript"} with your first question; follow-up questions build on ${multi ? "them" : "it"} and cost much less.</div>
-        <div class="suggest">${(multi ? SUGGEST_MANY : SUGGEST_ONE).map((s) => `<button data-act="chat-suggest" data-text="${esc(s)}">${esc(s)}</button>`).join("")}</div></div>`;
+      return `<div class="chat-empty"><div class="art">${I("chat")}</div><h3>${multi ? t("Ask anything about these lectures") : t("Ask anything about this lecture")}</h3>
+        <div class="sub">${multi ? t.html("{ai} reads the transcripts with your first question; follow-up questions build on them and cost much less.", { ai: aiName() })
+          : t.html("{ai} reads the transcript with your first question; follow-up questions build on it and cost much less.", { ai: aiName() })}</div>
+        <div class="suggest">${(multi ? SUGGEST_MANY() : SUGGEST_ONE()).map((s) => `<button data-act="chat-suggest" data-text="${esc(s)}">${esc(s)}</button>`).join("")}</div></div>`;
     }
     return msgs.map((m) => chatMsgHTML(m)).join("");
   }
@@ -1150,22 +1203,22 @@
     const u = m.usage || {}, streaming = m.status === "streaming", tok = tokensText(u);
     const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming) : { text: m.text, html: "" };   // buttons the AI suggested
     const body = acts.text ? mdToHtml(acts.text, { cites: true }) + acts.html : streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "";
-    const foot = streaming ? `<span class="dim">${SPIN()} ${esc(aiName())} is answering…</span>`
-      : `${m.status === "stopped" ? `<span class="pill">Stopped</span>` : ""}${tok ? `<span class="tok" title="How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less.">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} Copy</button>` : ""}`;
-    const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} Try again</button></div>` : "";
-    const err = m.status === "error" ? `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || `${aiName()} could not answer.`)}${retry}</div></div>` : "";
+    const foot = streaming ? `<span class="dim">${SPIN()} ${t.html("{ai} is answering…", { ai: aiName() })}</span>`
+      : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
+    const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
+    const err = m.status === "error" ? `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || t("{ai} could not answer.", { ai: aiName() }))}${retry}</div></div>` : "";
     return `<div class="msg ai" data-seq="${m.seq}"><div class="ai-av">${I("ai")}</div><div class="ai-body">${body ? `<div class="md">${body}</div>` : ""}${err}<div class="msg-foot">${foot}</div></div></div>`;
   }
   function composerPlaceholder() {
     const d = S.chat.draft, c = S.chat.data;
     const multi = d ? d.labels.length > 1 : !!(c && c.days.length > 1);
-    if (c && !d && c.messages.length) return "Ask a follow-up question…";
-    return multi ? "Ask anything about these lectures…" : "Ask anything about this lecture…";
+    if (c && !d && c.messages.length) return t("Ask a follow-up question…");
+    return multi ? t("Ask anything about these lectures…") : t("Ask anything about this lecture…");
   }
   function composerBtnHTML() {
     const c = S.chat.data;
-    if (!S.chat.draft && c && c.running) return `<button type="button" class="btn sm" data-act="chat-stop">${I("stop", "sm")} Stop</button>`;
-    return `<button type="submit" class="btn grad sm" ${S.chat.sending ? "disabled" : ""}>${S.chat.sending ? SPIN() : I("arrow-right", "sm")} Send</button>`;
+    if (!S.chat.draft && c && c.running) return `<button type="button" class="btn sm" data-act="chat-stop">${I("stop", "sm")} ${t("Stop")}</button>`;
+    return `<button type="submit" class="btn grad sm" ${S.chat.sending ? "disabled" : ""}>${S.chat.sending ? SPIN() : I("arrow-right", "sm")} ${t("Send")}</button>`;
   }
   function renderComposerBtn() { const el = $("#composer-btn"); if (el) el.innerHTML = composerBtnHTML(); const ta = $("#chat-input"); if (ta) ta.placeholder = composerPlaceholder(); }
   function renderChatHead() { const el = $("#chat-head"); if (el) el.innerHTML = chatHeadHTML(); }
@@ -1232,7 +1285,7 @@
       S.chat.input = ""; if (box) { box.value = ""; autosize(box); }
       return;
     }
-    if (!S.chat.draft && S.chat.data && S.chat.data.running) { toast(`${aiName()} is still answering. Wait for it, or press Stop.`, "info"); return; }
+    if (!S.chat.draft && S.chat.data && S.chat.data.running) { toast(t("{ai} is still answering. Wait for it, or press Stop.", { ai: aiName() }), "info"); return; }
     S.chat.sending = true; renderComposerBtn();
     let id = S.chat.id;
     if (S.chat.draft) {
@@ -1255,7 +1308,7 @@
       if (!c.messages.some((m) => m.seq === r.seq)) c.messages.push({ seq: r.seq, role: "assistant", text: "", status: "streaming", usage: {} });
       c.messages.sort((a, b) => a.seq - b.seq);
       c.running = c.messages.some((m) => m.status === "streaming");
-      if (!c.title || c.title === "New chat") c.title = text.length > 64 ? text.slice(0, 61).trimEnd() + "…" : text;
+      if (!c.title) c.title = text.length > 64 ? text.slice(0, 61).trimEnd() + "…" : text;
     }
     if (S.view.name === "chat" && S.chat.id === id) { renderChatHead(); renderChatMsgs(); renderComposerBtn(); focusComposer(); }
     loadChats();
@@ -1265,7 +1318,7 @@
     const cr = await call("chat_courses");
     if (!cr.ok) { toast(cr.error, "error"); return; }
     if (cr.limits && Object.keys(cr.limits).length) S.limits = cr.limits;
-    if (!cr.courses.length) { toast(`Transcribe a lecture first, then you can ask ${aiName()} about it.`, "info"); return; }
+    if (!cr.courses.length) { toast(t("Transcribe a lecture first, then you can ask {ai} about it.", { ai: aiName() }), "info"); return; }
     const st = { course: cr.courses.some((c) => c.id === courseId) ? courseId : cr.courses[0].id, scope: null,
       sel: new Set(preset ? preset.days : []), focus: (preset && preset.focus) || "full", slides: !!(preset && preset.slides),
       model: (preset && preset.model) || S.settings.ai_model || "sonnet", keep: !!preset };
@@ -1285,35 +1338,38 @@
       const ai = S.system.ai || {}, who = aiName();
       const max = (st.scope && st.scope.max_tokens) || 150000, tot = total(), over = tot > max, sc = slideCount();
       const images = ai.can_images !== false && ai.provider !== "local";
-      const modes = [["full", "file-text", "Chosen class days", "Full transcripts of the days you pick. Best for questions about specific lectures."],
-        ["highlights", "star", "Highlights only", "Only what the lecturer stressed, from the days you pick. Lightest."],
-        ["course", "library", "Whole course", "Every lecture's highlights, plus matching pages of your slides and PDFs for each question."]];
-      const days = daysOf();
+      const modes = [["full", "file-text", t("Chosen class days"), t("Full transcripts of the days you pick. Best for questions about specific lectures.")],
+        ["highlights", "star", t("Highlights only"), t("Only what the lecturer stressed, from the days you pick. Lightest.")],
+        ["course", "library", t("Whole course"), t("Every lecture's highlights, plus matching pages of your slides and PDFs for each question.")]];
+      const days = daysOf(), code = (cr.courses.find((c) => c.id === st.course) || {}).code;
       const list = st.scope == null ? `<div class="skel" style="height:120px;margin:6px"></div>`
-        : !days.length ? `<div class="chat-none">No transcribed class days in this course yet.</div>`
+        : !days.length ? `<div class="chat-none">${t("No transcribed class days in this course yet.")}</div>`
         : `<div class="cp-days">${days.map((d) => { const on = st.sel.has(d.day_key); return `<label class="cp-day ${on ? "on" : ""}"><input type="checkbox" class="check" data-act="cp-day" data-key="${esc(d.day_key)}" ${on ? "checked" : ""}>
-            <span class="cp-d"><b>${esc(d.label)}</b> <span class="dim">· ${esc(d.kind_label)} · ${plural(d.parts, "part")}</span></span>
-            <span class="cp-meta">${d.stars ? `<span title="Moments the lecturer stressed">${I("star", "xs")} ${d.stars}</span>` : ""}<span title="How much text ${esc(who)} reads for this day">≈${fmtK(tokOf(d))} tokens</span></span></label>`; }).join("")}</div>`;
+            <span class="cp-d"><b>${esc(d.label)}</b> <span class="dim">· ${esc(d.kind_label)} · ${t.n(d.parts, "{n} part", "{n} parts")}</span></span>
+            <span class="cp-meta">${d.stars ? `<span title="${esc(t("Moments the lecturer stressed"))}">${I("star", "xs")} ${d.stars}</span>` : ""}<span title="${esc(t("How much text {ai} reads for this day", { ai: who }))}">${t("≈{k} tokens", { k: fmtK(tokOf(d)) })}</span></span></label>`; }).join("")}</div>`;
       const models = modelsFor();
       const used = limitsHTML();
       modal(`<div class="cp-scroll">
-        <h2>${I("chat")} Ask ${esc(who)} about your lectures</h2>
-        <p class="lead">Pick a course and what ${esc(who)} should read. It reads it once, with your first question; follow-up questions build on it. Sizes are in tokens: the small pieces of text AI plans count, a word or part of a word each.</p>
-        <div class="field"><label>Course</label><select class="input" data-act="cp-course">${cr.courses.map((c) => `<option value="${esc(c.id)}" ${c.id === st.course ? "selected" : ""}>${esc(c.code)} · ${esc(c.name)} (${plural(c.days, "transcribed day")})</option>`).join("")}</select></div>
-        <div class="field"><label>What ${esc(who)} reads</label><div class="cp-modes">${modes.map(([v, ic, t, d]) => `<button type="button" class="cp-mode ${st.focus === v ? "on" : ""}" data-act="cp-focus" data-val="${v}">
-            <span class="cp-mode-t">${I(ic, "sm")} ${t}</span><span class="cp-mode-d">${d}</span></button>`).join("")}</div></div>
-        ${whole() ? `<div class="cp-whole">${I("check-circle", "sm")}<div><b>All ${plural(days.length, "transcribed class day")}</b> of ${esc((cr.courses.find((c) => c.id === st.course) || {}).code || "this course")}, plus its learning outcomes, weekly plan, announced quizzes and latest announcements.</div></div>`
-          : `<div class="field"><label class="cp-label">Class days <span class="dim sm">${st.sel.size} of ${days.length} picked</span><span class="cp-tools"><button type="button" class="btn ghost sm" data-act="cp-last">Last 3</button><button type="button" class="btn ghost sm" data-act="cp-all">All</button><button type="button" class="btn ghost sm" data-act="cp-none">None</button></span></label>${list}</div>`}
+        <h2>${I("chat")} ${t.html("Ask {ai} about your lectures", { ai: who })}</h2>
+        <p class="lead">${t.html("Pick a course and what {ai} should read. It reads it once, with your first question; follow-up questions build on it. Sizes are in tokens: the small pieces of text AI plans count, a word or part of a word each.", { ai: who })}</p>
+        <div class="field"><label>${t("Course")}</label><select class="input" data-act="cp-course">${cr.courses.map((c) => `<option value="${esc(c.id)}" ${c.id === st.course ? "selected" : ""}>${esc(c.code)} · ${esc(c.name)} (${t.n(c.days, "{n} transcribed day", "{n} transcribed days")})</option>`).join("")}</select></div>
+        <div class="field"><label>${t.html("What {ai} reads", { ai: who })}</label><div class="cp-modes">${modes.map(([v, ic, name, d]) => `<button type="button" class="cp-mode ${st.focus === v ? "on" : ""}" data-act="cp-focus" data-val="${v}">
+            <span class="cp-mode-t">${I(ic, "sm")} ${name}</span><span class="cp-mode-d">${d}</span></button>`).join("")}</div></div>
+        ${whole() ? `<div class="cp-whole">${I("check-circle", "sm")}<div>${code
+            ? t.n(days.length, "<b>All {n} transcribed class day</b> of {course}, plus its learning outcomes, weekly plan, announced quizzes and latest announcements.", "<b>All {n} transcribed class days</b> of {course}, plus its learning outcomes, weekly plan, announced quizzes and latest announcements.", { course: esc(code) })
+            : t.n(days.length, "<b>All {n} transcribed class day</b> of this course, plus its learning outcomes, weekly plan, announced quizzes and latest announcements.", "<b>All {n} transcribed class days</b> of this course, plus its learning outcomes, weekly plan, announced quizzes and latest announcements.")}</div></div>`
+          : `<div class="field"><label class="cp-label">${t("Class days")} <span class="dim sm">${t("{n} of {total} picked", { n: st.sel.size, total: days.length })}</span><span class="cp-tools"><button type="button" class="btn ghost sm" data-act="cp-last">${t("Last 3")}</button><button type="button" class="btn ghost sm" data-act="cp-all">${t("All")}</button><button type="button" class="btn ghost sm" data-act="cp-none">${t("None")}</button></span></label>${list}</div>`}
         <div class="cp-opts">
-          ${ai.provider === "local" ? `<div class="cp-opt"><div class="t">${I("cpu", "xs")} Offline model</div><div class="d">Runs on this PC. For each question it reads the parts of these lectures that match it.</div></div>`
-            : `<div class="cp-opt"><div class="t">${isChatGPT(ai) ? "Reasoning" : "Model"}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
-          ${images ? `<label class="cp-opt cp-switch"><div><div class="t">Include slide images</div><div class="d">${sc ? `${plural(Math.min(60, sc), "slide")} · formulas and figures · ≈${fmtK(Math.min(60, sc) * 800)} more tokens` : "No slides were captured for these days."}</div></div>
+          ${ai.provider === "local" ? `<div class="cp-opt"><div class="t">${I("cpu", "xs")} ${t("Offline model")}</div><div class="d">${t("Runs on this PC. For each question it reads the parts of these lectures that match it.")}</div></div>`
+            : `<div class="cp-opt"><div class="t">${isChatGPT(ai) ? t("Reasoning") : t("Model")}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
+          ${images ? `<label class="cp-opt cp-switch"><div><div class="t">${t("Include slide images")}</div><div class="d">${sc ? t.n(Math.min(60, sc), "{n} slide · formulas and figures · ≈{k} more tokens", "{n} slides · formulas and figures · ≈{k} more tokens", { k: fmtK(Math.min(60, sc) * 800) }) : t("No slides were captured for these days.")}</div></div>
             <input type="checkbox" class="switch" data-act="cp-slides" ${st.slides && sc ? "checked" : ""} ${sc ? "" : "disabled"}></label>` : ""}</div>
-        ${over ? `<div class="callout error">${I("alert-circle")}<div>That is more than one chat can hold (≈${fmtK(max)} tokens). Pick fewer days, or Highlights only.</div></div>` : ""}
+        ${over ? `<div class="callout error">${I("alert-circle")}<div>${t("That is more than one chat can hold (≈{k} tokens). Pick fewer days, or Highlights only.", { k: fmtK(max) })}</div></div>` : ""}
         </div>
-        <div class="cp-foot"><div class="cp-cost"><div><b>≈${fmtK(tot)} tokens</b> on your first question${ai.provider === "local" ? " · runs on this PC" : ` · from your ${esc(who)} plan`}</div>
-          ${used ? `<div class="cp-limits">${used}</div>` : ""}<div class="dim sm">${I("info", "xs")} Nothing is sent until you ask. AI can make mistakes — check important answers.</div></div>
-          <div class="cp-btns"><button class="btn" data-act="modal-close">Cancel</button><button class="btn grad" data-act="cp-go" ${chosen().length && !over ? "" : "disabled"}>${I("chat", "sm")} Start chat</button></div></div>`);
+        <div class="cp-foot"><div class="cp-cost"><div>${ai.provider === "local" ? t("<b>≈{k} tokens</b> on your first question · runs on this PC", { k: fmtK(tot) })
+            : t.html("<b>≈{k} tokens</b> on your first question · from your {ai} plan", { k: fmtK(tot), ai: who })}</div>
+          ${used ? `<div class="cp-limits">${used}</div>` : ""}<div class="dim sm">${I("info", "xs")} ${t("Nothing is sent until you ask. AI can make mistakes — check important answers.")}</div></div>
+          <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button><button class="btn grad" data-act="cp-go" ${chosen().length && !over ? "" : "disabled"}>${I("chat", "sm")} ${t("Start chat")}</button></div></div>`);
       $(".modal").classList.add("cp");
       const nl = $(".cp-days"); if (nl) nl.scrollTop = keepScroll;
       const nb = $(".cp-scroll"); if (nb) nb.scrollTop = keepBody;
@@ -1359,25 +1415,25 @@
     el.classList.remove("hidden");
     const cur = jobs.find((j) => ["transcribing", "writing"].includes(j.stage)) || jobs.find((j) => j.stage === "downloading") || jobs[0];
     S.queueShown = eng ? null : cur && cur.id;
-    const label = (j) => ({ queued: "Waiting", downloading: "Downloading", transcribing: "Transcribing", writing: "Finishing" }[j.stage] || j.stage);
+    const label = (j) => ({ queued: t("Waiting"), downloading: t("Downloading"), transcribing: t("Transcribing"), writing: t("Finishing") }[j.stage] || j.stage);
     const open = el.classList.contains("open");
     const paused = !!S.paused;
     el.classList.toggle("paused", paused);
-    let title = cur ? `${paused ? "Paused" : label(cur)} · ${esc(cur.title)}` : "Preparing";
+    let title = cur ? `${paused ? t("Paused") : label(cur)} · ${esc(cur.title)}` : t("Preparing");
     let detail = cur ? esc(jobDetail(cur)) : "";
     let p = cur ? cur.progress : 0;
-    if (eng) { title = eng.phase === "download" ? "Downloading the speech model (one time)" : "Loading the speech model"; detail = esc(eng.message || ""); p = eng.progress || 0; }
-    const more = jobs.length > 1 ? `<button class="btn ghost sm" data-act="queue-toggle">${open ? "Hide" : `+${jobs.length - 1} more`}</button>` : "";
+    if (eng) { title = eng.phase === "download" ? t("Downloading the speech model (one time)") : t("Loading the speech model"); detail = esc(eng.message || ""); p = eng.progress || 0; }
+    const more = jobs.length > 1 ? `<button class="btn ghost sm" data-act="queue-toggle">${open ? t("Hide") : t("+{n} more", { n: jobs.length - 1 })}</button>` : "";
     const b = S.batch || {};
-    const batch = b.total > 1 ? `<span class="q-batch" title="Lectures finished in this batch">${b.finished} of ${b.total} done${b.left_s ? ` · about ${fmtDur(b.left_s)} left` : ""}</span>` : "";
-    el.innerHTML = `<div class="q-main"><div class="q-icon">${paused ? I("pause") : SPIN()}</div><div class="q-text"><div class="q-title">${title}</div><div class="q-detail">${paused ? "Your PC may sleep until you continue." : detail}</div></div>
+    const batch = b.total > 1 ? `<span class="q-batch" title="${esc(t("Lectures finished in this batch"))}">${t("{done} of {total} done", { done: b.finished, total: b.total })}${b.left_s ? " · " + t("about {time} left", { time: fmtDur(b.left_s) }) : ""}</span>` : "";
+    el.innerHTML = `<div class="q-main"><div class="q-icon">${paused ? I("pause") : SPIN()}</div><div class="q-text"><div class="q-title">${title}</div><div class="q-detail">${paused ? t("Your PC may sleep until you continue.") : detail}</div></div>
       ${batch}<div class="bar ${p || paused ? "" : "indet"}"><i style="width:${pct(p)}"></i></div>${more}
-      ${cur && !eng ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause" title="${paused ? "Go on transcribing" : "Pause: the lecture being transcribed stops after the passages it is on. Nothing is lost."}">${I(paused ? "play" : "pause", "sm")}<span class="lbl"> ${paused ? "Continue" : "Pause"}</span></button>` : ""}
-      ${cur ? `<button class="btn ghost sm" data-act="cancel-all" title="Cancel everything in the queue">${I("stop", "sm")}<span class="lbl"> Cancel</span></button>` : ""}</div>
+      ${cur && !eng ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause" title="${esc(paused ? t("Go on transcribing") : t("Pause: the lecture being transcribed stops after the passages it is on. Nothing is lost."))}">${I(paused ? "play" : "pause", "sm")}<span class="lbl"> ${paused ? t("Continue") : t("Pause")}</span></button>` : ""}
+      ${cur ? `<button class="btn ghost sm" data-act="cancel-all" title="${esc(t("Cancel everything in the queue"))}">${I("stop", "sm")}<span class="lbl"> ${t("Cancel")}</span></button>` : ""}</div>
       ${open && jobs.length > 1 ? `<div class="q-list">${jobs.map((j, i) => `<div class="q-item" data-id="${esc(j.id)}"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
         <div class="bar"><i style="width:${pct(j.progress)}"></i></div>
-        ${j.stage === "queued" && !j.local && i > 1 ? `<button class="btn ghost sm" data-act="queue-first" data-id="${esc(j.id)}" title="Transcribe this one before the others still waiting">Do next</button>` : j.first ? `<span class="dim sm">next</span>` : ""}
-        <button class="btn ghost icon sm" data-act="cancel" data-id="${j.id}" title="Cancel this one">${I("x", "sm")}</button></div>`).join("")}</div>` : ""}`;
+        ${j.stage === "queued" && !j.local && i > 1 ? `<button class="btn ghost sm" data-act="queue-first" data-id="${esc(j.id)}" title="${esc(t("Transcribe this one before the others still waiting"))}">${t("Do next")}</button>` : j.first ? `<span class="dim sm">${t("next")}</span>` : ""}
+        <button class="btn ghost icon sm" data-act="cancel" data-id="${j.id}" title="${esc(t("Cancel this one"))}">${I("x", "sm")}</button></div>`).join("")}</div>` : ""}`;
   }
 
   // A job's progress between stage changes: only the text and the bars change, the buttons stay where they are.
@@ -1398,15 +1454,15 @@
     const others = (S.profiles || []).filter((x) => !x.active && x.has_login);
     return `<div class="signin"><form class="card signin-card" data-form="signin" autocomplete="on">
       <div class="brand"><img class="logo-img" src="../assets/logo.svg" alt="">IEUStudia</div>
-      <p class="lead">Sign in with your IEULearn (EkoID) account. IEUStudia finds your courses and their Panopto recordings.</p>
-      <div class="field"><label for="si-user">EkoID / username</label><input id="si-user" class="input" name="username" autocomplete="username" value="${esc((S.profile || {}).username || "")}"></div>
-      <div class="field"><label for="si-pass">Password</label><div class="input-wrap"><input id="si-pass" class="input" type="password" name="password" autocomplete="current-password">
-        <button type="button" class="btn ghost icon sm" data-act="peek" title="Show password">${I("eye", "sm")}</button></div></div>
+      <p class="lead">${t("Sign in with your IEULearn (EkoID) account. IEUStudia finds your courses and their Panopto recordings.")}</p>
+      <div class="field"><label for="si-user">${t("EkoID / username")}</label><input id="si-user" class="input" name="username" autocomplete="username" value="${esc((S.profile || {}).username || "")}"></div>
+      <div class="field"><label for="si-pass">${t("Password")}</label><div class="input-wrap"><input id="si-pass" class="input" type="password" name="password" autocomplete="current-password">
+        <button type="button" class="btn ghost icon sm" data-act="peek" title="${esc(t("Show password"))}">${I("eye", "sm")}</button></div></div>
       ${s.error ? `<div class="err">${I("alert-circle", "sm")}<span>${esc(s.error)}</span></div>` : ""}
-      <button class="btn primary block" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? SPIN() + " Signing in…" : "Sign in"}</button>
-      <div class="note">${I("lock", "sm")}<span>Your password is sent only to learn.ieu.edu.tr. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: IEUStudia has none.</span></div>
-      <div class="note">${I("info", "sm")}<span>IEUStudia is an independent student project, not affiliated with İzmir University of Economics, IEULearn or Panopto. Use it at your own risk.</span></div>
-      ${others.length ? `<div class="si-others"><div class="lbl">Or open another profile on this PC</div>${others.map((x) => `<button type="button" class="si-prof" data-act="profile-switch" data-id="${esc(x.id)}">
+      <button class="btn primary block" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? SPIN() + " " + t("Signing in…") : t("Sign in")}</button>
+      <div class="note">${I("lock", "sm")}<span>${t("Your password is sent only to learn.ieu.edu.tr. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: IEUStudia has none.")}</span></div>
+      <div class="note">${I("info", "sm")}<span>${t("IEUStudia is an independent student project, not affiliated with İzmir University of Economics, IEULearn or Panopto. Use it at your own risk.")}</span></div>
+      ${others.length ? `<div class="si-others"><div class="lbl">${t("Or open another profile on this PC")}</div>${others.map((x) => `<button type="button" class="si-prof" data-act="profile-switch" data-id="${esc(x.id)}">
         <span class="avatar">${esc(initials(x.name || x.username))}</span><span class="who"><b>${esc(x.name || x.username)}</b><span>${esc(x.student_number || x.username)}</span></span>${I("chevron-right", "sm")}</button>`).join("")}</div>` : ""}
     </form></div>`;
   }
@@ -1414,29 +1470,29 @@
   // ---- profiles: several IEULearn accounts on this PC (switching restarts the app with that account's data)
   function addAccountDialog(err = "", busy = false, user = "") {
     modal(`<form data-form="add-account" autocomplete="off">
-      <h2>Add another account</h2>
-      <p class="lead">Sign in with another IEULearn (EkoID) account. It gets a profile of its own — its own courses, transcripts, notes and settings — and you can switch between profiles from the menu at the bottom left.</p>
-      <div class="field"><label for="aa-user">EkoID / username</label><input id="aa-user" class="input" name="username" autocomplete="off" value="${esc(user)}"></div>
-      <div class="field"><label for="aa-pass">Password</label><div class="input-wrap"><input id="aa-pass" class="input" type="password" name="password" autocomplete="new-password">
-        <button type="button" class="btn ghost icon sm" data-act="peek" data-for="aa-pass" title="Show password">${I("eye", "sm")}</button></div></div>
+      <h2>${t("Add another account")}</h2>
+      <p class="lead">${t("Sign in with another IEULearn (EkoID) account. It gets a profile of its own — its own courses, transcripts, notes and settings — and you can switch between profiles from the menu at the bottom left.")}</p>
+      <div class="field"><label for="aa-user">${t("EkoID / username")}</label><input id="aa-user" class="input" name="username" autocomplete="off" value="${esc(user)}"></div>
+      <div class="field"><label for="aa-pass">${t("Password")}</label><div class="input-wrap"><input id="aa-pass" class="input" type="password" name="password" autocomplete="new-password">
+        <button type="button" class="btn ghost icon sm" data-act="peek" data-for="aa-pass" title="${esc(t("Show password"))}">${I("eye", "sm")}</button></div></div>
       ${err ? `<div class="err">${I("alert-circle", "sm")}<span>${esc(err)}</span></div>` : ""}
-      <div class="note">${I("lock", "sm")}<span>The password is only sent to learn.ieu.edu.tr. On this PC it is stored encrypted for each profile separately, so only this Windows account can read it.</span></div>
-      <div class="actions"><button type="button" class="btn" data-act="modal-close">Cancel</button>
-        <button class="btn primary" type="submit" ${busy ? "disabled" : ""}>${busy ? SPIN() + " Signing in…" : "Sign in and switch"}</button></div></form>`);
+      <div class="note">${I("lock", "sm")}<span>${t("The password is only sent to learn.ieu.edu.tr. On this PC it is stored encrypted for each profile separately, so only this Windows account can read it.")}</span></div>
+      <div class="actions"><button type="button" class="btn" data-act="modal-close">${t("Cancel")}</button>
+        <button class="btn primary" type="submit" ${busy ? "disabled" : ""}>${busy ? SPIN() + " " + t("Signing in…") : t("Sign in and switch")}</button></div></form>`);
     setTimeout(() => { const f = $(user && !busy ? "#aa-pass" : "#aa-user"); if (f && !busy) f.focus(); }, 30);
   }
   async function switchProfile(x, force = false) {
     if (!x || x.active) return;
     const r = await call("profile_switch", x.id, force);
     if (!r.ok) {
-      if (r.busy) { if (confirm("A transcription is still running. Cancel it and switch profiles?")) switchProfile(x, true); return; }
-      toast(r.error || "Could not switch profiles", "error");
+      if (r.busy) { if (confirm(t("A transcription is still running. Cancel it and switch profiles?"))) switchProfile(x, true); return; }
+      toast(r.error || t("Could not switch profiles"), "error");
       return;
     }
     if (r.same) return;
     closeMenu(); closeModal();
     $("#overlay").innerHTML = `<div class="switching" role="status"><img class="logo-img" src="../assets/logo.svg" alt="">
-      <div class="t">Opening ${esc(x.name || x.username || "the profile")}…</div><div class="d">IEUStudia restarts with this account's courses and transcripts.</div>
+      <div class="t">${x.name || x.username ? t.html("Opening {name}…", { name: x.name || x.username }) : t("Opening the profile…")}</div><div class="d">${t("IEUStudia restarts with this account's courses and transcripts.")}</div>
       <div class="splash-bar"><i></i></div></div>`;
     if (!REAL) setTimeout(() => { location.hash = "profile=" + x.id; location.reload(); }, 900);   // browser preview
   }
@@ -1444,13 +1500,13 @@
   // ------------------------------------------------------------------ overlays
   function toast(msg, level = "info", action) {   // action: {label, act, data}: a button (the toast then stays longer)
     const icon = { success: "check-circle", error: "x-circle", warning: "alert", info: "info" }[level] || "info";
-    const t = document.createElement("div");
+    const box = document.createElement("div");
     const attrs = action ? Object.entries(action.data || {}).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" ") : "";
-    t.className = `toast ${level}`;
-    t.innerHTML = `${I(icon)}<div>${esc(msg)}</div>${action ? `<button class="btn sm" data-act="${esc(action.act)}" ${attrs}>${esc(action.label)}</button>` : ""}`;
-    if (action) t.querySelector("button").addEventListener("click", () => t.remove());
-    $("#toasts").appendChild(t);
-    setTimeout(() => { t.style.transition = "opacity .3s"; t.style.opacity = "0"; setTimeout(() => t.remove(), 320); }, action ? 12000 : level === "error" ? 7000 : 4200);
+    box.className = `toast ${level}`;
+    box.innerHTML = `${I(icon)}<div>${esc(msg)}</div>${action ? `<button class="btn sm" data-act="${esc(action.act)}" ${attrs}>${esc(action.label)}</button>` : ""}`;
+    if (action) box.querySelector("button").addEventListener("click", () => box.remove());
+    $("#toasts").appendChild(box);
+    setTimeout(() => { box.style.transition = "opacity .3s"; box.style.opacity = "0"; setTimeout(() => box.remove(), 320); }, action ? 12000 : level === "error" ? 7000 : 4200);
   }
   let modalFrom = null;            // what had the focus before a dialog opened: it gets it back
   const focusKey = (el) => el && el.dataset && el.dataset.act      // the same control after the dialog is drawn again
@@ -1485,20 +1541,20 @@
     const u = S.update || {};
     const pc = u.total ? Math.round((u.done / u.total) * 100) : 0;
     const body = u.state === "installing"
-      ? `<div class="callout info">${I("info")}<div>Installing. IEUStudia closes now and opens again by itself in about a minute.</div></div>`
+      ? `<div class="callout info">${I("info")}<div>${t("Installing. IEUStudia closes now and opens again by itself in about a minute.")}</div></div>`
       : u.state === "downloading"
         ? `<div class="bar ${u.total ? "" : "indet"}"><i style="width:${pc}%"></i></div>
-           <div class="dim sm" style="margin-top:6px">Downloading the new version${u.total ? ` · ${pc}% of ${Math.round(u.total / 1e6)} MB` : "…"}</div>`
+           <div class="dim sm" style="margin-top:6px">${u.total ? t("Downloading the new version · {pct} of {mb} MB", { pct: t.pct(pc / 100), mb: t.num(Math.round(u.total / 1e6)) }) : t("Downloading the new version…")}</div>`
         : `${u.state === "error" ? `<div class="callout error">${I("alert-circle")}<div>${esc(u.error)}</div></div>` : ""}
            ${u.notes ? `<div class="update-notes md">${mdToHtml(u.notes)}</div>` : ""}`;
     const busy = u.state === "downloading" || u.state === "installing";
-    modal(`<div id="update-modal"><h2>IEUStudia ${esc(u.version)} is available</h2>
-      <p class="lead">You have ${esc(u.current || (S.boot || {}).version || "")}. Updating keeps your courses, transcripts and settings, and takes about a minute.</p>
+    modal(`<div id="update-modal"><h2>${t.html("IEUStudia {version} is available", { version: u.version })}</h2>
+      <p class="lead">${t.html("You have {version}. Updating keeps your courses, transcripts and settings, and takes about a minute.", { version: u.current || (S.boot || {}).version || "" })}</p>
       ${body}
-      <div class="actions">${busy ? (u.state === "downloading" ? `<button class="btn" data-act="update-cancel">Cancel</button>` : "")
-        : `<button class="btn ghost" data-act="update-page">${I("external", "sm")} Release page</button><span class="spacer"></span>
-           <button class="btn" data-act="modal-close">Later</button>
-           ${u.can_install ? `<button class="btn primary" data-act="update-go">${I("download", "sm")} ${u.state === "error" ? "Try again" : "Update now"}</button>` : ""}`}</div></div>`);
+      <div class="actions">${busy ? (u.state === "downloading" ? `<button class="btn" data-act="update-cancel">${t("Cancel")}</button>` : "")
+        : `<button class="btn ghost" data-act="update-page">${I("external", "sm")} ${t("Release page")}</button><span class="spacer"></span>
+           <button class="btn" data-act="modal-close">${t("Later")}</button>
+           ${u.can_install ? `<button class="btn primary" data-act="update-go">${I("download", "sm")} ${u.state === "error" ? t("Try again") : t("Update now")}</button>` : ""}`}</div></div>`);
   }
   function menu(anchor, items) {
     closeMenu();
@@ -1514,7 +1570,7 @@
   }
   function closeMenu() { const m = $("#menu"); if (m) m.remove(); }
 
-  const NOTE_KINDS = [["notes", "Study notes"], ["exam", "Exam focus"], ["flashcards", "Flashcards"]];
+  const NOTE_KINDS = () => [["notes", t("Study notes")], ["exam", t("Exam focus")], ["flashcards", t("Flashcards")]];
   const levelLabel = (v) => { const row = modelsFor().find(([k]) => k === v); return row ? row[1] : v; };   // "Sonnet", "Standard"
   async function claudeDialog() {
     const d = S.day; if (!d) return;
@@ -1525,21 +1581,23 @@
       const est = await call("ai_estimate", d.day_key, slides && images);
       const e = est.ok ? est.estimate : { input: 0, output: 0, images: 0 };
       const have = (d.notes || []).find((n) => n.kind === tpl);
-      const label = (NOTE_KINDS.find(([k]) => k === tpl) || NOTE_KINDS[0])[1];
-      const how = local ? `<div><b>Offline model</b><span>runs on this PC</span></div>`
-        : `<div><b>${esc(levelLabel(S.settings.ai_model || "sonnet"))}</b><span>${isChatGPT(ai) ? "reasoning" : "model"} (Settings → AI)</span></div>`;
-      modal(`<h2>${I("ai")} Study notes with ${esc(aiName())}</h2>
-        <p class="lead">Uses ${esc(aiPlan())}. Nothing runs until you press Generate. AI can make mistakes — check the notes against the lecture.</p>
-        <div class="field"><label>What should it write?</label><div class="seg">
-          ${NOTE_KINDS.map(([k, l]) => `<button class="${tpl === k ? "on" : ""}" data-act="cl-tpl" data-val="${k}">${l}</button>`).join("")}</div></div>
-        ${images ? `<div class="set-row" style="border:0;padding:6px 0"><div class="txt"><div class="t">Include slide images</div><div class="d">Lets the AI read the slides and board (more accurate formulas, uses more of your plan).</div></div>
+      const how = local ? `<div><b>${t("Offline model")}</b><span>${t("runs on this PC")}</span></div>`
+        : `<div><b>${esc(levelLabel(S.settings.ai_model || "sonnet"))}</b><span>${isChatGPT(ai) ? t("reasoning (Settings → AI)") : t("model (Settings → AI)")}</span></div>`;
+      modal(`<h2>${I("ai")} ${t.html("Study notes with {ai}", { ai: aiName() })}</h2>
+        <p class="lead">${t.html("Uses {plan}. Nothing runs until you press Generate. AI can make mistakes — check the notes against the lecture.", { plan: aiPlan() })}</p>
+        <div class="field"><label>${t("What should it write?")}</label><div class="seg">
+          ${NOTE_KINDS().map(([k, l]) => `<button class="${tpl === k ? "on" : ""}" data-act="cl-tpl" data-val="${k}">${l}</button>`).join("")}</div></div>
+        ${images ? `<div class="set-row" style="border:0;padding:6px 0"><div class="txt"><div class="t">${t("Include slide images")}</div><div class="d">${t("Lets the AI read the slides and board (more accurate formulas, uses more of your plan).")}</div></div>
           <input type="checkbox" class="switch" data-act="cl-slides" ${slides ? "checked" : ""} ${d.parts.some((p) => p.slides) ? "" : "disabled"}></div>` : ""}
-        <div class="est">${local ? "" : `<div><b>~${(e.input / 1000).toFixed(1)}k</b><span>tokens it reads</span></div><div><b>~${(e.output / 1000).toFixed(1)}k</b><span>tokens it writes</span></div>`}${how}</div>
-        <div class="callout info">${I("info")}<div>${have ? `This lecture already has ${{ notes: "study notes", exam: "exam-focus notes", flashcards: "flashcards" }[tpl]}. Generating them again replaces the saved ones.`
-          : local ? "The offline model works on this PC: a lecture takes a few minutes with an NVIDIA graphics card, longer on the processor. The notes are saved next to the transcript."
-          : `Kept small to save your plan: a short instruction and a compact text version of the transcript${slides && images ? `, plus ${e.images} smaller copies of the slides` : ""}. Tokens are the small pieces of text AI plans count, a word or part of a word each. The notes are saved next to the transcript.`}</div></div>
-        <div class="actions"><button class="btn" data-act="modal-close">Cancel</button>${have ? `<button class="btn" data-act="cl-open">${I("file-text", "sm")} Show them</button>` : ""}
-          <button class="btn grad" data-act="cl-go">${I("ai", "sm")} ${have ? "Generate again" : "Generate"}</button></div>`);
+        <div class="est">${local ? "" : `<div><b>~${t("{n}k", { n: dec(e.input / 1000, 1) })}</b><span>${t("tokens it reads")}</span></div><div><b>~${t("{n}k", { n: dec(e.output / 1000, 1) })}</b><span>${t("tokens it writes")}</span></div>`}${how}</div>
+        <div class="callout info">${I("info")}<div>${have ? { notes: t("This lecture already has study notes. Generating them again replaces the saved ones."),
+              exam: t("This lecture already has exam-focus notes. Generating them again replaces the saved ones."),
+              flashcards: t("This lecture already has flashcards. Generating them again replaces the saved ones.") }[tpl]
+          : local ? t("The offline model works on this PC: a lecture takes a few minutes with an NVIDIA graphics card, longer on the processor. The notes are saved next to the transcript.")
+          : slides && images ? t("Kept small to save your plan: a short instruction and a compact text version of the transcript, plus {n} smaller copies of the slides. Tokens are the small pieces of text AI plans count, a word or part of a word each. The notes are saved next to the transcript.", { n: e.images })
+          : t("Kept small to save your plan: a short instruction and a compact text version of the transcript. Tokens are the small pieces of text AI plans count, a word or part of a word each. The notes are saved next to the transcript.")}</div></div>
+        <div class="actions"><button class="btn" data-act="modal-close">${t("Cancel")}</button>${have ? `<button class="btn" data-act="cl-open">${I("file-text", "sm")} ${t("Show them")}</button>` : ""}
+          <button class="btn grad" data-act="cl-go">${I("ai", "sm")} ${have ? t("Generate again") : t("Generate")}</button></div>`);
     };
     window.__cl = { set tpl(v) { tpl = v; draw(); }, set slides(v) { slides = v; draw(); },
       open: () => { closeModal(); S.notesKind = tpl; renderNotes(); const el = $("#notes-slot"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); },
@@ -1554,18 +1612,18 @@
     const draw = () => {
       if (st.pos >= st.order.length) {
         const missed = st.again.size;
-        modal(`<div class="fc"><h2>${I("check-circle")} All ${plural(n.cards.length, "card")} done</h2>
-          <p class="lead">${missed ? `${plural(missed, "card")} needed another look. Going through them once more tomorrow helps them stick.` : "You knew every one of them."}</p>
-          <div class="actions"><button class="btn" data-act="modal-close">Close</button><button class="btn primary" data-act="fc-restart" autofocus>${I("retry", "sm")} Start again</button></div></div>`);
+        modal(`<div class="fc"><h2>${I("check-circle")} ${t.n(n.cards.length, "All {n} card done", "All {n} cards done")}</h2>
+          <p class="lead">${missed ? t.n(missed, "{n} card needed another look. Going through them once more tomorrow helps them stick.", "{n} cards needed another look. Going through them once more tomorrow helps them stick.") : t("You knew every one of them.")}</p>
+          <div class="actions"><button class="btn" data-act="modal-close">${t("Close")}</button><button class="btn primary" data-act="fc-restart" autofocus>${I("retry", "sm")} ${t("Start again")}</button></div></div>`);
         return;
       }
       const c = n.cards[st.order[st.pos]];
-      modal(`<div class="fc"><div class="fc-top"><b>${I("list-checks", "sm")} ${esc(S.day.title)} · flashcards</b><span class="dim sm">${st.pos + 1} of ${st.order.length}</span></div>
+      modal(`<div class="fc"><div class="fc-top"><b>${I("list-checks", "sm")} ${esc(S.day.title)} · ${t("flashcards")}</b><span class="dim sm">${t("{n} of {total}", { n: st.pos + 1, total: st.order.length })}</span></div>
         <div class="fc-bar"><i style="width:${Math.round((100 * st.pos) / st.order.length)}%"></i></div>
         <div class="fc-q md">${mdToHtml(c.q, { cites: true })}</div>
-        ${st.shown ? `<div class="fc-a md">${mdToHtml(c.a, { cites: true })}</div>` : `<div class="fc-hint dim sm">Think of the answer first.</div>`}
-        <div class="actions">${st.shown ? `<button class="btn" data-act="fc-again">${I("retry", "sm")} Again later</button><button class="btn primary" data-act="fc-knew" autofocus>${I("check", "sm")} I knew it</button>`
-          : `<button class="btn ghost" data-act="modal-close">Stop</button><button class="btn primary" data-act="fc-show" autofocus>Show the answer</button>`}</div></div>`);
+        ${st.shown ? `<div class="fc-a md">${mdToHtml(c.a, { cites: true })}</div>` : `<div class="fc-hint dim sm">${t("Think of the answer first.")}</div>`}
+        <div class="actions">${st.shown ? `<button class="btn" data-act="fc-again">${I("retry", "sm")} ${t("Again later")}</button><button class="btn primary" data-act="fc-knew" autofocus>${I("check", "sm")} ${t("I knew it")}</button>`
+          : `<button class="btn ghost" data-act="modal-close">${t.c("flashcards", "Stop")}</button><button class="btn primary" data-act="fc-show" autofocus>${t("Show the answer")}</button>`}</div></div>`);
     };
     window.__fc = {
       show: () => { st.shown = true; draw(); },
@@ -1597,23 +1655,23 @@
       }));
       syncChecks();
     },
-    "tx-selected": async () => { const ids = [...S.selected]; if (!ids.length) return; S.selected.clear(); syncChecks(); const r = await call("transcribe", ids); if (!r.ok) toast(r.error, "error"); else toast(`${plural(r.queued, "recording")} added to the queue`, "info"); },
-    "tx-day": async (el) => { const r = await call("transcribe_day", el.dataset.day); if (!r.ok) toast(r.error, "error"); else if (!r.queued) toast("Nothing left to transcribe for this day.", "info"); },
+    "tx-selected": async () => { const ids = [...S.selected]; if (!ids.length) return; S.selected.clear(); syncChecks(); const r = await call("transcribe", ids); if (!r.ok) toast(r.error, "error"); else toast(t.n(r.queued, "{n} recording added to the queue", "{n} recordings added to the queue"), "info"); },
+    "tx-day": async (el) => { const r = await call("transcribe_day", el.dataset.day); if (!r.ok) toast(r.error, "error"); else if (!r.queued) toast(t("Nothing left to transcribe for this day."), "info"); },
     "tx-new": async () => {     // Home: every new recording of your sections
       const ids = newRecs().flatMap(newToDo);
       if (!ids.length) return;
       const r = await call("transcribe", ids);
-      if (!r.ok) toast(r.error, "error"); else toast(`${plural(r.queued, "recording")} added to the queue`, "info");
+      if (!r.ok) toast(r.error, "error"); else toast(t.n(r.queued, "{n} recording added to the queue", "{n} recordings added to the queue"), "info");
     },
     retry: (el) => call("transcribe", [el.dataset.id]),
     cancel: (el) => call("cancel", el.dataset.id),
     "cancel-all": () => {
       const n = new Set((S.queue || []).map((j) => j.day || j.id)).size;          // lectures, not their parts
-      if (n > 1 && !confirm(`Cancel all ${n} lectures in the queue? To stop for a while instead, use Pause.`)) return;
+      if (n > 1 && !confirm(t("Cancel all {n} lectures in the queue? To stop for a while instead, use Pause.", { n }))) return;
       call("cancel", null);
     },
     "queue-pause": async () => { const r = await call("queue_pause", !S.paused); if (r.ok) { S.paused = r.paused; renderQueue(); } },
-    "queue-first": async (el) => { const r = await call("queue_first", el.dataset.id); if (r.ok) toast("Moved to the front of the queue.", "info"); },
+    "queue-first": async (el) => { const r = await call("queue_first", el.dataset.id); if (r.ok) toast(t("Moved to the front of the queue."), "info"); },
     "queue-toggle": () => { $("#queue").classList.toggle("open"); renderQueue(); },
     "open-day": (el) => openDay(el.dataset.day),
     "open-hit": async (el) => { await openDay(el.dataset.day); setTimeout(() => jumpTo(null, +el.dataset.t, el.dataset.id), 60); },
@@ -1632,8 +1690,8 @@
       const r = await call("update_check");
       if (r.ok) {
         S.update = { ...S.update, ...r, state: "" };
-        if (r.error) toast(`Couldn't look for a new version: ${r.error}`, "error");
-        else if (!r.available) toast("You have the newest version.", "success");
+        if (r.error) toast(t("Couldn't look for a new version: {error}", { error: r.error }), "error");
+        else if (!r.available) toast(t("You have the newest version."), "success");
       }
       else toast(r.error, "error");
       renderTop(); if (S.view.name === "settings") renderView();
@@ -1642,10 +1700,10 @@
     "copy-moment": async (el) => {     // for a study group: each classmate opens it on Panopto with their own login
       const d = S.day; if (!d) return;
       const p = d.parts.find((x) => x.index === +el.dataset.part) || {};
-      const t = Math.floor(+el.dataset.t), ts = `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+      const sec = Math.floor(+el.dataset.t), ts = `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
       const iso = d.day_key.split("|")[1] || "";
-      const r = await call("copy_text", `${d.course.code} · ${/^\d{4}-\d{2}-\d{2}$/.test(iso) ? shortDate(iso) : d.date_label}${d.parts.length > 1 ? ` · Part ${p.index}` : ""}, ${ts}: ${p.viewer_url}&start=${t}`);
-      toast(r.ok ? "Link copied. Classmates open it on Panopto with their own IEU login." : r.error || "Copy failed", r.ok ? "success" : "error");
+      const r = await call("copy_text", `${d.course.code} · ${/^\d{4}-\d{2}-\d{2}$/.test(iso) ? shortDate(iso) : d.date_label}${d.parts.length > 1 ? ` · ${t("Part {n}", { n: p.index })}` : ""}, ${ts}: ${p.viewer_url}&start=${sec}`);
+      toast(r.ok ? t("Link copied. Classmates open it on Panopto with their own IEU login.") : r.error || t("Copy failed"), r.ok ? "success" : "error");
     },
     jump: (el) => jumpTo(+el.dataset.part, +el.dataset.t),
     zoom: (el) => { $("#overlay").innerHTML = `<div class="lightbox" data-act="modal-close"><img src="${esc(el.dataset.src)}"></div>`; },
@@ -1664,13 +1722,37 @@
     "cl-open": () => window.__cl.open(),
     "notes-kind": (el) => { S.notesKind = el.dataset.val; renderNotes(); },
     "cards-practise": () => practise(),
+    mark: async (el) => {
+      const on = !el.classList.contains("on"), first = !((S.day || {}).marks || []).length;
+      const saved = await setMark(+el.dataset.part, +el.dataset.t, on);      // "Marked." only once it is saved
+      if (saved && on && first) toast(t("Marked. Your marks are listed at the top of this page."), "success");
+    },
+    "mark-note": (el) => {
+      const m = ((S.day || {}).marks || []).find((x) => x.id === el.dataset.id && Math.abs(x.t - +el.dataset.t) < 0.05);
+      if (!m) return;
+      const note = prompt(t("A note for this passage (for yourself)"), m.note || "");
+      if (note != null) setMark(m.part, m.t, true, note.trim());
+    },
+    "mark-del": (el) => {
+      const m = ((S.day || {}).marks || []).find((x) => x.id === el.dataset.id && Math.abs(x.t - +el.dataset.t) < 0.05);
+      if (m) setMark(m.part, m.t, false);
+    },
+    "marks-ask": () => {      // a chat about this lecture that starts with the passages you marked
+      const d = S.day; if (!d || !(d.marks || []).length) return;
+      const quote = (m) => `"${m.text.slice(0, 140)}${m.text.length > 140 ? "…" : ""}"`;
+      const lines = d.marks.map((m) => "- " + (m.note ? t("Part {part}, {time}: {quote} (my note: {note})", { part: m.part, time: m.ts, quote: quote(m), note: m.note })
+        : t("Part {part}, {time}: {quote}", { part: m.part, time: m.ts, quote: quote(m) })));
+      A["ask-day"]();
+      S.chat.input = t("I marked these passages of the lecture. Explain each one clearly, with what I need to know about it:") + "\n" + lines.join("\n");
+      const ta = $("#chat-input"); if (ta) { ta.value = S.chat.input; autosize(ta); }
+    },
     "fc-show": () => window.__fc.show(), "fc-knew": () => window.__fc.knew(), "fc-again": () => window.__fc.again(),
     "fc-restart": () => window.__fc.restart(),
     "ask-day": () => {
       const d = S.day; if (!d) return;
       const iso = d.day_key.split("|")[1] || "";
       startDraft({ course_id: d.course.id, course_code: d.course.code, days: [d.day_key], focus: "full", slides: false,
-        labels: [{ key: d.day_key, n: 1, label: /^\d{4}-\d{2}-\d{2}$/.test(iso) ? shortDate(iso) : d.date_label, kind: d.kind === "lab" ? "Lab" : "Lecture", long: d.date_label }],
+        labels: [{ key: d.day_key, n: 1, label: /^\d{4}-\d{2}-\d{2}$/.test(iso) ? shortDate(iso) : d.date_label, kind: d.kind === "lab" ? t("Lab") : t("Lecture"), long: d.date_label }],
         model: S.settings.ai_model || "sonnet" });
     },
     "ask-course": (el) => chatPicker(el.dataset.id),
@@ -1678,11 +1760,11 @@
     "chat-open": (el) => openChat(el.dataset.id),
     "chat-suggest": (el) => sendChat(el.dataset.text),
     "chat-stop": () => { if (S.chat.data) call("chat_stop", S.chat.data.id); },
-    "chat-day": (el) => { if (el.classList.contains("gone")) toast("That class day is no longer in your library.", "warning"); else openDay(el.dataset.key); },
+    "chat-day": (el) => { if (el.classList.contains("gone")) toast(t("That class day is no longer in your library."), "warning"); else openDay(el.dataset.key); },
     "chat-copy": async (el) => {
       const m = S.chat.data && S.chat.data.messages.find((x) => x.seq === +el.dataset.seq); if (!m) return;
       const r = await call("copy_text", m.text);
-      toast(r.ok ? "Answer copied (as Markdown)." : r.error || "Copy failed", r.ok ? "success" : "error");
+      toast(r.ok ? t("Answer copied (as Markdown).") : r.error || t("Copy failed"), r.ok ? "success" : "error");
     },
     "chat-retry": async (el) => {      // replaces the failed answer instead of asking the question twice
       const c = S.chat.data; if (!c || c.running) return;
@@ -1698,8 +1780,8 @@
     },
     "chat-rename": async () => {
       const c = S.chat.data; if (!c) return;
-      const t = prompt("Name this chat", c.title); if (t == null) return;
-      const r = await call("chat_update", c.id, { title: t });
+      const name = prompt(t("Name this chat"), c.title); if (name == null) return;
+      const r = await call("chat_update", c.id, { title: name });
       if (!r.ok) { toast(r.error, "error"); return; }
       c.title = r.chat.title; renderChatHead(); loadChats();
     },
@@ -1708,30 +1790,30 @@
       const r = await call("chat_update", c.id, { model: el.value });
       if (!r.ok) { toast(r.error, "error"); return; }
       c.model = r.chat.model; loadChats();
-      if (c.messages.length) toast(`Next answers use ${el.options[el.selectedIndex].text.split(" · ")[0]}. ${aiName()} reads the lectures again once.`, "info");
+      if (c.messages.length) toast(t("Next answers use {model}. {ai} reads the lectures again once.", { model: levelLabel(el.value), ai: aiName() }), "info");
     },
     "draft-model": (el) => { if (S.chat.draft) S.chat.draft.model = el.value; },
     "draft-slides": (el) => { const d = S.chat.draft; if (d) { d.slides = el.checked; estimateDraft(); } },
     "draft-change": () => { const d = S.chat.draft; if (d) chatPicker(d.course_id, d); },
     "chat-menu": (el) => menu(el, [
-      { id: "rename", icon: "pencil", label: "Rename", run: () => A["chat-rename"]() },
-      { id: "export", icon: "file-text", label: "Save as Markdown", desc: "In the course folder, under “AI chats”",
-        run: async () => { const r = await call("chat_export", S.chat.data.id); toast(r.ok ? "Chat saved — shown in Explorer." : r.error, r.ok ? "success" : "error"); } },
+      { id: "rename", icon: "pencil", label: t("Rename"), run: () => A["chat-rename"]() },
+      { id: "export", icon: "file-text", label: t("Save as Markdown"), desc: t("In the course folder, under “AI chats”"),
+        run: async () => { const r = await call("chat_export", S.chat.data.id); toast(r.ok ? t("Chat saved — shown in Explorer.") : r.error, r.ok ? "success" : "error"); } },
       "-",
-      { id: "delete", icon: "x", label: "Delete chat", run: async () => {
-        if (!confirm("Delete this chat? This cannot be undone.")) return;
+      { id: "delete", icon: "x", label: t("Delete chat"), run: async () => {
+        if (!confirm(t("Delete this chat? This cannot be undone."))) return;
         const r = await call("chat_delete", S.chat.data.id);
         if (!r.ok) { toast(r.error, "error"); return; }
         S.chat.id = null; S.chat.data = null; S.view = { name: "chat" }; renderChatMain(); loadChats();
       } },
     ]),
     cite: async (el) => {
-      const t = +el.dataset.t, part = +el.dataset.p || 1, L = +el.dataset.l || 1;
-      if (S.view.name === "day") { closeModal(); jumpTo(part, t); return; }   // timestamps in study notes and flashcards
+      const sec = +el.dataset.t, part = +el.dataset.p || 1, L = +el.dataset.l || 1;
+      if (S.view.name === "day") { closeModal(); jumpTo(part, sec); return; }   // timestamps in study notes and flashcards
       const c = S.chat.data; if (!c) return;
       const day = c.days[L - 1] || c.days[0];
-      if (!day || day.gone) { toast("That class day is no longer in your library.", "warning"); return; }
-      await openDay(day.key); setTimeout(() => jumpTo(part, t), 60);
+      if (!day || day.gone) { toast(t("That class day is no longer in your library."), "warning"); return; }
+      await openDay(day.key); setTimeout(() => jumpTo(part, sec), 60);
     },
     "cp-course": (el) => window.__cp.course(el.value),
     "cp-day": (el) => window.__cp.day(el.dataset.key, el.checked),
@@ -1741,46 +1823,60 @@
     "cp-model": (el) => window.__cp.model(el.dataset.val),
     "cp-go": () => window.__cp.go(),
     "menu-copy": (el) => menu(el, [
-      { id: "notes", icon: "book", label: "Study notes prompt + transcript", desc: "Paste into ChatGPT or Claude", run: () => copyAI("notes") },
-      { id: "exam", icon: "star", label: "Exam focus prompt + transcript", run: () => copyAI("exam") },
-      { id: "flash", icon: "list-checks", label: "Flashcards prompt + transcript", run: () => copyAI("flashcards") },
+      { id: "notes", icon: "book", label: t("Study notes prompt + transcript"), desc: t("Paste into ChatGPT or Claude"), run: () => copyAI("notes") },
+      { id: "exam", icon: "star", label: t("Exam focus prompt + transcript"), run: () => copyAI("exam") },
+      { id: "flash", icon: "list-checks", label: t("Flashcards prompt + transcript"), run: () => copyAI("flashcards") },
       "-",
-      { id: "plain", icon: "copy", label: "Transcript only", run: () => copyAI("plain") },
-      { id: "course", icon: "library", label: "Whole course (all lectures)", desc: "Study notes prompt + every transcribed day", run: () => copyAI("notes", "course:" + S.day.course.id) },
+      { id: "plain", icon: "copy", label: t("Transcript only"), run: () => copyAI("plain") },
+      { id: "course", icon: "library", label: t("Whole course (all lectures)"), desc: t("Study notes prompt + every transcribed day"), run: () => copyAI("notes", "course:" + S.day.course.id) },
     ]),
     "menu-more": (el) => menu(el, [
-      { id: "file", icon: "file-audio", label: "Transcribe a file from this PC…", desc: "Any audio/video file", run: async () => { const r = await call("transcribe_local_file"); if (r.ok && r.queued) toast(`${plural(r.queued, "file")} added to the queue`); } },
-      { id: "out", icon: "folder-open", label: "Open IEUStudia folder", run: () => A["open-output"]() },
-      { id: "set", icon: "settings", label: "Settings", run: () => go({ name: "settings" }) },
+      { id: "file", icon: "file-audio", label: t("Transcribe a file from this PC…"), desc: t("Any audio/video file"), run: async () => { const r = await call("transcribe_local_file"); if (r.ok && r.queued) toast(t.n(r.queued, "{n} file added to the queue", "{n} files added to the queue")); } },
+      { id: "out", icon: "folder-open", label: t("Open IEUStudia folder"), run: () => A["open-output"]() },
+      { id: "set", icon: "settings", label: t("Settings"), run: () => go({ name: "settings" }) },
     ]),
     set: async (el) => saveSetting({ [el.dataset.key]: el.dataset.val }),
     "set-size": (el) => saveSetting({ text_size: +el.dataset.val }),
+    // the language: Python switches at once; the page reloads to draw everything in it (where you were: Settings)
+    "set-lang": async (el) => {
+      const r = await call("set_language", el.dataset.val);
+      if (!r.ok) { toast(r.error, "error"); return; }
+      const was = t.lang();
+      t.load(r);
+      if (r.lang === was) { if (S.mode === "setup") render(); else renderView(); return; }    // only the choice moves (the setup has no #view)
+      if (S.mode === "setup") { render(); Studia.relabelSetup(); return; }     // drawn in it at once; this PC's check re-read, the choices kept
+      try { sessionStorage.setItem("studia-view", JSON.stringify(S.view)); } catch (e) { /* storage may be unavailable */ }
+      location.reload();
+    },
+    "set-jump": (el) => { const card = $("#" + el.dataset.id); if (card) card.scrollIntoView({ block: "start", behavior: "smooth" }); },
     "set-bool": async (el) => saveSetting({ [el.dataset.key]: el.checked }),
     "set-sel": async (el) => saveSetting({ [el.dataset.key]: el.dataset.key === "min_duration_s" ? +el.value : el.value }),
     "my-section": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { my_section: el.value, show_mode: "mine" }); if (r.ok) { setCourses(r.courses); renderView(); } },
     "pick-folder": async () => { const r = await call("pick_folder"); if (r.ok && r.path) { await saveSetting({ output_dir: r.path }); if (S.mode === "setup") render(); } },
     signout: async () => {
-      if (!confirm("Sign out and remove the stored password from this PC? Your courses and transcripts stay here.")) return;
+      if (!confirm(t("Sign out and remove the stored password from this PC? Your courses and transcripts stay here."))) return;
       const r = await call("sign_out");
       if (r.profiles) S.profiles = r.profiles;
       S.mode = "signin"; S.signin = { busy: false, error: "" }; render();
     },
     "menu-profile": (el) => menu(el, [
-      ...S.profiles.map((x) => ({ id: "p:" + x.id, icon: x.active ? "check" : "user", label: x.name || x.username || "New profile",
-        desc: [x.student_number, x.active ? "open now" : x.has_login ? "" : "signed out"].filter(Boolean).join(" · "), run: () => switchProfile(x) })),
+      ...S.profiles.map((x) => ({ id: "p:" + x.id, icon: x.active ? "check" : "user", label: x.name || x.username || t("New profile"),
+        desc: [x.student_number, x.active ? t("open now") : x.has_login ? "" : t("signed out")].filter(Boolean).join(" · "), run: () => switchProfile(x) })),
       ...(S.profiles.length ? ["-"] : []),
-      { id: "add", icon: "plus", label: "Add another account…", desc: "Its courses and transcripts stay separate", run: () => addAccountDialog() },
-      { id: "manage", icon: "users", label: "Manage profiles", run: () => go({ name: "settings" }) },
-      { id: "signout", icon: "logout", label: "Sign out", run: () => A.signout() },
+      { id: "add", icon: "plus", label: t("Add another account…"), desc: t("Its courses and transcripts stay separate"), run: () => addAccountDialog() },
+      { id: "manage", icon: "users", label: t("Manage profiles"), run: () => go({ name: "settings" }) },
+      { id: "signout", icon: "logout", label: t("Sign out"), run: () => A.signout() },
     ]),
     "profile-add": () => addAccountDialog(),
     "profile-switch": (el) => switchProfile(S.profiles.find((x) => x.id === el.dataset.id)),
     "profile-remove": async (el) => {
       const x = S.profiles.find((p) => p.id === el.dataset.id); if (!x) return;
-      if (!confirm(`Remove ${x.name || x.username || "this profile"} from this PC?\n\nIts library, transcripts, chats and stored password on this PC are deleted. Files already saved in its IEUStudia folder stay.`)) return;
+      const who = x.name || x.username;
+      if (!confirm(who ? t("Remove {name} from this PC?\n\nIts library, transcripts, chats and stored password on this PC are deleted. Files already saved in its IEUStudia folder stay.", { name: who })
+        : t("Remove this profile from this PC?\n\nIts library, transcripts, chats and stored password on this PC are deleted. Files already saved in its IEUStudia folder stay."))) return;
       const r = await call("profile_remove", x.id);
       if (!r.ok) { toast(r.error, "error"); return; }
-      S.profiles = r.profiles; toast("Profile removed", "success");
+      S.profiles = r.profiles; toast(t("Profile removed"), "success");
       if (S.view.name === "settings") renderView();
       renderSidebar();
     },
@@ -1791,9 +1887,9 @@
     "modal-bg": (el, e) => { if (e.target === el) closeModal(); },
   };
   // what the other UI files may use (their actions go into A, their views into Studia.views)
-  Object.assign(Studia, { S, call, esc, I, SPIN, plural, fmtDur, rel, pct, toast, modal, closeModal, menu, go, render,
+  Object.assign(Studia, { S, call, esc, I, SPIN, fmtDur, rel, pct, toast, modal, closeModal, menu, go, render,
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
-    newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, MONTHS, WD, fmtK, limitsHTML, isReal: () => REAL,
+    newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
     aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub,
     otherSection });
   async function saveSetting(patch) {
@@ -1804,17 +1900,17 @@
   }
   async function copyAI(template, scope) {
     const r = await call("copy_for_ai", scope || S.day.day_key, template);
-    if (r.ok) toast(`Copied ${r.chars.toLocaleString()} characters (~${(r.tokens / 1000).toFixed(1)}k tokens). Paste it into ChatGPT or Claude.`, "success");
-    else toast(r.error || "Copy failed", "error");
+    if (r.ok) toast(t("Copied {chars} characters (~{k}k tokens). Paste it into ChatGPT or Claude.", { chars: t.num(r.chars), k: dec(r.tokens / 1000, 1) }), "success");
+    else toast(r.error || t("Copy failed"), "error");
   }
-  function jumpTo(part, t, deliveryId) {
+  function jumpTo(part, sec, deliveryId) {
     let paras = $$(".para");
     if (deliveryId && S.day) { const p = S.day.parts.find((x) => x.id === deliveryId); if (p) part = p.index; }
     if (part) paras = paras.filter((p) => +p.dataset.part === part);
-    let k = 0;                                   // the paragraph containing t; in a gap, the nearer one
-    paras.forEach((p, i) => { if (+p.dataset.t <= t + 0.5) k = i; });
+    let k = 0;                                   // the paragraph containing sec; in a gap, the nearer one
+    paras.forEach((p, i) => { if (+p.dataset.t <= sec + 0.5) k = i; });
     const cur = paras[k], next = paras[k + 1];
-    if (cur && next && t > +cur.dataset.e && +next.dataset.t - t < t - +cur.dataset.e) k += 1;
+    if (cur && next && sec > +cur.dataset.e && +next.dataset.t - sec < sec - +cur.dataset.e) k += 1;
     const best = paras[k];
     if (!best) return;
     // Jump at once (not smoothly) and re-align while slide images above it load; stop if the user scrolls.
@@ -1865,20 +1961,20 @@
     if (f.dataset.form === "add-account") {
       e.preventDefault();
       const u = f.username.value.trim(), p = f.password.value;
-      if (!u || !p) { addAccountDialog("Enter the username and password.", false, u); return; }
+      if (!u || !p) { addAccountDialog(t("Enter the username and password."), false, u); return; }
       addAccountDialog("", true, u);
       const r = await call("profile_add", u, p);
-      if (!r.ok) { addAccountDialog(r.error || "Sign-in failed", false, u); return; }
+      if (!r.ok) { addAccountDialog(r.error || t("Sign-in failed"), false, u); return; }
       switchProfile(r.profile);
       return;
     }
     if (f.dataset.form !== "signin") return;
     e.preventDefault();
     const u = f.username.value.trim(), p = f.password.value;
-    if (!u || !p) { S.signin.error = "Enter your username and password."; render(); return; }
+    if (!u || !p) { S.signin.error = t("Enter your username and password."); render(); return; }
     S.signin = { busy: true, error: "" }; render();
     const r = await call("sign_in", u, p);
-    if (!r.ok) { S.signin = { busy: false, error: r.error || "Sign-in failed" }; render(); return; }
+    if (!r.ok) { S.signin = { busy: false, error: r.error || t("Sign-in failed") }; render(); return; }
     S.signin = { busy: false, error: "" };
     if (r.switch_to) { switchProfile(r.profile); return; }           // another person: their own profile
     S.profile = r.profile; S.mode = "app"; S.sync.running = true;
@@ -1887,14 +1983,15 @@
   });
   let textSizeTimer = null;
   function textSize(step) {        // Ctrl and +, − or 0: the reading text, a step at a time
-    const sizes = TEXT_SIZES.map(([v]) => v), cur = +(S.settings.text_size || 100);
+    const sizes = TEXT_SIZES().map(([v]) => v), cur = +(S.settings.text_size || 100);
     const i = sizes.indexOf(cur) < 0 ? 1 : sizes.indexOf(cur);
     const next = step === 0 ? 100 : sizes[Math.max(0, Math.min(sizes.length - 1, i + step))];
     if (next === cur) return;
     S.settings.text_size = next; applyTheme();       // at once: the next press steps on from here
     clearTimeout(textSizeTimer);                     // saved once the presses stop (answers may come in any order)
     textSizeTimer = setTimeout(() => saveSetting({ text_size: S.settings.text_size }), 400);
-    toast(`Reading text: ${TEXT_SIZES.find(([v]) => v === next)[1].toLowerCase()} (Settings → Appearance)`, "info");
+    const size = TEXT_SIZES().find(([v]) => v === next)[1].toLocaleLowerCase(t.lang() === "tr" ? "tr" : "en");
+    toast(t("Reading text: {size} (Settings → Appearance)", { size }), "info");
   }
   function trapTab(e, m) {         // Tab and Shift+Tab go round inside an open dialog
     const items = $$("button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])", m)
@@ -1923,14 +2020,16 @@
 
   // ------------------------------------------------------------------ boot
   async function boot() {
-    setSplash("Opening your library…");
-    const slow = setTimeout(() => setSplash("Still starting… the first start after Windows boots can take a little longer."), 9000);
+    t.load(await call("i18n"));
+    setSplash(t("Opening your library…"));
+    const slow = setTimeout(() => setSplash(t("Still starting… the first start after Windows boots can take a little longer.")), 9000);
     const b = await call("get_bootstrap");
     clearTimeout(slow);
-    if (!b.ok) { startupError(b.error || "IEUStudia could not start."); return; }
+    if (!b.ok) { startupError(b.error || t("IEUStudia could not start.")); return; }
     S.boot = b; S.settings = b.settings || {}; S.profile = b.profile; setCourses(b.courses); S.queue = b.queue || []; S.lastSync = b.last_sync;
     S.profiles = b.profiles || []; S.profileId = b.profile_id || "main";
     S.limits = b.limits || {}; S.update = b.update || {}; S.paused = !!b.paused; S.resume = b.resume || null;
+    if (b.downloading && Studia.setup) Studia.setup.running = true;            // the setup's download goes on
     if (b.system) S.system = { ...S.system, ...b.system };
     applyTheme();
     const needSetup = REAL ? !(b.app && b.app.onboarded) : location.hash.includes("setup");
@@ -1940,7 +2039,9 @@
   }
   function afterBoot() {
     S.mode = "app";
-    S.view = { name: "home" };
+    let back = null;                // the language was just switched in Settings: back there
+    try { back = JSON.parse(sessionStorage.getItem("studia-view") || "null"); sessionStorage.removeItem("studia-view"); } catch (e) { /* none */ }
+    S.view = back && back.name === "settings" ? back : { name: "home" };
     render();
     if (Studia.onGo[S.view.name]) Studia.onGo[S.view.name](S.view);
     A.sync();
@@ -1949,22 +2050,22 @@
   }
   function whatsNew() {             // the first start after an update
     const u = S.update || {}, v = S.boot.version;
-    if (!(u.notes && u.version === v)) { toast(`IEUStudia was updated to ${v}.`, "success"); return; }
-    modal(`<h2>IEUStudia ${esc(v)} is installed</h2>
-      <p class="lead">Updated from ${esc(S.boot.updated_from)}. Everything you had is still here.</p>
+    if (!(u.notes && u.version === v)) { toast(t("IEUStudia was updated to {version}.", { version: v }), "success"); return; }
+    modal(`<h2>${t.html("IEUStudia {version} is installed", { version: v })}</h2>
+      <p class="lead">${t.html("Updated from {version}. Everything you had is still here.", { version: S.boot.updated_from })}</p>
       <div class="update-notes md">${mdToHtml(u.notes)}</div>
-      <div class="actions"><button class="btn primary" data-act="modal-close">OK</button></div>`);
+      <div class="actions"><button class="btn primary" data-act="modal-close">${t("OK")}</button></div>`);
   }
   // what a notification opens: "course:<id>[:<tab>]", "day:<class day>", "ready:<course id>:<assessment>" (Get
   // ready), "week:<course id>:<week>", "update" or "home"
-  function openTarget(t) {
-    if (S.mode !== "app" || !t) return;
-    const [kind, id, ...rest] = String(t).split(":");
+  function openTarget(target) {
+    if (S.mode !== "app" || !target) return;
+    const [kind, id, ...rest] = String(target).split(":");
     if (kind === "course" && findCourse(id)) {
       go({ name: "course", courseId: id, tab: rest[0] || "announcements" });
       const tabs = $(".tabs");
       if (tabs) tabs.scrollIntoView({ block: "start", behavior: "instant" });        // what it's about, in view
-    } else if (kind === "day") openDay(String(t).slice(4));
+    } else if (kind === "day") openDay(String(target).slice(4));
     else if (kind === "week" && findCourse(id)) go({ name: "course", courseId: id, jumpWeek: +rest[0] || "now" });
     else if (kind === "ready" && findCourse(id) && Studia.openReady) { go({ name: "course", courseId: id }); Studia.openReady(id, rest.join(":")); }
     else if (kind === "update") { go({ name: "home" }); updateModal(); }
@@ -2035,7 +2136,7 @@
       course("19456", "FENG 495", "Double Major Graduation Project I", "Murat Askar", [], { section: "3", progress: 0 }),
     ];
     const slideSvg = (n) => "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900'><rect width='1600' height='900' fill='#fff'/><rect x='80' y='70' width='1440' height='120' rx='14' fill='#7c3aed'/><text x='120' y='150' font-size='56' font-family='Segoe UI' fill='#fff'>Bayes' theorem — slide ${n}</text><text x='120' y='330' font-size='44' font-family='Cambria Math' fill='#111'>P(A | B) = P(B | A) · P(A) / P(B)</text><path d='M200 520 C 400 420, 600 640, 900 500' stroke='#6d28d9' stroke-width='8' fill='none'/><text x='980' y='560' font-size='48' fill='#6d28d9' font-family='Segoe Print'>= 396 / 3384</text></svg>`);
-    const P = (t, text, o = {}) => ({ t, ts: `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`, text, lang: o.tr ? "tr" : "en", tag: o.tr ? "TR" : "", star: !!o.star, tags: o.star ? ["exam"] : [], uncertain: !!o.unc, slide: o.slide || null, slide_image: o.slide ? slideSvg(o.slide) : null });
+    const P = (at, text, o = {}) => ({ t: at, ts: `${String(Math.floor(at / 60)).padStart(2, "0")}:${String(Math.floor(at % 60)).padStart(2, "0")}`, text, lang: o.tr ? "tr" : "en", tag: o.tr ? "TR" : "", star: !!o.star, tags: o.star ? ["exam"] : [], uncertain: !!o.unc, slide: o.slide || null, slide_image: o.slide ? slideSvg(o.slide) : null });
     const detail = {
       day_key: "17933|x|lecture", title: "MATH 240 · Lecture", date_label: "Wednesday, 14 October 2026", subtitle: "Probability for Engineers · Dr. Cem Yıldız",
       course: { id: "17933", code: "MATH 240", name: "Probability for Engineers", instructor: "Dr. Cem Yıldız" }, kind: "lecture", languages: { en: 0.93, tr: 0.07 },
@@ -2091,10 +2192,13 @@
           resume: location.hash.includes("resume") ? { count: 3, days: 2, audio_s: 7800, courses: ["EEE 215", "MATH 250"] } : null,
           update: Mock.update_check() };
       },
+      i18n: () => ({ ok: true, ...(window.__I18N_PREVIEW || { lang: "en", table: {} }), setting: "", windows: "en" }),
+      set_language: (code) => ({ ok: true, ...(code === "tr" && window.__I18N_PREVIEW ? window.__I18N_PREVIEW : { lang: "en", table: {} }), setting: code, windows: "en" }),
       sync: () => { emit({ type: "sync", phase: "start", message: "Checking IEULearn and Panopto…" }); setTimeout(() => emit({ type: "sync", phase: "done", new_count: 0, message: "Up to date", last_sync: new Date().toISOString() }), 1400); return { ok: true }; },
       transcribe: (ids) => { simulate(ids); return { ok: true, queued: ids.length }; },
       transcribe_day: (k) => { const d = courses.flatMap((c) => c.days).find((x) => x.day_key === k); const ids = d.recordings.filter((r) => !r.duplicate && !r.too_short && r.status !== "done").map((r) => r.id); simulate(ids); return { ok: true, queued: ids.length }; },
       cancel: () => ({ ok: true }), get_day: () => ({ ok: true, day: JSON.parse(JSON.stringify(detail)) }),
+      mark_set: () => ({ ok: true }), mark_delete: () => ({ ok: true }), course_marks: () => ({ ok: true, marks: [] }),
       library: () => ({ ok: true, courses: courses.map((c) => ({ course_id: c.id, code: c.code, name: c.display_name, days: c.days.filter((d) => d.any_done) })).filter((c) => c.days.length) }),
       search: (q) => ({ ok: true, results: [{ day_key: "17933|x|lecture", delivery_id: "a", t: 1121, ts: "18:41", snippet: `…the kind of question I will ask in the \u0002${q}\u0003, so please be careful…`, course_code: "MATH 240", date: "2026-10-14", time: "08:28" }],
         materials: [{ resource_id: "m1793302", title: "Week03_Student", page: 12, snippet: `Bayes' rule [Eq. 2.9] … \u0002${q}\u0003 with the total probability`, course_id: "17933", course_code: "MATH 240" }] }),
@@ -2135,7 +2239,7 @@
     const chats = {};
     const answer = "Based on the lecture, these are the most likely quiz topics:\n\n1. **Bayes' theorem** — the lecturer said *\"this is exactly the kind of question I will ask in the midterm\"* [P1 18:41].\n   - Watch the denominator: $P(+) = 3384/100000$.\n2. **Conditional probability** and the multiplication rule $P(A\\cap B)=P(A\\mid B)\\,P(B)$ [P1 00:31].\n3. The screening example (posterior ≈ 11.7%) [P2 05:40, P2 06:10].\n\n| Topic | Emphasised | Where |\n|---|---|---|\n| Bayes' theorem | ⭐⭐ | [P1 18:41] |\n| Multiplication rule | ⭐ | [P1 00:31] |\n\n> **My prediction:** a two-step screening question like the one at [P2 05:05].\n\nIn Turkish he added *\"bu konu sınavda çıkacak\"* — “this topic will be on the exam” (Part 2, 05:05).\n\n$$P(D\\mid +) = \\frac{P(+\\mid D)\\,P(D)}{P(+)} = \\frac{0.99 \\cdot 0.004}{0.03384} \\approx 0.117$$\n\nAlso check: $A = \\begin{bmatrix} 1 & 2 \\\\ 3 & 4 \\end{bmatrix}$, $\\det A = -2$, $x_{1}^2 + \\sqrt{x_2} \\le \\bar{X}$, $v \\in \\mathbb{R}^n$.";
     const label = (c) => (c.days.length === 1 ? `${c.days[0].label} · ${c.days[0].kind}` : `${c.days.length} class days`) + (c.focus === "highlights" ? " · highlights only" : "");
-    const summary = (c) => ({ id: c.id, course_id: c.course_id, course_code: c.course_code, title: c.title || (c.messages[0] ? c.messages[0].text.slice(0, 64) : "New chat"), scope_label: label(c), model: c.model, updated_at: c.updated_at, n_messages: c.messages.length, running: c.messages.some((m) => m.status === "streaming") });
+    const summary = (c) => ({ id: c.id, course_id: c.course_id, course_code: c.course_code, title: c.title || (c.messages[0] ? c.messages[0].text.slice(0, 64) : ""), scope_label: label(c), model: c.model, updated_at: c.updated_at, n_messages: c.messages.length, running: c.messages.some((m) => m.status === "streaming") });
     const view = (c) => ({ ...summary(c), days: c.days, focus: c.focus, slides: c.slides, context_tokens: c.tokens, images: c.slides ? 3 : 0, course_name: "MATH 240 – Probability for Engineers", messages: JSON.parse(JSON.stringify(c.messages)), limits });
     const timers = {};
     return {

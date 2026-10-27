@@ -11,8 +11,8 @@ from typing import Any, Iterable, Optional
 from . import store
 from .config import Settings
 from .domain import Course, Recording
-from .outputs.common import (format_ts, kind_label, lang_tag, language_shares, long_date, time_range,
-                             weekday_short)
+from .i18n import date_long, t, weekday
+from .outputs.common import format_ts, kind_label, lang_tag, language_shares, time_range
 from .outputs.highlights import LABELS, _tr_lower, excerpt
 from .outputs.markdown import part_views
 from .paths import transcripts_dir
@@ -48,7 +48,7 @@ def recording_view(rec: Recording, settings: Settings, mine: Optional[bool], par
 
 
 def _day_label(d: dt.date) -> str:
-    return long_date(d)
+    return date_long(d)          # Wednesday, 14 October 2026 / 14 Ekim 2026 Çarşamba
 
 
 def _cover_uri(url: str) -> str:
@@ -83,8 +83,8 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
         done = [r for r in countable if r.status == "done"]
         d = rs[0].start.date()
         day_views.append({
-            "day_key": key, "date": d.isoformat(), "weekday": weekday_short(d), "label": _day_label(d),
-            "kind": rs[0].kind, "kind_label": kind_label(rs[0].kind), "mine": mine,
+            "day_key": key, "date": d.isoformat(), "weekday": weekday(d, short=True), "label": _day_label(d),
+            "kind": rs[0].kind, "kind_label": t(kind_label(rs[0].kind)), "mine": mine,
             "transcribed": bool(countable) and len(done) == len(countable), "any_done": bool(done),
             "duration_s": round(sum(r.duration_s for r in countable)), "parts": len(countable),
             "is_new": any(r.is_new for r in countable),
@@ -252,7 +252,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
             start = first + dt.timedelta(days=7 * (n - 1)) if first else None
             topic_en = (en_weeks.get(n) or {}).get("subject", "")
             topic_tr = tr_topics.get(n, "")
-            exam = next((t for t in (topic_en, topic_tr) if exam_topic(t)), "")
+            exam = next((x for x in (topic_en, topic_tr) if exam_topic(x)), "")
             weeks[n] = {"no": n, "start": start.isoformat() if start else "",
                         "end": (start + dt.timedelta(days=6)).isoformat() if start else "",
                         "topic_en": topic_en, "topic_tr": topic_tr,
@@ -276,7 +276,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
     known_units = {u["unit_id"] for u in units}
     stray = [m for uid, ms in mats.items() if uid not in known_units for m in ms]
     if stray:          # downloaded files of a week that left the plan: still on your PC, so still listed
-        general.append({"id": "", "title": "No longer in the weekly plan", "readings": "", "materials": stray})
+        general.append({"id": "", "title": t("No longer in the weekly plan"), "readings": "", "materials": stray})
     for n in sorted(set(tr_topics) | set(en_weeks)):
         week(n)
     for d in cv["days"]:
@@ -321,16 +321,17 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
 def _label_other_sections(alerts: dict[str, Any], days: list[dict[str, Any]]) -> dict[str, Any]:
     """Mark heads-ups heard in another section's lecture ("Section 1"): its dates may differ for your section.
     (Matched by the recording's viewer link: one class day can hold several sections' recordings.)"""
-    other: dict[str, str] = {}
+    other: dict[str, tuple[str, str]] = {}            # viewer link -> (shown, English for the AI and exports)
     for d in days:
         for r in d["recordings"]:
             if r["mine"] is False and r.get("viewer_url"):
                 tag = r["section_tag"] or parse_section_tag(r["name"])
-                other[r["viewer_url"]] = f"Section {tag}" if tag else "Other section"
+                other[r["viewer_url"]] = ((t("Section {tag}", tag=tag), f"Section {tag}") if tag
+                                          else (t("Other section"), "Other section"))
     if not other:
         return alerts
-    items = [dict(it, other_section=other[it["viewer_url"]]) if it.get("viewer_url") in other else it
-             for it in alerts.get("items", [])]
+    items = [dict(it, other_section=other[it["viewer_url"]][0], other_section_en=other[it["viewer_url"]][1])
+             if it.get("viewer_url") in other else it for it in alerts.get("items", [])]
     return {**alerts, "items": items}
 
 
@@ -348,32 +349,42 @@ def day_detail(lib: Any, settings: Settings, day_key: str, files: dict[str, str]
     warnings = {i: lib.warnings(i) for i in ids}
     parts = part_views(recs, trans, slides, warnings)
     shares = language_shares([p.transcript for p in parts if p.transcript])
-    highlights, out_parts = [], []
+    marks: dict[str, dict[float, dict[str, Any]]] = defaultdict(dict)       # the student's own marks
+    for m in lib.marks(ids):
+        marks[m["delivery_id"]][m["t"]] = m
+    highlights, out_parts, my_marks = [], [], []
     for p in parts:
         sl = {s.index: s for s in p.slides}
         paras = []
+        own = marks.get(p.rec.delivery_id, {})
         for para in p.paragraphs:
             s = sl.get(para.slide) if para.slide is not None else None
             w, h = jpeg_size(s.path) if s and s.path else (0, 0)
+            m = own.get(round(para.start, 1))
             paras.append({"t": round(para.start, 1), "e": round(para.end, 1), "ts": format_ts(para.start),
                           "text": para.text, "lang": para.lang, "tag": lang_tag(para.lang), "star": para.star,
                           "tags": para.tags, "uncertain": para.uncertain, "slide": para.slide,
-                          "slide_image": Path(s.path).as_uri() if s and s.path else None, "slide_w": w, "slide_h": h})
+                          "slide_image": Path(s.path).as_uri() if s and s.path else None, "slide_w": w, "slide_h": h,
+                          "mark": {"note": m["note"]} if m else None})
             if para.star:
                 highlights.append({"part": p.index, "t": round(para.start, 1), "ts": format_ts(para.start),
-                                   "text": excerpt(para.text, para.tags), "tags": [LABELS.get(t, t) for t in para.tags],
+                                   "text": excerpt(para.text, para.tags),
+                                   "tags": [t(LABELS[x]) if x in LABELS else x for x in para.tags],   # English in files
                                    "viewer_url": p.rec.viewer_url})
+        for at, m in sorted(own.items()):
+            my_marks.append({"part": p.index, "id": p.rec.delivery_id, "t": at, "ts": format_ts(at),
+                             "text": m["text"], "note": m["note"]})
         out_parts.append({
-            "index": p.index, "id": p.rec.delivery_id, "title": f"Part {p.index}", "time_range": time_range(p.rec),
+            "index": p.index, "id": p.rec.delivery_id, "title": t("Part {n}", n=p.index), "time_range": time_range(p.rec),
             "viewer_url": p.rec.viewer_url, "status": p.rec.status, "paragraphs": paras,
             "slides": len({s.index for s in p.slides}),
             "warnings": [{"level": w.get("level"), "message": w.get("message")} for w in p.warnings],
         })
     d = dt.date.fromisoformat(date_s)
     return {
-        "day_key": day_key, "title": f"{course.code} · {kind_label(kind)}", "date_label": long_date(d),
+        "day_key": day_key, "title": f"{course.code} · {t(kind_label(kind))}", "date_label": date_long(d),
         "subtitle": " · ".join(x for x in (course.name, course.instructor) if x),
         "course": {"id": course.id, "code": course.code, "name": course.name, "instructor": course.instructor},
         "kind": kind, "languages": {k: round(v, 3) for k, v in shares.items()},
-        "highlights": highlights, "parts": out_parts, "files": files,
+        "highlights": highlights, "parts": out_parts, "files": files, "marks": my_marks,
     }

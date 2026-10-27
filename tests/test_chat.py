@@ -92,7 +92,7 @@ def test_material_is_ordered_labelled_and_can_be_highlights_only(env):
 
 def test_turns_stream_reuse_one_process_and_persist(env):
     chat = env.svc.create("c", [DAY1], model="haiku")
-    assert chat["title"] == "New chat" and chat["context_tokens"] > 0 and chat["days"][0]["label"] == "Tue 13 Oct"
+    assert chat["title"] == "" and chat["context_tokens"] > 0 and chat["days"][0]["label"] == "Tue 13 Oct"
     e1 = ask(env, chat["id"], "What is on the quiz?")
     assert e1["state"] == "done" and e1["text"] == "Answer 1 (images 0, replay False, lectures 1): What is on the quiz?"
     assert any(e["state"] == "streaming" and e["text"] for e in env.events if e.get("type") == "chat")
@@ -196,6 +196,19 @@ def test_limit_messages_are_explained():
     assert ai.friendly_error("Claude AI usage limit reached|1792568400").startswith("You have reached your Claude usage limit — it resets at ")
     assert ai.friendly_error("Invalid API key · Please run /login").startswith("Claude Code is not signed in")
     assert ai.friendly_error("something else") == "Claude: something else"
+
+
+def test_a_limit_that_resets_another_day_says_the_day():
+    from studia import i18n
+
+    at = int(dt.datetime(2025, 11, 3, 10, 40).timestamp())
+    assert ai.friendly_error(f"Claude AI usage limit reached|{at}") == \
+        "You have reached your Claude usage limit — it resets at Mon 03 Nov, 10:40."     # the English of 2.4
+    i18n.set_language("tr")
+    try:
+        assert ai.friendly_error(f"Claude AI usage limit reached|{at}").endswith(": 3 Kas Pzt, 10:40.")
+    finally:
+        i18n.set_language("en")
 
 
 def test_too_much_material_is_refused(env):
@@ -348,3 +361,10 @@ def test_export_rename_and_delete(env):
     assert "**You:** Summarise" in text and "**Claude:**" in text and "Tuesday, 13 October 2026" in text
     env.svc.delete(chat["id"])
     assert env.svc.list() == [] and env.lib.chat_messages(chat["id"]) == []
+
+
+def test_a_chat_without_a_title_or_a_question_is_exported_as_new_chat(env):
+    chat = env.svc.create("c", [DAY1])             # its first question could not be sent
+    path = env.svc.export(chat["id"])
+    assert path.read_text(encoding="utf-8").startswith("# New chat\n")
+    assert path.name.endswith(f" - New chat [{chat['id'][:6]}].md")

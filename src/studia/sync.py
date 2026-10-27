@@ -16,6 +16,7 @@ import requests
 from . import secrets_store
 from .config import Settings
 from .domain import Course, Profile
+from .i18n import t
 from .ieulearn import AuthError, IEULearn, NeedLogin
 from .library import Library
 from .net import clone_session, export_cookies, import_cookies, make_session, merge_cookies
@@ -133,8 +134,8 @@ class SyncService:
             creds = secrets_store.get_credentials()
             if not creds:
                 if secrets_store.rejected():
-                    raise NeedLogin("IEULearn didn't accept your saved password (was it changed?). Sign in again.")
-                raise NeedLogin("Please sign in to IEULearn.")
+                    raise NeedLogin(t("IEULearn didn't accept your saved password (was it changed?). Sign in again."))
+                raise NeedLogin(t("Please sign in to IEULearn."))
             self.log.info("IEULearn session expired; signing in again")
             try:
                 learn.login(*creds)
@@ -151,10 +152,10 @@ class SyncService:
             self.ensure_login()
             cid = course_id or next((c.id for c in self.lib.courses() if c.has_panopto), None)
             if cid is None:
-                raise RuntimeError("None of your courses has Panopto.")
+                raise RuntimeError(t("None of your courses has Panopto."))
             IEULearn(self._session).launch_panopto(cid)
             if not Panopto(self._session).is_authenticated():
-                raise RuntimeError("Could not open Panopto through IEULearn. Try again in a moment.")
+                raise RuntimeError(t("Could not open Panopto through IEULearn. Try again in a moment."))
             self._save_cookies()
 
     # ------------------------------------------------------------------ sync
@@ -198,7 +199,7 @@ class SyncService:
         errors: list[str] = []
         new_ids: list[str] = []
         with self._lock:
-            progress("Checking IEULearn and Panopto…")
+            progress(t("Checking IEULearn and Panopto…"))
             listed: dict[str, list] = {}
             with ThreadPoolExecutor(max_workers=8, thread_name_prefix="sync") as pool:
                 probe_session = clone_session(self._session)
@@ -248,9 +249,9 @@ class SyncService:
                     continue
                 todo.append(c.id)
             if panopto_down:
-                errors.append("Panopto isn't answering right now: new recordings are checked again next time.")
+                errors.append(t("Panopto isn't answering right now: new recordings are checked again next time."))
             elif todo or not panopto_ok:
-                progress("Connecting to Panopto…")
+                progress(t("Connecting to Panopto…"))
                 self.ensure_login()
                 launch_ids = todo or [next((c.id for c in known.values() if c.folder_id), None)]
                 launch_ids = [i for i in launch_ids if i]
@@ -266,9 +267,9 @@ class SyncService:
                 self._save_cookies()
                 if any(c.folder_id for c in self.lib.courses()) and not self._panopto_open():
                     panopto_down = True
-                    errors.append("Panopto didn't open through IEULearn: new recordings are checked again next time.")
+                    errors.append(t("Panopto didn't open through IEULearn: new recordings are checked again next time."))
 
-            progress("Looking for new recordings…")
+            progress(t("Looking for new recordings…"))
             with_folders = [c for c in self.lib.courses() if c.folder_id] if not panopto_down else []
             missing = [c for c in with_folders if c.id not in listed]
             failed: list[str] = []
@@ -285,8 +286,8 @@ class SyncService:
                     listed[course.id] = recs
                     new_ids += self._merge(course.id, recs)
             if failed:
-                errors.append(f"Couldn't check new recordings for {', '.join(sorted(set(failed)))}: Panopto didn't "
-                              "answer. They're checked again next time.")
+                errors.append(t("Couldn't check new recordings for {courses}: Panopto didn't answer. They're checked "
+                                "again next time.", courses=", ".join(sorted(set(failed)))))
             self._save_cookies()
             self.lib.set_meta("last_sync", dt.datetime.now().isoformat(timespec="seconds"))
             secs = time.monotonic() - t0
@@ -329,7 +330,7 @@ class SyncService:
         new_materials: list[str] = []
         new_announcements: list[str] = []
         errors: list[str] = []
-        progress("Loading course content…")
+        progress(t("Loading course content…"))
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="content") as pool:
             futures = [pool.submit(self._content, c, s, infos[c.id]) for c, s in zip(courses, sessions)]
             plain = requests.Session()

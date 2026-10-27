@@ -11,6 +11,7 @@ from urllib.parse import unquote, urljoin
 import requests
 
 from .domain import Course, Profile
+from .i18n import t
 from .net import NetworkError, parse_forms, parse_iframes
 
 log = logging.getLogger("studia")
@@ -35,10 +36,10 @@ _SECTION_TAIL = re.compile(r"\s+(\d{1,2}(?:\s*-\s*\d{1,2})?)\s*$")
 
 def split_course_title(title: str) -> tuple[str, str, str]:
     """``"2026-1 EEE 215 Blgsyr. ... Giriş 0 - 1"`` → ``("EEE 215", "Blgsyr. ... Giriş", "0 - 1")``."""
-    t = re.sub(r"\s+", " ", html.unescape(title or "")).strip()
-    m = _TITLE.match(t)
+    text = re.sub(r"\s+", " ", html.unescape(title or "")).strip()
+    m = _TITLE.match(text)
     if not m:
-        return "", t, ""
+        return "", text, ""
     code = f"{m.group(2)} {m.group(3)}"
     rest = m.group(4)
     section = ""
@@ -97,8 +98,9 @@ def extract_folder_id(urls: list[str]) -> Optional[str]:
 def _not_down(r: requests.Response, signing_in: bool = False) -> None:
     """IEULearn answering with a server error (maintenance, overload) is not a wrong password."""
     if r.status_code >= 500:
-        raise NetworkError("IEULearn isn't responding right now (it may be down for maintenance). "
-                           + ("Your password was not rejected: try again later." if signing_in else "Try again later."))
+        raise NetworkError(t("IEULearn isn't responding right now (it may be down for maintenance). Your password was "
+                             "not rejected: try again later.") if signing_in else
+                           t("IEULearn isn't responding right now (it may be down for maintenance). Try again later."))
 
 
 class IEULearn:
@@ -114,7 +116,7 @@ class IEULearn:
 
     def login(self, username: str, password: str) -> None:
         if not username or not password:
-            raise AuthError("Please enter your EkoID username and password.")
+            raise AuthError(t("Please enter your EkoID username and password."))
         page = self.s.get(f"{BASE}/login")
         _not_down(page, signing_in=True)
         form = next((f for f in parse_forms(page.text) if "password" in f.fields or f.id == "loginForm"), None)
@@ -123,8 +125,8 @@ class IEULearn:
             m = re.search(r'name="csrf_token"\s+value="([^"]+)"', page.text)
             token = m.group(1) if m else ""
         if form is None and not token:      # a throttle, a firewall or a maintenance page instead of the sign-in page
-            raise NetworkError("IEULearn didn't show its sign-in page right now (it may be busy or under "
-                               "maintenance). Your password was not rejected: try again later.")
+            raise NetworkError(t("IEULearn didn't show its sign-in page right now (it may be busy or under "
+                                 "maintenance). Your password was not rejected: try again later."))
         r = self.s.post(f"{BASE}/login", data={"csrf_token": token, "email": username.strip(),
                                                "password": password, "remember": "1"})
         if r.ok and "/student" in r.url and "loginForm" not in r.text:
@@ -135,9 +137,9 @@ class IEULearn:
             _not_down(r, signing_in=True)
         if not form_again:
             # no sign-in form came back: a throttle, a firewall or a maintenance page, not a refused password
-            raise NetworkError("IEULearn didn't finish signing you in (it may be busy or under maintenance). "
-                               "Your password was not rejected: try again later.")
-        raise AuthError(msg or "Sign-in failed. Check your EkoID username and password.",
+            raise NetworkError(t("IEULearn didn't finish signing you in (it may be busy or under maintenance). "
+                                 "Your password was not rejected: try again later."))
+        raise AuthError(msg or t("Sign-in failed. Check your EkoID username and password."),
                         server_error=r.status_code >= 500)
 
     @staticmethod
@@ -151,7 +153,7 @@ class IEULearn:
     def dashboard(self) -> tuple[Profile, list[Course]]:
         r = self.s.get(f"{BASE}/student", allow_redirects=False)
         if r.status_code in (301, 302, 303):
-            raise NeedLogin("Your IEULearn session has expired.")
+            raise NeedLogin(t("Your IEULearn session has expired."))
         _not_down(r)
         r.raise_for_status()
         return parse_dashboard(r.text)
@@ -169,7 +171,7 @@ class IEULearn:
         r = self.s.get(f"{BASE}/student/panopto?course={course_id}&embed=1", allow_redirects=False)
         if r.status_code in (301, 302, 303):
             if "login" in (r.headers.get("Location") or ""):
-                raise NeedLogin("Your IEULearn session has expired.")
+                raise NeedLogin(t("Your IEULearn session has expired."))
             return None
         frames = [f for f in parse_iframes(r.text) if "lti/course-launch" in f]
         if not frames:
@@ -185,5 +187,5 @@ class IEULearn:
             urls += [h.headers.get("Location", "") for h in r.history] + [h.url for h in r.history] + [r.url]
         folder = extract_folder_id(urls)
         if folder is None:
-            raise RuntimeError(f"Panopto did not open the folder of course {course_id}.")
+            raise RuntimeError(t("Panopto did not open the folder of course {course}.", course=course_id))
         return folder

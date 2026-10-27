@@ -9,6 +9,7 @@ per second, so notes for a lecture take minutes there.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import logging
 import os
@@ -18,6 +19,7 @@ import time
 from typing import Any, Callable, Optional
 
 from .cancel import Cancelled
+from .i18n import t
 
 log = logging.getLogger("studia")
 IDLE_UNLOAD_S = 600
@@ -41,7 +43,7 @@ def _load(key: str) -> dict[str, Any]:
             hit["used"] = time.monotonic()
             return hit
         if not llm_ready(key):
-            raise RuntimeError("The offline AI model is not downloaded yet (Settings → AI).")
+            raise RuntimeError(t("The offline AI model is not downloaded yet (Settings → AI)."))
         setup_cuda_dlls()
         import ctranslate2
         from tokenizers import Tokenizer
@@ -105,13 +107,17 @@ def generate(messages: list[dict[str, str]], key: str, max_tokens: int = 900,
     tokens = tok.encode(prompt).tokens
     ids: list[int] = []
     started = time.monotonic()
-    for step in gen.generate_tokens(tokens, max_length=max_tokens, sampling_temperature=0.3, sampling_topk=20,
-                                    end_token=["<|im_end|>", "<|endoftext|>"]):
-        if cancel is not None and cancel.is_set():
-            raise Cancelled()
-        ids.append(step.token_id)
-        if on_text and len(ids) % 6 == 0:
-            on_text(tok.decode(ids))
+    from .engine.core import processor_for_ai
+
+    # on the processor a transcription waits meanwhile: running both made the AI write four times slower
+    with processor_for_ai() if m["device"] != "cuda" else contextlib.nullcontext():
+        for step in gen.generate_tokens(tokens, max_length=max_tokens, sampling_temperature=0.3, sampling_topk=20,
+                                        end_token=["<|im_end|>", "<|endoftext|>"]):
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
+            ids.append(step.token_id)
+            if on_text and len(ids) % 6 == 0:
+                on_text(tok.decode(ids))
     with _lock:
         m["used"] = time.monotonic()
     text = tok.decode(ids).replace("<think>", "").replace("</think>", "").strip()
@@ -121,27 +127,27 @@ def generate(messages: list[dict[str, str]], key: str, max_tokens: int = 900,
             "seconds": round(time.monotonic() - started, 1), "model": key}
 
 
+def _device(key: str) -> str:
+    """Where the model writes: where it is loaded, or else where it will be."""
+    from .engine.models import resolve_device
+
+    return device_of(key) or resolve_device("auto")[0]
+
+
 def budget(key: str) -> int:
     """How many input tokens one request may carry (the processor is slow with long prompts)."""
-    with _lock:
-        hit = _loaded.get(key)
-    on_gpu = (hit or {}).get("device") == "cuda"
-    if not hit:
-        from .engine.models import resolve_device
-
-        on_gpu = resolve_device("auto")[0] == "cuda"
-    return 6000 if on_gpu else 2500
+    return 6000 if _device(key) == "cuda" else 2500
 
 
 def _chunks(text: str, key: str, size: int) -> list[str]:
     parts, cur, n = [], [], 0
     for para in text.split("\n"):
-        t = count_tokens(para, key) + 1
-        if cur and n + t > size:
+        cost = count_tokens(para, key) + 1
+        if cur and n + cost > size:
             parts.append("\n".join(cur))
             cur, n = [], 0
         cur.append(para)
-        n += t
+        n += cost
     if cur:
         parts.append("\n".join(cur))
     return parts
@@ -153,24 +159,29 @@ ENGLISH = "Write in English (keep technical terms as they are)."
 def one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threading.Event] = None,
              on_text: Optional[Callable[[str], None]] = None, max_tokens: int = 1200) -> dict[str, Any]:
     """One request; a text longer than the model's comfortable size is condensed part by part first."""
-    limit = budget(key)
-    usage = {"input_tokens": 0, "output_tokens": 0}
-    if count_tokens(text, key) > limit:
-        notes = []
-        parts = _chunks(text, key, limit - 400)
-        for i, part in enumerate(parts, 1):
-            if on_text:
-                on_text(f"*Reading part {i} of {len(parts)}…*")
-            r = generate([{"role": "system", "content": "You condense lecture transcripts into dense, factual bullet "
-                                                        "notes: every definition, formula, example and announcement "
-                                                        "(quizzes, exams, homework). " + ENGLISH},
-                          {"role": "user", "content": part}], key, 500, None, cancel)
-            notes.append(r["text"])
-            for k in usage:
-                usage[k] += r["usage"][k]
-        text = "Condensed notes of the lecture, in order:\n\n" + "\n\n".join(notes)
-    r = generate([{"role": "system", "content": f"{system_prompt}\n{ENGLISH}"}, {"role": "user", "content": text}],
-                 key, max_tokens, on_text, cancel)
+    from .engine.core import processor_for_ai
+
+    # on the processor, held from the first part to the answer: generate() lets go after each part, and a waiting
+    # transcription would start a batch in between (generate() holds it as well: the count nests)
+    with processor_for_ai() if _device(key) != "cuda" else contextlib.nullcontext():
+        limit = budget(key)
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        if count_tokens(text, key) > limit:
+            notes = []
+            parts = _chunks(text, key, limit - 400)
+            for i, part in enumerate(parts, 1):
+                if on_text:
+                    on_text(t("*Reading part {i} of {n}…*", i=i, n=len(parts)))
+                r = generate([{"role": "system", "content": "You condense lecture transcripts into dense, factual "
+                                                            "bullet notes: every definition, formula, example and "
+                                                            "announcement (quizzes, exams, homework). " + ENGLISH},
+                              {"role": "user", "content": part}], key, 500, None, cancel)
+                notes.append(r["text"])
+                for k in usage:
+                    usage[k] += r["usage"][k]
+            text = "Condensed notes of the lecture, in order:\n\n" + "\n\n".join(notes)
+        r = generate([{"role": "system", "content": f"{system_prompt}\n{ENGLISH}"},
+                      {"role": "user", "content": text}], key, max_tokens, on_text, cancel)
     for k in usage:
         r["usage"][k] += usage[k]
     return r
@@ -215,10 +226,10 @@ def lecture_excerpts(lectures: str, question: str, key: str, max_tokens: int) ->
     chosen: set[int] = set()
     used = 0
     for i in ranked:
-        t = count_tokens(blocks[i][2], key) + 1
-        if used + t <= max_tokens:
+        cost = count_tokens(blocks[i][2], key) + 1
+        if used + cost <= max_tokens:
             chosen.add(i)
-            used += t
+            used += cost
         if used >= max_tokens - 20:
             break
     out: list[str] = []

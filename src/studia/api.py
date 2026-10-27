@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 
 from . import __version__, store, views
 from .cancel import Cancelled
+from .i18n import t, tn
 from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
 from .services import NOTE_KINDS, Services
@@ -56,6 +57,7 @@ class Api:
         self._open_target = ""            # --open course:<id> (a notification was clicked)
         self._setup_cancel: Optional[threading.Event] = None
         self._setup_running = False
+        self._setup_left: tuple[str, ...] = ()          # what the setup's download has still to get (component ids)
         self._update_cancel: Optional[threading.Event] = None
         self._update_running = False
         self._update_installer: Optional[Any] = None    # downloaded: app.py runs it once the window has closed
@@ -77,6 +79,11 @@ class Api:
     def _set_services(self, services: Services) -> None:
         """The app's services start in the background while the window opens; calls wait for them."""
         self._services = services
+        # a transcription waits while the setup still downloads what it needs: the speech model it uses or the graphics
+        # card's files (not another speech model, not the offline AI model)
+        jobs = services.jobs
+        jobs.setup_busy = lambda: self._setup_running and any(
+            c == "cuda" or c == f"speech:{jobs.settings().model}" for c in self._setup_left)
         services.subscribe(self._on_service_event)
         self._ready.set()
         threading.Thread(target=self._auto_sync_loop, name="auto-sync", daemon=True).start()
@@ -116,13 +123,13 @@ class Api:
                 self._run_sync(quiet=True)
 
     def _startup_failed(self, message: str) -> None:
-        self._startup_error = message or "IEUStudia could not start."
+        self._startup_error = message or t("IEUStudia could not start.")
         self._ready.set()
 
     @property
     def _s(self) -> Services:
         if not self._ready.wait(120):
-            raise RuntimeError("IEUStudia is still starting. Try again in a moment.")
+            raise RuntimeError(t("IEUStudia is still starting. Try again in a moment."))
         if self._services is None:
             raise RuntimeError(self._startup_error)
         return self._services
@@ -177,14 +184,15 @@ class Api:
         rec = (self._s.lib.get_recording(last["id"]) if done == 1 and not failed and last.get("id")
                and not last.get("local") else None)
         if rec is not None:
-            title, text, target = (f"Transcribed: {last.get('title') or 'your lecture'}",
-                                   "It's ready to read. Click to open it.", f"day:{rec.day_key}")
+            title, text, target = (t("Transcribed: {title}", title=last["title"]) if last.get("title") else
+                                   t("Your lecture is transcribed"),
+                                   t("It's ready to read. Click to open it."), f"day:{rec.day_key}")
         else:
-            title = f"{done} lecture{'s' if done != 1 else ''} transcribed" if done else "Transcription finished"
+            title = tn(done, "{n} lecture transcribed", "{n} lectures transcribed") if done else t("Transcription finished")
             text = " ".join(filter(None, [
-                ("They're" if done > 1 else "It's") + " ready to read in IEUStudia." if done else "",
-                f"{failed} couldn't be transcribed: the course page says why." if failed > 1 else
-                "1 couldn't be transcribed: the course page says why." if failed else ""]))
+                tn(done, "It's ready to read in IEUStudia.", "They're ready to read in IEUStudia.") if done else "",
+                tn(failed, "{n} couldn't be transcribed: the course page says why.",
+                   "{n} couldn't be transcribed: the course page says why.") if failed else ""]))
             target = "home"
         self._notify(title, text, target)
 
@@ -270,6 +278,29 @@ class Api:
     def _course_views(self) -> list[dict[str, Any]]:
         return views.all_course_views(self._s.lib, self._s.settings, self._s.jobs.snapshot())
 
+    # ------------------------------------------------------------------ language
+    def i18n(self) -> dict[str, Any]:
+        """The page's language and its Turkish table. Doesn't wait for the services: the first screen needs it."""
+        from . import i18n
+
+        try:
+            return {"ok": True, **i18n.page_data()}
+        except Exception as exc:  # noqa: BLE001 - the page falls back to English
+            log.exception("i18n failed")
+            return {"ok": False, "error": str(exc), "lang": "en", "table": {}}
+
+    @safe
+    def set_language(self, code: str) -> dict[str, Any]:
+        """Settings or the first setup screen: "" (as Windows), "en" or "tr". New messages use it at once (the
+        helper from its next check); the page then reloads to draw everything in it."""
+        from . import appconfig, i18n
+
+        appconfig.update({"language": code if code in ("", "en", "tr") else ""})
+        i18n.load_language()
+        if self._services is not None:          # the speech models' names and descriptions, in the new language
+            threading.Thread(target=self._system_info, daemon=True).start()
+        return {"ok": True, **i18n.page_data()}
+
     # ------------------------------------------------------------------ bootstrap / system
     @safe
     def get_bootstrap(self) -> dict[str, Any]:
@@ -303,8 +334,20 @@ class Api:
             "settings": self._s.settings.to_json(), "last_sync": self._s.lib.get_meta("last_sync"),
             "courses": self._course_views() if signed_in else [], "queue": self._s.jobs.snapshot(),
             "paused": self._s.jobs.paused(), "resume": self._s.jobs.leftover_view() if signed_in else None,
+            "pending_downloads": self._pending_downloads(), "downloading": self._setup_running,
             **self._profiles_view(),
         }
+
+    def _pending_downloads(self) -> list[dict[str, Any]]:
+        """What the setup started downloading and isn't on this PC yet (IEUStudia was closed during it)."""
+        from . import appconfig
+        from .components import describe, ready
+
+        try:      # only an offer: an id this version doesn't know (another version wrote it) must never stop the start
+            return [d for c in appconfig.load().pending_downloads if (d := describe(c)) and not ready(c)]
+        except Exception:  # noqa: BLE001
+            log.exception("pending downloads failed")
+            return []
 
     def _system_info(self) -> None:
         try:
@@ -312,7 +355,7 @@ class Api:
             from .engine.models import MODEL_PRESETS, detect_gpu, model_is_downloaded
 
             gpu = detect_gpu(quick=True)
-            presets = [{"id": k, "label": v["label"], "description": v["description"], "size_mb": v["size_mb"],
+            presets = [{"id": k, "label": t(v["label"]), "description": t(v["description"]), "size_mb": v["size_mb"],
                         "downloaded": model_is_downloaded(k)} for k, v in MODEL_PRESETS.items()]
             from .components import cuda_ready
             from .hardware import MIN_CUDA_DRIVER, _driver_number, nvidia_gpu
@@ -368,6 +411,7 @@ class Api:
 
         if self._setup_running:
             return {"ok": True, "running": True}
+        self._setup_left = tuple(ids)             # before the flag: a transcription never sees the last run's
         self._setup_running = True
         cancel = self._setup_cancel = threading.Event()
         awake = KeepAwake("IEUStudia is downloading what it needs")
@@ -388,6 +432,7 @@ class Api:
                     self._push({"type": "setup", "id": cid, "state": "downloading", "done": 0, "total": 0})
                     try:
                         download(cid, progress, cancel)
+                        self._setup_left = tuple(c for c in self._setup_left if c != cid)
                         self._push({"type": "setup", "id": cid, "state": "done"})
                     except Exception as exc:  # noqa: BLE001
                         if cancel.is_set():
@@ -397,17 +442,36 @@ class Api:
                         failed = plain_error(exc)
                         if isinstance(exc, (requests.RequestException, OSError)):   # its parts are kept for the next try
                             failed = ((failed if failed.endswith((".", "?", "!")) else failed + ".")
-                                      + " (Downloading again continues where it stopped.)")
+                                      + " " + t("(Downloading again continues where it stopped.)"))
                         self._push({"type": "setup", "id": cid, "state": "error", "error": failed})
                         return
             finally:
                 awake.off()
                 self._setup_running = False
-                self._push({"type": "setup", "id": "", "state": "idle", "ok": not failed and not cancel.is_set()})
+                ok = not failed and not cancel.is_set()
+                if ok:
+                    self._note_downloads([])
+                self._push({"type": "setup", "id": "", "state": "idle", "ok": ok})
                 threading.Thread(target=self._system_info, daemon=True).start()
 
-        threading.Thread(target=run, name="setup-download", daemon=True).start()
+        try:
+            self._note_downloads(ids)                 # a download cut off is offered again next start
+            threading.Thread(target=run, name="setup-download", daemon=True).start()
+        except BaseException:
+            self._setup_running = False           # it never started: no transcription or next try may wait for it
+            raise
         return {"ok": True}
+
+    def _note_downloads(self, ids: list[str]) -> None:
+        """Note in app.json what the next start offers again if the download is cut off ([] once it's done). Another
+        program (the tray helper, an antivirus) can hold app.json open for a moment: then only the note is lost, and
+        the download still runs and still reports its end."""
+        from . import appconfig
+
+        try:
+            appconfig.update({"pending_downloads": list(ids)})
+        except OSError:
+            log.warning("Could not note the downloads in app.json", exc_info=True)
 
     @safe
     def setup_cancel(self) -> dict[str, Any]:
@@ -436,15 +500,15 @@ class Api:
         if self._update_running:
             return {"ok": True, "running": True}
         if not st["available"]:
-            return {"ok": False, "error": "You already have the newest version."}
+            return {"ok": False, "error": t("You already have the newest version.")}
         if not st["can_install"]:
-            return {"ok": False, "error": "This copy of IEUStudia can't update itself (it wasn't installed with the "
-                                          "installer). Download the new version from its release page."}
+            return {"ok": False, "error": t("This copy of IEUStudia can't update itself (it wasn't installed with the "
+                                            "installer). Download the new version from its release page.")}
         if self._s.jobs.busy():
-            return {"ok": False, "error": "A transcription is still running. Update when it has finished, or cancel "
-                                          "it first."}
+            return {"ok": False, "error": t("A transcription is still running. Update when it has finished, or cancel "
+                                            "it first.")}
         if self._setup_running:
-            return {"ok": False, "error": "IEUStudia is still downloading what it needs. Update when that's done."}
+            return {"ok": False, "error": t("IEUStudia is still downloading what it needs. Update when that's done.")}
         self._update_running = True
         cancel = self._update_cancel = threading.Event()
 
@@ -461,16 +525,17 @@ class Api:
                 self._push({"type": "update", "state": "downloading", "done": 0, "total": 0})
                 path = updates.download(progress, cancel)
                 if self._s.jobs.busy():                # a transcription was started meanwhile: it isn't cut off
-                    self._push({"type": "update", "state": "error", "error": "A transcription started while the "
-                                "update downloaded. Update when it has finished (the download is kept)."})
+                    self._push({"type": "update", "state": "error", "error": t(
+                        "A transcription started while the update downloaded. Update when it has finished (the "
+                        "download is kept).")})
                     return
                 self._update_installer = path
                 self._push({"type": "update", "state": "installing"})
                 time.sleep(1.5)                        # long enough to read that the window closes now
                 if self._s.jobs.busy():                # started in that moment: closing would cut it off
                     self._update_installer = None
-                    self._push({"type": "update", "state": "error", "error": "A transcription started. Update when "
-                                "it has finished (the download is kept)."})
+                    self._push({"type": "update", "state": "error", "error": t(
+                        "A transcription started. Update when it has finished (the download is kept).")})
                     return
                 self._window.destroy()
             except Cancelled:
@@ -544,7 +609,7 @@ class Api:
         from . import ai_setup, chatgpt
 
         if which != "chatgpt":
-            return {"ok": False, "error": "Sign out in Claude Code or the Codex CLI itself."}
+            return {"ok": False, "error": t("Sign out in Claude Code or the Codex CLI itself.")}
         ai_setup.forget_test("chatgpt")
         out = chatgpt.sign_out()
         threading.Thread(target=self._system_info, daemon=True).start()
@@ -592,16 +657,16 @@ class Api:
         kind, _, key = cid.partition(":")
         if kind == "speech":
             if key == self._s.settings.model:
-                return {"ok": False, "error": "That is the speech model in use; pick another one first."}
+                return {"ok": False, "error": t("That is the speech model in use; pick another one first.")}
             delete_model(key)
         elif kind == "llm":
             from . import appconfig
 
             if appconfig.load().ai_provider == "local" and appconfig.load().local_model == key:
-                return {"ok": False, "error": "That offline model is in use; pick another AI first."}
+                return {"ok": False, "error": t("That offline model is in use; pick another AI first.")}
             delete_llm(key)
         else:
-            return {"ok": False, "error": "This part cannot be removed."}
+            return {"ok": False, "error": t("This part cannot be removed.")}
         return self.storage()
 
     def _watch_open_requests(self) -> None:
@@ -657,10 +722,10 @@ class Api:
 
         username = (username or "").strip()
         if not username or not password:
-            return {"ok": False, "error": "Enter the username and password."}
+            return {"ok": False, "error": t("Enter the username and password.")}
         cur = accounts.active()
         if cur.username and cur.username.casefold() == username.casefold():
-            return {"ok": False, "error": "That is the profile you are using now."}
+            return {"ok": False, "error": t("That is the profile you are using now.")}
         profile, courses, cookies = SyncService.check_account(username, password)
         acc = accounts.find(username)
         created = acc is None
@@ -684,7 +749,7 @@ class Api:
             return {"ok": True, "same": True}
         busy = self._services is not None and self._services.jobs.busy()
         if busy and not force:
-            return {"ok": False, "busy": True, "error": "A transcription is still running."}
+            return {"ok": False, "busy": True, "error": t("A transcription is still running.")}
         acc = accounts.set_active(profile_id)
         if busy:
             self._services.jobs.shutdown()           # what is still waiting is kept for this profile
@@ -720,7 +785,7 @@ class Api:
         app itself (the page then shows errors in the top bar only)."""
         q = {"quiet": True} if quiet else {}
         try:
-            self._push({"type": "sync", "phase": "start", "message": "Syncing…", **q})
+            self._push({"type": "sync", "phase": "start", "message": t("Syncing…"), **q})
             res = self._s.sync.sync(
                 lambda m: self._push({"type": "sync", "phase": "progress", "message": m, **q}),
                 lambda ids: self._push({"type": "courses", "courses": self._course_views()}))
@@ -728,7 +793,7 @@ class Api:
             self._push({"type": "courses", "courses": course_views})
             new = self._own_new(course_views, res.new_ids)
             self._push({"type": "sync", "phase": "done", "new_count": new,
-                        "message": f"{new} new recording(s)" if new else "Up to date",
+                        "message": t("{n} new recording(s)", n=new) if new else t("Up to date"),
                         "last_sync": self._s.lib.get_meta("last_sync"),
                         "profile": res.profile.__dict__ if res.profile else None,
                         "errors": res.errors, **q})
@@ -743,7 +808,7 @@ class Api:
             self._push({"type": "sync", "phase": "error", "need_login": True, "message": str(exc), **q})
         except Exception as exc:  # noqa: BLE001
             log.log(logging.WARNING if quiet else logging.ERROR, "sync failed", exc_info=True)
-            self._push({"type": "sync", "phase": "error", "message": str(exc) or "Sync failed", **q})
+            self._push({"type": "sync", "phase": "error", "message": str(exc) or t("Sync failed"), **q})
         finally:
             self._sync_lock.release()
             try:                                          # from what is on this PC: also when IEULearn can't be reached
@@ -806,7 +871,7 @@ class Api:
                     ok = True
             if not ok:
                 self._push({"type": "catchup", "phase": "error", "scope": scope,
-                            "message": "The sync failed, so nothing was queued."})
+                            "message": t("The sync failed, so nothing was queued.")})
                 return
             try:
                 needs = course_needs(self._s.lib, self._s.settings, ids, self._s.jobs.active_ids())
@@ -822,7 +887,7 @@ class Api:
                             "waiting": [n.code for n in needs if n.needs_section and n.waiting]})
             except Exception as exc:  # noqa: BLE001
                 log.exception("catch-up failed")
-                self._push({"type": "catchup", "phase": "error", "scope": scope, "message": str(exc) or "Failed"})
+                self._push({"type": "catchup", "phase": "error", "scope": scope, "message": str(exc) or t("Failed")})
 
         threading.Thread(target=run, name="catch-up", daemon=True).start()
         return {"ok": True}
@@ -881,11 +946,17 @@ class Api:
 
     @safe
     def transcribe_local_file(self) -> dict[str, Any]:
+        import re
+
         import webview
+
+        def kind(name: str, patterns: str) -> str:      # pywebview refuses a name with anything but letters and spaces
+            return f"{re.sub(r'[^\w ]+', '', name).strip()} ({patterns})"
 
         paths = self._window.create_file_dialog(
             webview.OPEN_DIALOG, allow_multiple=True,
-            file_types=("Audio/video (*.mp4;*.m4a;*.mp3;*.wav;*.mkv;*.mov;*.webm;*.aac;*.ogg;*.flac)", "All files (*.*)"))
+            file_types=(kind(t("Audio and video files"), "*.mp4;*.m4a;*.mp3;*.wav;*.mkv;*.mov;*.webm;*.aac;*.ogg;*.flac"),
+                        kind(t("All files"), "*.*")))
         for p in paths or []:
             self._s.jobs.enqueue_local(Path(p))
         return {"ok": True, "queued": len(paths or [])}
@@ -895,16 +966,43 @@ class Api:
     def get_day(self, day_key: str) -> dict[str, Any]:
         detail = views.day_detail(self._s.lib, self._s.settings, day_key, self._s.day_files(day_key))
         if detail is None:
-            return {"ok": False, "error": "This class day no longer exists."}
+            return {"ok": False, "error": t("This class day no longer exists.")}
         from .outputs.flashcards import parse_cards
 
         files = detail["files"]
-        detail["notes"] = [{"kind": k, "label": NOTE_KINDS[k], "md": Path(files[f"notes:{k}"]).read_text(encoding="utf-8")}
+        detail["notes"] = [{"kind": k, "label": t(NOTE_KINDS[k]), "md": Path(files[f"notes:{k}"]).read_text(encoding="utf-8")}
                            for k in files.get("notes_kinds", [])]          # newest first
         for n in detail["notes"]:
             if n["kind"] == "flashcards":                                  # to practise them one by one
                 n["cards"] = parse_cards(n["md"])
         return {"ok": True, "day": detail}
+
+    @safe
+    def mark_set(self, delivery_id: str, at: float, text: str = "", note: Optional[str] = None) -> dict[str, Any]:
+        """Mark a passage of a transcript for later (or change the mark's note). ``at``: its start (seconds)."""
+        self._s.lib.set_mark(str(delivery_id), float(at), str(text or ""), None if note is None else str(note))
+        return {"ok": True}
+
+    @safe
+    def mark_delete(self, delivery_id: str, at: float) -> dict[str, Any]:
+        self._s.lib.delete_mark(str(delivery_id), float(at))
+        return {"ok": True}
+
+    @safe
+    def course_marks(self, course_id: str) -> dict[str, Any]:
+        """The marks in a course's transcripts, with their class day (Get ready lists those of its weeks)."""
+        from .outputs.common import format_ts, select_parts
+
+        recs = {r.delivery_id: r for r in self._s.lib.recordings(course_id)}
+        done = {i: True for i in self._s.lib.transcribed_ids() if i in recs}
+        parts: dict[str, int] = {}                        # numbered as the transcript page numbers them
+        for day in {r.day_key for r in recs.values()}:
+            own = select_parts([r for r in recs.values() if r.day_key == day], done)
+            parts.update({r.delivery_id: i for i, r in enumerate(own, start=1)})
+        out = [{"day_key": recs[m["delivery_id"]].day_key, "date": recs[m["delivery_id"]].start.date().isoformat(),
+                "part": parts.get(m["delivery_id"], 1), "t": m["t"], "ts": format_ts(m["t"]), "text": m["text"],
+                "note": m["note"]} for m in self._s.lib.marks(recs) if m["delivery_id"] in recs]
+        return {"ok": True, "marks": sorted(out, key=lambda m: (m["date"], m["part"], m["t"]))}
 
     @safe
     def library(self) -> dict[str, Any]:
@@ -926,9 +1024,9 @@ class Api:
                 continue
             cache[h["delivery_id"]] = rec
             course = self._s.lib.get_course(rec.course_id)
-            t = float(h["t"])
-            out.append({"day_key": rec.day_key, "delivery_id": rec.delivery_id, "t": t,
-                        "ts": f"{int(t // 60):02d}:{int(t % 60):02d}", "snippet": h["snippet"],
+            at = float(h["t"])
+            out.append({"day_key": rec.day_key, "delivery_id": rec.delivery_id, "t": at,
+                        "ts": f"{int(at // 60):02d}:{int(at % 60):02d}", "snippet": h["snippet"],
                         "course_code": course.code if course else "", "date": rec.start.date().isoformat(),
                         "time": f"{rec.start:%H:%M}", "viewer_url": rec.viewer_url})
         mats = []
@@ -946,7 +1044,7 @@ class Api:
     def course_detail(self, course_id: str) -> dict[str, Any]:
         detail = views.course_detail(self._s.lib, self._s.settings, course_id, self._s.jobs.snapshot())
         if detail is None:
-            return {"ok": False, "error": "This course is no longer in your list."}
+            return {"ok": False, "error": t("This course is no longer in your list.")}
         return {"ok": True, "course": detail}
 
     @safe
@@ -1009,7 +1107,7 @@ class Api:
                     self._push({"type": "material", "id": rid, "state": "error", "error": str(exc)})
             except Exception as exc:  # noqa: BLE001 - reported per file
                 log.warning("Material %s failed: %s", rid, exc)
-                self._push({"type": "material", "id": rid, "state": "error", "error": str(exc) or "Download failed"})
+                self._push({"type": "material", "id": rid, "state": "error", "error": str(exc) or t("Download failed")})
         self._s.sync.absorb(session)
         self._courses_dirty.set()
         self._push({"type": "material", "id": "", "state": "idle"})
@@ -1018,7 +1116,7 @@ class Api:
     def material_open(self, resource_id: str, reveal_only: bool = False) -> dict[str, Any]:
         m = self._s.lib.get_material(resource_id)
         if not m or not m.get("local_path") or not Path(m["local_path"]).is_file():
-            return {"ok": False, "error": "Download it first."}
+            return {"ok": False, "error": t("Download it first.")}
         (reveal if reveal_only else open_path)(m["local_path"])
         return {"ok": True}
 
@@ -1036,7 +1134,7 @@ class Api:
         files = self._s.day_files(day_key)
         target = files.get(what) or files.get("folder")
         if not target:
-            return {"ok": False, "error": "File not found."}
+            return {"ok": False, "error": t("File not found.")}
         (reveal if what in ("zip", "pdf_folder") else open_path)(target)
         return {"ok": True}
 
@@ -1047,8 +1145,9 @@ class Api:
         except OSError as exc:
             from .net import plain_error
 
-            return {"ok": False, "error": f"The folder for your transcripts ({self._s.output_root}) can't be created. "
-                                          f"{plain_error(exc)} You can choose another folder in Settings → Files."}
+            return {"ok": False, "error": t("The folder for your transcripts ({folder}) can't be created. {error} "
+                                            "You can choose another folder in Settings → Files.",
+                                            folder=self._s.output_root, error=plain_error(exc))}
         open_path(self._s.output_root)
         return {"ok": True}
 
@@ -1068,7 +1167,7 @@ class Api:
 
         events = assessment_events(self._s.lib, self._s.settings)
         if not events:
-            return {"ok": False, "error": "No quiz or exam with a known week has been announced yet."}
+            return {"ok": False, "error": t("No quiz or exam with a known week has been announced yet.")}
         path = self._s.output_root / "IEUStudia - quizzes and exams.ics"
         path.write_bytes(ics(events).encode("utf-8"))
         reveal(path)
@@ -1080,7 +1179,7 @@ class Api:
         p = Path(path or "")
         root = self._s.output_root.resolve()
         if not p.is_file() or not p.resolve().is_relative_to(root):
-            return {"ok": False, "error": "File not found."}
+            return {"ok": False, "error": t("File not found.")}
         open_path(p)
         return {"ok": True}
 
@@ -1114,12 +1213,12 @@ class Api:
             days = [(recs, store.load_transcripts([r.delivery_id for r in recs]))]
         text = build_ai_text(template, course, days)
         if not text.strip():
-            return {"ok": False, "error": "Nothing transcribed yet."}
+            return {"ok": False, "error": t("Nothing transcribed yet.")}
         from .ai import text_tokens
 
         ok = set_clipboard(text)
         return {"ok": ok, "chars": len(text), "tokens": text_tokens(text),
-                "error": None if ok else "Could not access the clipboard."}
+                "error": None if ok else t("Could not access the clipboard.")}
 
     # ------------------------------------------------------------------ export / AI
     @safe
@@ -1153,18 +1252,18 @@ class Api:
         from .ai import ai_name
 
         if self._ai_cancel is not None:
-            return {"ok": False, "error": f"{ai_name()} is already working on something."}
+            return {"ok": False, "error": t("{ai} is already working on something.", ai=ai_name())}
         template = template if template in NOTE_KINDS else "notes"
         cancel = threading.Event()
         self._ai_cancel = cancel
-        kind = {"kind": template, "label": NOTE_KINDS[template]}
+        kind = {"kind": template, "label": t(NOTE_KINDS[template])}
 
         def run() -> None:
             try:
                 self._push({"type": "ai", "phase": "start", "day_key": day_key, "text": "", **kind})
                 path = self._s.ai_notes(day_key, template, include_slides, self._s.settings.ai_model, cancel,
-                                        lambda t: self._push({"type": "ai", "phase": "progress", "day_key": day_key,
-                                                              "text": t, **kind}))
+                                        lambda so_far: self._push({"type": "ai", "phase": "progress",
+                                                                   "day_key": day_key, "text": so_far, **kind}))
                 text = path.read_text(encoding="utf-8")
                 cards = {}
                 if template == "flashcards":                  # to practise them one by one
@@ -1198,7 +1297,7 @@ class Api:
 
         d = views.course_detail(self._s.lib, self._s.settings, course_id)
         if d is None:
-            return {"ok": False, "error": "This course is no longer in your list."}
+            return {"ok": False, "error": t("This course is no longer in your list.")}
         weeks = []
         for w in d["weeks"]:
             mats = [m for u in w["units"] for m in u["materials"]]
@@ -1235,9 +1334,10 @@ class Api:
 
         info = claude_info()
         if not info["available"]:
-            return {"ok": False, "error": "Set up ChatGPT or Claude in Settings → AI first (needed to build the plan)."}
+            return {"ok": False, "error": t("Set up ChatGPT or Claude in Settings → AI first (needed to build the plan).")}
         if info.get("can_plans") is False:
-            return {"ok": False, "error": "Study plans need ChatGPT or Claude — the offline model is too small for them."}
+            return {"ok": False, "error": t("Study plans need ChatGPT or Claude — the offline model is too small for "
+                                            "them.")}
         pid = self._s.plans.create(course_id, scope or {})
         self._s.plans.start(pid)
         return {"ok": True, "plan": self._s.lib.plan_brief(pid)}
@@ -1250,7 +1350,7 @@ class Api:
     def plan_get(self, plan_id: str) -> dict[str, Any]:
         p = self._s.lib.plan(plan_id)
         if p is None:
-            return {"ok": False, "error": "This plan no longer exists."}
+            return {"ok": False, "error": t("This plan no longer exists.")}
         data = p.pop("data", {}) or {}
         p["concepts"] = (data.get("concepts") or {}).get("concepts", [])
         p["stages_done"] = [s for s in ("gather", "concepts", "search", "inspect", "verify") if s in data]
@@ -1276,7 +1376,7 @@ class Api:
     def plan_mark(self, plan_id: str, key: str, done: bool) -> dict[str, Any]:
         p = self._s.lib.plan_brief(plan_id)
         if p is None:
-            return {"ok": False, "error": "This plan no longer exists."}
+            return {"ok": False, "error": t("This plan no longer exists.")}
         full = self._s.lib.plan(plan_id) or {}
         marks = dict(full.get("marks") or {})
         if done:
@@ -1292,7 +1392,7 @@ class Api:
         added, replaced or is no longer needed. The old version stays until deleted."""
         old = self._s.lib.plan_brief(plan_id)
         if old is None:
-            return {"ok": False, "error": "This plan no longer exists."}
+            return {"ok": False, "error": t("This plan no longer exists.")}
         scope = {**(old.get("scope") or {}), **(patch or {})}
         pid = self._s.plans.create(old["course_id"], scope, parent_id=plan_id)
         self._s.plans.start(pid)
@@ -1303,7 +1403,7 @@ class Api:
         p = self._s.lib.plan(plan_id) or {}
         f = (p.get("result") or {}).get("file")
         if not f or not Path(f).is_file():
-            return {"ok": False, "error": "The plan file was not found."}
+            return {"ok": False, "error": t("The plan file was not found.")}
         open_path(f)
         return {"ok": True}
 
@@ -1327,9 +1427,9 @@ class Api:
         from .digest import digest_markdown, digest_prompt, weekly_digest
 
         if not claude_info()["available"]:
-            return {"ok": False, "error": "Set up AI in Settings → AI first."}
+            return {"ok": False, "error": t("Set up AI in Settings → AI first.")}
         if self._ai_cancel is not None:
-            return {"ok": False, "error": f"{ai_name()} is already working on something."}
+            return {"ok": False, "error": t("{ai} is already working on something.", ai=ai_name())}
         cancel = threading.Event()
         self._ai_cancel = cancel
         offset = int(offset or 0)
@@ -1341,7 +1441,9 @@ class Api:
                 self._push({"type": "digest", "phase": "start", "offset": offset, "text": ""})
                 res = one_shot("You write brief, accurate study digests for a university student, in Markdown.",
                                [{"type": "text", "text": digest_prompt(d)}], model, "low", cancel,
-                               lambda t: self._push({"type": "digest", "phase": "progress", "offset": offset, "text": t}))
+                               lambda so_far: self._push({"type": "digest", "phase": "progress", "offset": offset,
+                                                          "text": so_far}),
+                               think=False)          # a short summary of the facts given: no extended thinking
                 text = (res.get("text") or "").strip()
                 saved = {"text": text, "model": model_label(model), "at": dt.datetime.now().isoformat(timespec="seconds"),
                          "usage": res.get("usage") or {}}
@@ -1354,7 +1456,7 @@ class Api:
                 self._push({"type": "digest", "phase": "done", "offset": offset, **saved})
             except Exception as exc:  # noqa: BLE001
                 self._push({"type": "digest", "phase": "error", "offset": offset,
-                            "message": str(exc) or f"{ai_name()} could not write the summary."})
+                            "message": str(exc) or t("{ai} could not write the summary.", ai=ai_name())})
             finally:
                 self._ai_cancel = None
 
@@ -1437,7 +1539,7 @@ class Api:
     @safe
     def copy_text(self, text: str) -> dict[str, Any]:
         ok = set_clipboard(str(text or ""))
-        return {"ok": ok, "error": None if ok else "Could not access the clipboard."}
+        return {"ok": ok, "error": None if ok else t("Could not access the clipboard.")}
 
     # ------------------------------------------------------------------ preferences
     @safe
@@ -1478,8 +1580,8 @@ class Api:
                 self._s.rewrite_course(c.id)
             except Exception:  # noqa: BLE001
                 log.exception("rewrite failed for %s", c.id)
-        self._toast("Your transcripts were copied to the new folder (the old folder was left as it was)."
-                    if copied else "New transcripts will be saved in the new folder.", "success")
+        self._toast(t("Your transcripts were copied to the new folder (the old folder was left as it was).")
+                    if copied else t("New transcripts will be saved in the new folder."), "success")
 
     @safe
     def pick_folder(self) -> dict[str, Any]:

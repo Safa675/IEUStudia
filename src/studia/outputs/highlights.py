@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from ..i18n import N_
+
 _EN = {
     "exam": (r"\b(exams?|midterms?|final exams?|in the final|on the final|for the final|quiz(?:zes)?|"
              r"in the test|on the test|will be asked|i will ask|exam question)\b"),
@@ -47,7 +49,7 @@ def detect(text: str, lang: str = "en") -> list[str]:
     return found
 
 
-LABELS = {"exam": "Exam", "important": "Important", "homework": "Homework", "schedule": "Schedule"}
+LABELS = {"exam": N_("Exam"), "important": N_("Important"), "homework": N_("Homework"), "schedule": N_("Schedule")}
 
 
 def excerpt(text: str, tags: list[str], limit: int = 170) -> str:

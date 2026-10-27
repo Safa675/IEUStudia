@@ -13,6 +13,7 @@ import requests
 from . import __version__, store
 from .config import Settings, apply_patch, load_settings, save_settings
 from .domain import Course, Recording
+from .i18n import N_, t
 from .library import Library
 from .log import setup_logging
 from .outputs.writer import course_dir, day_file_name, day_stem, safe_name, write_day, write_local, write_pack
@@ -21,7 +22,8 @@ from .sync import SyncService
 
 log = logging.getLogger("studia")
 RENAME_KEY = "output_renamed"          # library meta: an output folder rename that is not finished yet
-NOTE_KINDS = {"notes": "Study notes", "exam": "Exam focus", "flashcards": "Flashcards"}   # AI notes: file name ends
+# AI notes: the end of the file name (English), and the label shown (t() it there)
+NOTE_KINDS = {"notes": N_("Study notes"), "exam": N_("Exam focus"), "flashcards": N_("Flashcards")}
 
 
 class Services:
@@ -191,10 +193,10 @@ class Services:
         course_id = day_key.split("|", 1)[0]
         course = self.lib.get_course(course_id)
         if course is None:
-            raise KeyError("Unknown course")
+            raise KeyError(t("Unknown course"))
         recs = sorted((r for r in self.lib.recordings(course_id) if r.day_key == day_key), key=lambda r: r.start)
         if not recs:
-            raise KeyError("Unknown class day")
+            raise KeyError(t("Unknown class day"))
         return course, recs
 
     def day_files(self, day_key: str) -> dict[str, Any]:
@@ -229,11 +231,11 @@ class Services:
     # ------------------------------------------------------------------ outputs
     def write_outputs(self, delivery_id: str) -> dict[str, Any]:
         if delivery_id.startswith("local-"):
-            t = store.load_transcript(delivery_id)
-            if t is None:
+            transcript = store.load_transcript(delivery_id)
+            if transcript is None:
                 return {}
-            name = (t.meta or {}).get("source_path", delivery_id)
-            return {"md": write_local(self.output_root, name, t)}
+            name = (transcript.meta or {}).get("source_path", delivery_id)
+            return {"md": write_local(self.output_root, name, transcript)}
         rec = self.lib.get_recording(delivery_id)
         if rec is None:
             return {}
@@ -300,7 +302,7 @@ class Services:
         ids = [r.delivery_id for r in recs]
         trans = store.load_transcripts(ids)
         if not trans:
-            raise RuntimeError("Transcribe this class day first.")
+            raise RuntimeError(t("Transcribe this class day first."))
         slides = {i: store.load_slides(i) for i in ids}
         return build_ai_pack(self.output_root, course, self.lib.courses(True), recs, trans, slides)
 
@@ -330,7 +332,7 @@ class Services:
         reads_images = provider() in PLAN_AIS
         text, images, course, recs = self.ai_inputs(day_key, include_slides and reads_images)
         if not text:
-            raise RuntimeError("Transcribe this class day first.")
+            raise RuntimeError(t("Transcribe this class day first."))
         prompt = ai_prompt(template)
         if include_slides and images:
             prompt += ("\n\nThe slide images are attached in order; the transcript marks each paragraph with "

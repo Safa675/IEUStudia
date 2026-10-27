@@ -3,8 +3,9 @@
 (function () {
   "use strict";
   const St = window.Studia;
-  const { S, call, esc, I, SPIN, plural, toast, go, renderView, A } = St;
-  const CAT = { final: "Final", midterm: "Midterm", quiz: "Quiz", exam: "Exam", project: "Project", homework: "Homework", schedule: "Schedule" };
+  const { S, call, esc, I, SPIN, toast, go, renderView, A } = St;
+  // made when drawn: the Turkish table arrives after this file has loaded
+  const CAT = () => ({ final: t("Final"), midterm: t("Midterm"), quiz: t("Quiz"), exam: t("Exam"), project: t("Project"), homework: t("Homework"), schedule: t("Schedule") });
 
   S.digest = { offset: 0, data: null, summary: null, running: false, busyOffset: null, text: "" };   // busyOffset: the week being written
 
@@ -17,18 +18,19 @@
   }
 
   function courseHTML(c) {
+    const cat = CAT();
     const lec = c.lectures.map((l) => `<div class="dg-lec"><span class="dg-ico">${I("video", "sm")}</span><div class="grow">
-        <div><b>${esc(l.kind)} ${esc(l.label)}</b> ${l.any_done ? `<span class="pill done">${I("check")}Transcribed</span>` : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(l.day_key)}">${I("wave", "sm")} Transcribe</button>`}
-          ${l.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(l.day_key)}">${I("file-text", "sm")} Read</button>` : ""}</div>
+        <div><b>${esc(l.kind)} ${esc(l.label)}</b> ${l.any_done ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>` : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(l.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}
+          ${l.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(l.day_key)}">${I("file-text", "sm")} ${t("Read")}</button>` : ""}</div>
         ${l.stressed.length ? `<ul class="dg-stars">${l.stressed.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}</div></div>`).join("");
     return `<div class="card dg-course"><div class="dg-head" data-act="go" data-view="course" data-id="${esc(c.id)}" tabindex="0" role="button">
-        <span class="dg-code">${esc(c.code)}</span><div class="grow"><b>${esc(c.name)}</b>${c.week ? `<div class="dim">Week ${c.week.no} · ${esc(c.week.topic)}</div>` : ""}</div>${I("chevron-right", "sm")}</div>
-      ${c.coming.length ? `<div class="dg-coming">${c.coming.map((e) => `<span class="plan-pill ${e.this_week && !e.done ? "now" : ""} ${e.done ? "done" : ""}"><b>${esc(e.name)}</b><span>${e.done ? "done" : e.this_week ? "this week" : `week ${e.week}`}</span>${e.los.length ? `<span class="lo">LO${e.los.join(", LO")}</span>` : ""}</span>`).join("")}</div>` : ""}
+        <span class="dg-code">${esc(c.code)}</span><div class="grow"><b>${esc(c.name)}</b>${c.week ? `<div class="dim">${t("Week {n}", { n: c.week.no })} · ${esc(c.week.topic)}</div>` : ""}</div>${I("chevron-right", "sm")}</div>
+      ${c.coming.length ? `<div class="dg-coming">${c.coming.map((e) => `<span class="plan-pill ${e.this_week && !e.done ? "now" : ""} ${e.done ? "done" : ""}"><b>${esc(e.name)}</b><span>${e.done ? t("done") : e.this_week ? t("this week") : t("week {n}", { n: e.week })}</span>${e.los.length ? `<span class="lo">LO${e.los.join(", LO")}</span>` : ""}</span>`).join("")}</div>` : ""}
       ${lec ? `<div class="dg-sec">${lec}</div>` : ""}
-      ${c.said.length ? `<div class="dg-sec"><div class="dg-lbl">${I("alert", "sm")} The lecturer said</div>${c.said.map((s) => `<div class="dg-said"><span class="cat-chip cat-${esc(s.category)}">${esc(CAT[s.category] || s.category)}</span><span>${esc(s.text)}${s.other_section ? ` <span class="dim sm" title="Heard in another section's lecture: dates may differ for yours">· ${esc(s.other_section)}</span>` : ""}</span></div>`).join("")}</div>` : ""}
+      ${c.said.length ? `<div class="dg-sec"><div class="dg-lbl">${I("alert", "sm")} ${t("The lecturer said")}</div>${c.said.map((s) => `<div class="dg-said"><span class="cat-chip cat-${esc(s.category)}">${esc(cat[s.category] || s.category)}</span><span>${esc(s.text)}${s.other_section ? ` <span class="dim sm" title="${t("Heard in another section's lecture: dates may differ for yours")}">· ${esc(s.other_section)}</span>` : ""}</span></div>`).join("")}</div>` : ""}
       ${c.new_files.length || c.announcements.length ? `<div class="dg-sec dg-misc">
-        ${c.new_files.length ? `<div>${I("layers", "sm")} New files: ${c.new_files.map((f) => esc(f.title)).join(", ")}</div>` : ""}
-        ${c.announcements.length ? `<div>${I("megaphone", "sm")} Announcements: ${c.announcements.map((a) => esc(a.title)).join(" · ")}</div>` : ""}</div>` : ""}
+        ${c.new_files.length ? `<div>${I("layers", "sm")} ${t("New files: {list}", { list: c.new_files.map((f) => esc(f.title)).join(", ") })}</div>` : ""}
+        ${c.announcements.length ? `<div>${I("megaphone", "sm")} ${t("Announcements: {list}", { list: c.announcements.map((a) => esc(a.title)).join(" · ") })}</div>` : ""}</div>` : ""}
     </div>`;
   }
 
@@ -36,41 +38,42 @@
     const g = S.digest, d = g.data;
     const ai = (S.system || {}).ai || {};
     if (!d) return `<div class="view-inner">${St.skeleton()}</div>`;
-    const todo = d.todo.map((t) => {
-      const act = t.kind === "transcribe" ? `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(t.day_key)}">${I("wave", "sm")} Transcribe</button>`
-        : t.kind === "download" ? `<button class="btn ghost sm" data-act="mat-get" data-id="${esc(t.resource_id)}">${I("download", "sm")} Download</button>`
-          : t.kind === "prepare" ? (t.name ? `<button class="btn ghost sm" data-act="ready-open" data-cid="${esc(t.course_id)}" data-name="${esc(t.name)}">${I("list-checks", "sm")} Get ready</button>`
-            : `<button class="btn ghost sm" data-act="plan-new" data-id="${esc(t.course_id)}">${I("youtube", "sm")} Make a plan</button>`) : "";
-      return `<div class="dg-todo"><span class="dg-code">${esc(t.course)}</span><span class="grow">${esc(t.text)}</span>${act}</div>`;
+    const todo = d.todo.map((item) => {
+      const act = item.kind === "transcribe" ? `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(item.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`
+        : item.kind === "download" ? `<button class="btn ghost sm" data-act="mat-get" data-id="${esc(item.resource_id)}">${I("download", "sm")} ${t.c("button", "Download")}</button>`
+          : item.kind === "prepare" ? (item.name ? `<button class="btn ghost sm" data-act="ready-open" data-cid="${esc(item.course_id)}" data-name="${esc(item.name)}">${I("list-checks", "sm")} ${t("Get ready")}</button>`
+            : `<button class="btn ghost sm" data-act="plan-new" data-id="${esc(item.course_id)}">${I("youtube", "sm")} ${t("Make a plan")}</button>`) : "";
+      return `<div class="dg-todo"><span class="dg-code">${esc(item.course)}</span><span class="grow">${esc(item.text)}</span>${act}</div>`;
     }).join("");
     const writing = g.running && g.busyOffset === d.week.offset;
-    const sum = writing ? `<div class="md">${St.mdToHtml(g.text || "")}</div><div class="dim">${SPIN()} ${esc(St.aiName())} is writing…</div>`
-      : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">Written by AI (${esc(g.summary.model || "")}) — can contain mistakes · ${esc((g.summary.at || "").replace("T", " "))}
-          ${g.summary.file ? ` · <button class="link" data-act="dg-file" data-path="${esc(g.summary.file)}">open the Markdown file</button>` : ""}</div>` : "";
+    const sum = writing ? `<div class="md">${St.mdToHtml(g.text || "")}</div><div class="dim">${SPIN()} ${t.html("{ai} is writing…", { ai: St.aiName() })}</div>`
+      : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">${t.html("Written by AI ({model}) — can contain mistakes", { model: g.summary.model || "" })} · ${esc((g.summary.at || "").replace("T", " "))}
+          ${g.summary.file ? ` · <button class="link" data-act="dg-file" data-path="${esc(g.summary.file)}">${t("open the Markdown file")}</button>` : ""}</div>` : "";
+    const sumTitle = !ai.available ? St.aiHint() : g.running && !writing ? t("Another week's summary is being written") : t("A short written summary by {ai}", { ai: St.aiName() });
     return `<div class="view-inner digest">
-      <div class="pl-head"><div><h1>Weekly digest</h1><div class="dim">${esc(d.week.label)}</div></div>
-        <div class="dg-nav"><button class="btn ghost icon sm" data-act="dg-week" data-d="-1" title="Previous week">${I("chevron-left", "sm")}</button>
-          <button class="btn ghost sm" data-act="dg-week" data-d="0" ${d.week.offset === 0 ? "disabled" : ""}>This week</button>
-          <button class="btn ghost icon sm" data-act="dg-week" data-d="1" title="Next week">${I("chevron-right", "sm")}</button>
-          <button class="btn primary sm" data-act="dg-summary" ${ai.available && !g.running ? "" : "disabled"} title="${!ai.available ? St.aiHint() : g.running && !writing ? "Another week's summary is being written" : `A short written summary by ${St.aiName()}`}">${I("ai", "sm")} ${g.summary ? "Summarize again" : `Summarize with ${esc(St.aiName())}`}</button></div></div>
+      <div class="pl-head"><div><h1>${t("Weekly digest")}</h1><div class="dim">${esc(d.week.label)}</div></div>
+        <div class="dg-nav"><button class="btn ghost icon sm" data-act="dg-week" data-d="-1" title="${t("Previous week")}">${I("chevron-left", "sm")}</button>
+          <button class="btn ghost sm" data-act="dg-week" data-d="0" ${d.week.offset === 0 ? "disabled" : ""}>${t("This week")}</button>
+          <button class="btn ghost icon sm" data-act="dg-week" data-d="1" title="${t("Next week")}">${I("chevron-right", "sm")}</button>
+          <button class="btn primary sm" data-act="dg-summary" ${ai.available && !g.running ? "" : "disabled"} title="${sumTitle}">${I("ai", "sm")} ${g.summary ? t("Summarize again") : t.html("Summarize with {ai}", { ai: St.aiName() })}</button></div></div>
       ${sum ? `<div class="card dg-summary">${sum}</div>` : ""}
-      ${todo ? `<div class="section-title">${I("list-checks")} To do</div><div class="card dg-todos">${todo}</div>` : ""}
-      <div class="section-title">${I("book")} Your courses this week</div>
-      ${d.courses.length ? d.courses.map(courseHTML).join("") : St.emptyHTML("calendar", "A quiet week", "Nothing happened in your courses this week yet.")}
+      ${todo ? `<div class="section-title">${I("list-checks")} ${t("To do")}</div><div class="card dg-todos">${todo}</div>` : ""}
+      <div class="section-title">${I("book")} ${t("Your courses this week")}</div>
+      ${d.courses.length ? d.courses.map(courseHTML).join("") : St.emptyHTML("calendar", t("A quiet week"), t("Nothing happened in your courses this week yet."))}
     </div>`;
   }
 
   St.views.digest = digestView;
   const navBefore = St.navExtra;
   St.navExtra = (v) => (navBefore ? navBefore(v) : "") +
-    `<button class="nav-item ${v.name === "digest" ? "active" : ""}" data-act="go" data-view="digest">${I("calendar")}<span class="label"><span class="code">Weekly digest</span></span></button>`;
-  St.crumbs.digest = () => `${I("calendar")} Weekly digest`;
+    `<button class="nav-item ${v.name === "digest" ? "active" : ""}" data-act="go" data-view="digest">${I("calendar")}<span class="label"><span class="code">${t("Weekly digest")}</span></span></button>`;
+  St.crumbs.digest = () => `${I("calendar")} ${t("Weekly digest")}`;
   St.onGo.digest = () => load();
   St.onEvents.digest = (e) => {   // the summary being written may be of a week you have since left
     const g = S.digest;
     if (e.phase === "start" || e.phase === "progress") { g.running = true; g.busyOffset = e.offset; g.text = e.text || ""; }
-    else if (e.phase === "done") { g.running = false; g.busyOffset = null; if (e.offset === g.offset) g.summary = e; toast("Weekly digest written", "success"); }
-    else if (e.phase === "error") { g.running = false; g.busyOffset = null; toast(e.message || "The AI could not finish", "error"); }
+    else if (e.phase === "done") { g.running = false; g.busyOffset = null; if (e.offset === g.offset) g.summary = e; toast(t("Weekly digest written"), "success"); }
+    else if (e.phase === "error") { g.running = false; g.busyOffset = null; toast(e.message || t("The AI could not finish"), "error"); }
     if (S.view.name === "digest") renderView();
   };
   Object.assign(A, {

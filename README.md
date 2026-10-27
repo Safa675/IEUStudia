@@ -51,7 +51,8 @@ outcomes and the assessment plan are there too, so you can see which quiz covers
 English; Turkish parts are kept the way they were said and marked `[TR]`. Each paragraph links back to its moment in
 the recording, and the slides from the screen recording show up next to the text. One search box covers all your
 lectures and course files, in English or Turkish. A long queue can be paused, the lectures you ask for go before a
-full sync's batch, and if you close IEUStudia before it's done, it offers to go on next time.
+full sync's batch, and if you close IEUStudia before it's done, it offers to go on next time. Mark a paragraph to come
+back to it, with a note if you like; your marks show up again in *Get ready* for the weeks a quiz covers.
 
 **Don't miss a quiz.** Whenever a lecture or an announcement mentions a quiz, the midterm, the final, homework or a
 change in the schedule, it shows up on the course page. Before a quiz, *Get ready* lists the lectures to catch up on,
@@ -61,6 +62,10 @@ you. Quizzes and exams can go into your calendar, and a weekly digest sums up wh
 **Get a notification when something new appears.** If you want, IEUStudia keeps checking IEULearn every half hour
 after you close its window (its icon stays next to the clock) and shows a Windows notification for new recordings,
 announcements and files. It can start with Windows. It never transcribes or downloads anything on its own.
+
+**In English or Turkish.** IEUStudia speaks the language of your Windows (Turkish on a Turkish Windows, English
+otherwise). You can switch in *Settings → Appearance* or on the first screen of the setup. Transcripts and AI notes
+stay in the language of the lecture, and in a chat the AI answers in the language you ask in.
 
 **Use AI with your own subscription.** With ChatGPT or Claude you can chat about your lectures (answers point to the
 exact moment they come from), write study notes or flashcards (and practise them one at a time), put together an exam

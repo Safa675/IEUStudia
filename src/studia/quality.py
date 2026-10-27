@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence
 
+from .i18n import num, t
+
 if TYPE_CHECKING:   # NumPy loads only when audio is analysed (the UI imports worst_level at start)
     import numpy as np
 
@@ -53,7 +55,7 @@ def analyze_audio(audio: np.ndarray, speech: Sequence[tuple[int, int]], expected
     n = len(audio)
     duration = n / SR
     if n == 0:
-        raise NoSpeech("The recording has no audio.")
+        raise NoSpeech(t("The recording has no audio."))
     peak = float(np.max(np.abs(audio)))
     speech_samples = sum(e - s for s, e in speech)
     speech_s = speech_samples / SR
@@ -63,14 +65,14 @@ def analyze_audio(audio: np.ndarray, speech: Sequence[tuple[int, int]], expected
 
     if expected_duration and duration < expected_duration * 0.9 - 20:
         warnings.append({"code": "truncated", "level": "warning",
-                         "message": f"The downloaded audio is shorter than the recording "
-                                    f"({_mmss(duration)} of {_mmss(expected_duration)}). The end may be missing."})
+                         "message": t("The downloaded audio is shorter than the recording ({got} of {total}). The end "
+                                      "may be missing.", got=_mmss(duration), total=_mmss(expected_duration))})
 
     if peak < 10 ** (SILENT_DBFS / 20):
-        raise NoSpeech("This recording has no sound on Panopto (the microphone was probably off). "
-                       "All available audio streams are silent — check it on Panopto or ask the lecturer.")
+        raise NoSpeech(t("This recording has no sound on Panopto (the microphone was probably off). "
+                         "All available audio streams are silent — check it on Panopto or ask the lecturer."))
     if speech_s < 8:
-        raise NoSpeech("No speech was found in this recording (only noise or music). Check it on Panopto.")
+        raise NoSpeech(t("No speech was found in this recording (only noise or music). Check it on Panopto."))
 
     # loudness of the speech parts (sampled to keep it fast)
     mask = np.zeros(n, dtype=bool)
@@ -91,29 +93,33 @@ def analyze_audio(audio: np.ndarray, speech: Sequence[tuple[int, int]], expected
     if _db(speech_rms) < -38:
         gain = min(20.0, 10 ** ((-24 - _db(speech_rms)) / 20), 0.97 / max(peak, 1e-6))
         warnings.append({"code": "quiet", "level": "info",
-                         "message": f"The recording is very quiet ({stats['speech_rms_dbfs']} dBFS); "
-                                    f"the volume was boosted ×{gain:.1f} before transcription."})
+                         "message": t("The recording is very quiet ({db} dBFS); the volume was boosted ×{gain} before "
+                                      "transcription.", db=num(stats["speech_rms_dbfs"], 1), gain=num(gain, 1))})
     if clipped > 0.005:
         warnings.append({"code": "clipping", "level": "warning",
-                         "message": "The audio is distorted (too loud / clipping); some words may be wrong."})
+                         "message": t("The audio is distorted (too loud / clipping); some words may be wrong.")})
     if snr < 8:
         warnings.append({"code": "noisy", "level": "warning",
-                         "message": "There is a lot of background noise; the transcript may contain errors."})
+                         "message": t("There is a lot of background noise; the transcript may contain errors.")})
 
     if duration > 120 and speech_s / duration < 0.2:
         warnings.append({"code": "little_speech", "level": "warning",
-                         "message": f"Only {_mmss(speech_s)} of speech in {_mmss(duration)} of recording."})
+                         "message": t("Only {speech} of speech in {total} of recording.", speech=_mmss(speech_s),
+                                      total=_mmss(duration))})
     # long gaps without speech (muted microphone, break, recording left running)
     spans = sorted(speech)
     edges = [(0, 0)] + spans + [(n, n)]
     for (s1, e1), (s2, e2) in zip(edges, edges[1:]):
         gap = (s2 - e1) / SR
         if gap >= 300:
-            where = "at the start" if e1 == 0 else ("at the end" if s2 == n else "")
-            warnings.append({"code": "gap", "level": "info", "start": e1 / SR, "end": s2 / SR,
-                             "message": f"No speech from {_mmss(e1 / SR)} to {_mmss(s2 / SR)} "
-                                        f"({_mmss(gap)}{', ' + where if where else ''}) — break, muted microphone "
-                                        "or the recording kept running."})
+            when = {"start": _mmss(e1 / SR), "end": _mmss(s2 / SR), "gap": _mmss(gap)}
+            message = (t("No speech from {start} to {end} ({gap}, at the start) — break, muted microphone or the "
+                         "recording kept running.", **when) if e1 == 0 else
+                       t("No speech from {start} to {end} ({gap}, at the end) — break, muted microphone or the "
+                         "recording kept running.", **when) if s2 == n else
+                       t("No speech from {start} to {end} ({gap}) — break, muted microphone or the recording kept "
+                         "running.", **when))
+            warnings.append({"code": "gap", "level": "info", "start": e1 / SR, "end": s2 / SR, "message": message})
     return warnings, stats, gain
 
 
@@ -128,11 +134,11 @@ def analyze_transcript(segments: Iterable[Any], speech_s: float) -> tuple[list[d
     warnings = []
     if covered and low / covered > 0.25:
         warnings.append({"code": "low_confidence", "level": "warning",
-                         "message": f"About {round(100 * low / covered)} % of the speech was hard to understand "
-                                    "(unclear or noisy audio). Those passages are marked ⚠ in the transcript."})
+                         "message": t("About {n} % of the speech was hard to understand (unclear or noisy audio). "
+                                      "Those passages are marked ⚠ in the transcript.", n=round(100 * low / covered))})
     if speech_s > 60 and covered / speech_s < 0.5:
         warnings.append({"code": "unclear", "level": "warning",
-                         "message": "Large parts of the speech could not be transcribed reliably."})
+                         "message": t("Large parts of the speech could not be transcribed reliably.")})
     return warnings, stats
 
 

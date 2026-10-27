@@ -16,12 +16,14 @@ cheap with large-v3-turbo because its decoder is tiny compared to the encoder.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses as dc
 import math
 import re
 import threading
+import time
 import unicodedata
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Callable, Iterable, Iterator, Optional, Sequence
 
 import numpy as np
 
@@ -382,3 +384,39 @@ def run_batches(items: Sequence[int], batch_size: int, fn: Callable[[list[int]],
 def sort_by_duration(units: Sequence[Unit], idx: Iterable[int]) -> list[int]:
     """Batch similar lengths together so generation finishes at similar steps."""
     return sorted(idx, key=lambda i: units[i].dur)
+
+
+# --------------------------------------------------------------------------- sharing the processor
+# The offline AI and the speech engine slow each other down badly on the processor: measured on a laptop, the AI wrote
+# four times slower while a transcription ran there. While the AI writes on the processor (the student waits for it),
+# a transcription on the processor waits between batches (it is background work).
+_ai = threading.Condition()
+_ai_writing = 0
+
+
+@contextlib.contextmanager
+def processor_for_ai() -> Iterator[None]:
+    """Held while the offline AI writes on the processor."""
+    global _ai_writing
+    with _ai:
+        _ai_writing += 1
+    try:
+        yield
+    finally:
+        with _ai:
+            _ai_writing -= 1
+            _ai.notify_all()
+
+
+def ai_writing() -> bool:
+    return _ai_writing > 0
+
+
+def wait_for_ai(cancel: Optional[threading.Event]) -> float:
+    """Wait while the offline AI writes on the processor (cancel works meanwhile); the seconds waited."""
+    started = time.monotonic()
+    with _ai:
+        while _ai_writing:
+            check(cancel)
+            _ai.wait(0.5)
+    return time.monotonic() - started

@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .i18n import num, t
+
 log = logging.getLogger("studia")
 
 Emit = Callable[[dict[str, Any]], None]
@@ -156,7 +158,7 @@ def start_install(which: str, emit: Emit) -> dict[str, Any]:
     with _lock:
         if (_jobs.get(which) or {}).get("state") == "running":
             return dict(_jobs[which])
-        _jobs[which] = {"state": "running", "line": "Starting…", "error": "", "started": time.time()}
+        _jobs[which] = {"state": "running", "line": t("Starting…"), "error": "", "started": time.time()}
 
     def run() -> None:
         from . import ai
@@ -169,8 +171,8 @@ def start_install(which: str, emit: Emit) -> dict[str, Any]:
             ai.claude_cli_info.cache_clear()
             ai.codex_cli_info.cache_clear()
             if not _installed(which):
-                raise RuntimeError("The installer finished, but the program was not found afterwards.")
-            _update(which, emit, state="done", line="Installed", error="")
+                raise RuntimeError(t("The installer finished, but the program was not found afterwards."))
+            _update(which, emit, state="done", line=t("Installed"), error="")
         except Exception as exc:  # noqa: BLE001 - shown in the set-up
             log.warning("Installing %s failed: %s", which, exc)
             _update(which, emit, state="error", error=_install_error(which, str(exc)))
@@ -188,12 +190,14 @@ def _installed(which: str) -> bool:
 
 
 def _install_error(which: str, message: str) -> str:
-    what = {"claude": "Claude Code", "codex": "the Codex CLI"}[which]
+    claude = {"claude": True, "codex": False}[which]
     low = message.lower()
     if any(k in low for k in ("could not resolve", "name or service", "getaddrinfo", "unable to connect", "timed out",
                               "no such host", "connection")):
-        return f"Could not download {what}: check your internet connection and try again."
-    return f"Installing {what} did not work: {message}"[:500]
+        return (t("Could not download Claude Code: check your internet connection and try again.") if claude else
+                t("Could not download the Codex CLI: check your internet connection and try again."))
+    return (t("Installing Claude Code did not work: {error}", error=message) if claude else
+            t("Installing the Codex CLI did not work: {error}", error=message))[:500]
 
 
 def _claude_install_command() -> list[str]:
@@ -232,12 +236,12 @@ def _check_integrity(data: bytes, integrity: str, shasum: str) -> None:
         algo, _, digest = item.partition("-")
         if algo in ("sha512", "sha384", "sha256"):
             if base64.b64encode(hashlib.new(algo, data).digest()).decode() != digest:
-                raise RuntimeError("The download was damaged (checksum mismatch). Try again.")
+                raise RuntimeError(t("The download was damaged (checksum mismatch). Try again."))
             return
     if shasum and hashlib.sha1(data).hexdigest() != shasum:  # noqa: S324 - npm's published checksum
-        raise RuntimeError("The download was damaged (checksum mismatch). Try again.")
+        raise RuntimeError(t("The download was damaged (checksum mismatch). Try again."))
     if not integrity and not shasum:
-        raise RuntimeError("The npm registry did not publish a checksum for this package.")
+        raise RuntimeError(t("The npm registry did not publish a checksum for this package."))
 
 
 def unpack_codex(data: bytes, target: str, dest: Path) -> None:
@@ -263,7 +267,7 @@ def unpack_codex(data: bytes, target: str, dest: Path) -> None:
             found = found or rel.as_posix() == "bin/codex.exe"
     if not found:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise RuntimeError("The package has no codex.exe for this PC.")
+        raise RuntimeError(t("The package has no codex.exe for this PC."))
     old = dest.with_name(dest.name + ".old")
     shutil.rmtree(old, ignore_errors=True)
     if dest.exists():
@@ -274,7 +278,7 @@ def unpack_codex(data: bytes, target: str, dest: Path) -> None:
 
 def _install_codex(emit: Emit) -> None:
     session = _session()
-    _update("codex", emit, line="Looking up the latest Codex CLI on npm…")
+    _update("codex", emit, line=t("Looking up the latest Codex CLI on npm…"))
     pkg = codex_package(session)
     buf = io.BytesIO()
     with session.get(pkg["tarball"], stream=True, timeout=60) as r:
@@ -285,12 +289,13 @@ def _install_codex(emit: Emit) -> None:
             buf.write(chunk)
             if time.monotonic() - last > 0.3:
                 last = time.monotonic()
-                got = buf.tell() / 1048576
-                _update("codex", emit, line=f"Downloading Codex {pkg['version']}… {got:.0f}"
-                                            + (f" of {total / 1048576:.0f} MB" if total else " MB"))
+                got = num(buf.tell() / 1048576)
+                _update("codex", emit, line=t("Downloading Codex {version}… {got} of {total} MB", version=pkg["version"],
+                                              got=got, total=num(total / 1048576)) if total else
+                        t("Downloading Codex {version}… {got} MB", version=pkg["version"], got=got))
     data = buf.getvalue()
     _check_integrity(data, pkg["integrity"], pkg["shasum"])
-    _update("codex", emit, line="Unpacking…")
+    _update("codex", emit, line=t("Unpacking…"))
     home = codex_home()
     home.parent.mkdir(parents=True, exist_ok=True)
     unpack_codex(data, pkg["target"], home)
@@ -307,44 +312,47 @@ def plan_status(which: str, plan: str, logged_in: bool) -> dict[str, Any]:
         if p in CLAUDE_PLANS:
             return {"ok": True, "label": CLAUDE_PLANS[p], "note": ""}
         if p == "api":
-            return {"ok": True, "label": "Anthropic Console (API)", "note": "Signed in with an API account: every "
-                    "request is billed per use, not covered by a Pro or Max subscription."}
+            return {"ok": True, "label": "Anthropic Console (API)", "note": t("Signed in with an API account: every "
+                    "request is billed per use, not covered by a Pro or Max subscription.")}
         if p == "free":
-            return {"ok": False, "label": "Claude Free", "note": "Claude's free plan does not include Claude Code. "
-                    "You need Claude Pro or Max."}
-        return {"ok": None, "label": "", "note": "Could not tell your plan; the test message below will show whether "
-                "it works."}
+            return {"ok": False, "label": "Claude Free", "note": t("Claude's free plan does not include Claude Code. "
+                    "You need Claude Pro or Max.")}
+        return {"ok": None, "label": "", "note": t("Could not tell your plan; the test message below will show whether "
+                "it works.")}
     if p in CODEX_PLANS:
         return {"ok": True, "label": CODEX_PLANS[p], "note": ""}
     if p == "api":
-        return {"ok": True, "label": "OpenAI API key", "note": "Signed in with an API key: every request is billed per "
-                "use, not covered by a ChatGPT subscription."}
+        return {"ok": True, "label": t("OpenAI API key"), "note": t("Signed in with an API key: every request is billed "
+                "per use, not covered by a ChatGPT subscription.")}
     if p in ("free", "go"):              # OpenAI includes Codex in Free and Go too, with smaller limits
-        return {"ok": None, "label": f"ChatGPT {p.capitalize()}", "note": "Codex comes with ChatGPT Free and Go too, "
-                "with smaller limits; the test message below shows whether it works."}
-    return {"ok": None, "label": "ChatGPT" if p == "chatgpt" else "", "note": "Codex does not show your plan; the "
-            "test message below shows whether it works."}
+        return {"ok": None, "label": f"ChatGPT {p.capitalize()}", "note": t("Codex comes with ChatGPT Free and Go too, "
+                "with smaller limits; the test message below shows whether it works.")}
+    return {"ok": None, "label": "ChatGPT" if p == "chatgpt" else "", "note": t("Codex does not show your plan; the "
+            "test message below shows whether it works.")}
 
 
 def test(which: str) -> dict[str, Any]:
-    """Send a tiny test message through the chosen tool (a few tokens of your plan): {"ok", "seconds", "error"}."""
+    """Send a tiny test message through the chosen tool (a few tokens of your plan): {"ok", "seconds", "error",
+    "code"}. ``code`` is "plan_not_eligible" when OpenAI doesn't let apps use the ChatGPT plan."""
     from . import ai
+    from .chatgpt import NotEligible
 
     started = time.monotonic()
     content = [{"type": "text", "text": "Reply with OK."}]
     try:
         if which == "claude":
-            res = ai._claude_one_shot(TEST_SYSTEM, content, model="haiku", effort="low", timeout_s=180)
+            res = ai._claude_one_shot(TEST_SYSTEM, content, model="haiku", effort="low", timeout_s=180, think=False)
         elif which in ("chatgpt", "codex"):
             ask = ai._chatgpt_one_shot if which == "chatgpt" else ai._codex_one_shot
             res = ask(TEST_SYSTEM, content, "haiku", "low", None, None, 180)
         else:
             raise ValueError(which)
         ok = bool((res.get("text") or "").strip())
-        out = {"ok": ok, "error": "" if ok else "No answer came back."}
+        out = {"ok": ok, "error": "" if ok else t("No answer came back."), "code": ""}
     except Exception as exc:  # noqa: BLE001 - shown in the set-up
         msg = str(exc) or exc.__class__.__name__
-        out = {"ok": False, "error": (ai.friendly_error(msg) if which == "claude" else msg)[:400]}
+        out = {"ok": False, "error": (ai.friendly_error(msg) if which == "claude" else msg)[:400],
+               "code": "plan_not_eligible" if isinstance(exc, NotEligible) else ""}
     out.update(seconds=round(time.monotonic() - started, 1), at=time.time())
     with _lock:
         _tests[which] = out

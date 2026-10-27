@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 import requests
 
+from .i18n import t
 from .ieulearn import BASE, NeedLogin
 
 log = logging.getLogger("studia")
@@ -95,12 +96,12 @@ class Announcement:
 
 def _text(fragment: str) -> str:
     """HTML fragment -> plain text with paragraph breaks."""
-    t = re.sub(r"(?i)<br\s*/?>", "\n", fragment or "")
-    t = re.sub(r"(?i)</(p|div|li|h\d|tr)>", "\n", t)
-    t = html.unescape(re.sub(r"<[^>]+>", "", t))
-    t = re.sub(r"[ \t ]+", " ", t)
-    t = re.sub(r"\n\s*\n+", "\n\n", "\n".join(line.strip() for line in t.splitlines()))
-    return t.strip()
+    s = re.sub(r"(?i)<br\s*/?>", "\n", fragment or "")
+    s = re.sub(r"(?i)</(p|div|li|h\d|tr)>", "\n", s)
+    s = html.unescape(re.sub(r"<[^>]+>", "", s))
+    s = re.sub(r"[ \t ]+", " ", s)
+    s = re.sub(r"\n\s*\n+", "\n\n", "\n".join(line.strip() for line in s.splitlines()))
+    return s.strip()
 
 
 def _inner(page: str, cls: str) -> str:
@@ -222,7 +223,7 @@ class CourseSite:
     def _get(self, path: str) -> str:
         r = self.s.get(f"{BASE}{path}", allow_redirects=False, timeout=30)
         if r.status_code in (301, 302, 303):
-            raise NeedLogin("Your IEULearn session has expired.")
+            raise NeedLogin(t("Your IEULearn session has expired."))
         r.raise_for_status()
         return r.text
 

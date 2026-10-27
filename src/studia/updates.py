@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import __version__
+from .i18n import t
 
 log = logging.getLogger("studia")
 REPO = "mirzaisi/IEUStudia"
@@ -125,12 +126,12 @@ def _latest(s: Any) -> dict[str, Any]:
         r = s.get(f"{RELEASES}/latest", timeout=(10, 20), allow_redirects=False)
         m = re.search(r"/releases/tag/([^/?#]+)", r.headers.get("Location") or "")
         if not m:
-            raise RuntimeError("GitHub didn't answer as expected (a Wi-Fi sign-in page or a network filter can do "
-                               f"this). Try again later. (HTTP {r.status_code})")
+            raise RuntimeError(t("GitHub didn't answer as expected (a Wi-Fi sign-in page or a network filter can do "
+                                 "this). Try again later. (HTTP {code})", code=r.status_code))
         tag, assets, notes, page = m.group(1), None, "", ""
     version = tag.lstrip("v")
     if not _parse(version):
-        raise RuntimeError(f"GitHub's newest release has no version number ({tag!r}).")
+        raise RuntimeError(t("GitHub's newest release has no version number ({tag}).", tag=repr(tag)))
     name, base = f"IEUStudia-Setup-{version}.exe", f"{RELEASES}/download/{tag}"
     if assets is None:                                  # not listed: the release build always uploads both
         installer, sums = f"{base}/{name}", f"{base}/SHA256SUMS.txt"
@@ -191,7 +192,7 @@ def _expected_hash(s: Any, sums_url: str, name: str) -> str:
         parts = line.strip().split()
         if len(parts) == 2 and parts[1].lstrip("*") == name and re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
             return parts[0].lower()
-    raise RuntimeError(f"The release doesn't list a checksum for {name}, so it isn't installed.")
+    raise RuntimeError(t("The release doesn't list a checksum for {name}, so it isn't installed.", name=name))
 
 
 def _sha256(path: Path) -> str:
@@ -210,7 +211,7 @@ def download(progress: Optional[Callable[[int, int], None]] = None,
     latest = _load().get("latest") or {}
     url, sums = str(latest.get("installer") or ""), str(latest.get("sums") or "")
     if not url or not newer(str(latest.get("version") or "")):
-        raise RuntimeError("There's no newer version to install.")
+        raise RuntimeError(t("There's no newer version to install."))
     s = _session()
     name = url.rsplit("/", 1)[-1]
     expected = _expected_hash(s, sums, name)
@@ -218,8 +219,8 @@ def download(progress: Optional[Callable[[int, int], None]] = None,
     httpdl.download(url, dest, session=s, progress=progress, cancel=cancel, parts=4)
     if _sha256(dest) != expected:
         dest.unlink(missing_ok=True)
-        raise RuntimeError("The downloaded installer isn't the released file (its checksum doesn't match), so it "
-                           "wasn't run. Nothing changed; try again later.")
+        raise RuntimeError(t("The downloaded installer isn't the released file (its checksum doesn't match), so it "
+                             "wasn't run. Nothing changed; try again later."))
     log.info("Update %s downloaded and checked", name)
     return dest
 

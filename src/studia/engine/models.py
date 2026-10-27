@@ -19,33 +19,37 @@ import requests
 
 from ..cancel import check
 from .. import httpdl
+from ..i18n import N_, t
 
 log = logging.getLogger("studia")
 
-# Sizes are the download size of the CTranslate2 conversion (float16 weights).
+# Sizes are the download size of the CTranslate2 conversion (float16 weights). Labels and descriptions in English:
+# t() to show them.
 MODEL_PRESETS: dict[str, dict[str, Any]] = {
     "large-v3-turbo": {
         "repo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-        "label": "Fast & accurate",
-        "description": "Nearly the best quality, and fast with an NVIDIA graphics card.",
+        "label": N_("Fast & accurate"),
+        "description": N_("Nearly the best quality, and fast with an NVIDIA graphics card."),
         "size_mb": 1620,
     },
     "large-v3": {
         "repo": "Systran/faster-whisper-large-v3",
-        "label": "Maximum accuracy",
-        "description": "The best quality for hard audio and long Turkish passages; the slowest, even with an NVIDIA graphics card.",
+        "label": N_("Maximum accuracy"),
+        "description": N_("The best quality for hard audio and long Turkish passages; the slowest, even with an NVIDIA "
+                          "graphics card."),
         "size_mb": 3090,
     },
     "medium": {
         "repo": "Systran/faster-whisper-medium",
-        "label": "Medium",
-        "description": "More accurate than Small, but very slow without an NVIDIA graphics card (hours per lecture).",
+        "label": N_("Medium"),
+        "description": N_("More accurate than Small, but very slow without an NVIDIA graphics card (hours per lecture)."),
         "size_mb": 1530,
     },
     "small": {
         "repo": "Systran/faster-whisper-small",
-        "label": "Small",
-        "description": "The one for PCs without an NVIDIA graphics card: fast enough on the processor, a bit less accurate.",
+        "label": N_("Small"),
+        "description": N_("The one for PCs without an NVIDIA graphics card: fast enough on the processor, a bit less "
+                          "accurate."),
         "size_mb": 484,
     },
 }
@@ -66,7 +70,7 @@ def _models_root() -> Path:
 
 def _repo(model: str) -> str:
     if model not in MODEL_PRESETS:
-        raise ValueError(f"Unknown model '{model}'.")
+        raise ValueError(t("Unknown model '{model}'.", model=model))
     return MODEL_PRESETS[model]["repo"]
 
 
@@ -111,37 +115,54 @@ def model_is_downloaded(model: str) -> bool:
     return (_complete(own) and (own / ".complete").exists()) or _hf_cache_has(model)
 
 
+_download_locks: dict[str, threading.Lock] = {}       # one download of a model at a time (see download_model)
+_download_locks_guard = threading.Lock()
+
+
 def download_model(model: str, progress: Callable[[int, int], None],
                    cancel: Optional[threading.Event] = None) -> Path:
-    """Download the model files into %LOCALAPPDATA%\\IEUStudia\\models\\<model> (resumable)."""
+    """Download the model files into %LOCALAPPDATA%\\IEUStudia\\models\\<model> (resumable). A lecture's own download
+    and the setup's ("Download now") would write the same part files: the second one waits for the first (and can
+    still be cancelled meanwhile), then finds the model there."""
     repo = _repo(model)
-    target = _models_root() / model
-    target.mkdir(parents=True, exist_ok=True)
-    session = requests.Session()
-    session.headers["User-Agent"] = "IEUStudia (+https://github.com/mirzaisi/IEUStudia)"
-    info = session.get(f"https://huggingface.co/api/models/{repo}", params={"blobs": "true"}, timeout=30)
-    info.raise_for_status()
-    siblings = info.json().get("siblings", [])
-    files = [(s["rfilename"], int(s.get("size") or 0)) for s in siblings
-             if any(fnmatch.fnmatch(s["rfilename"], pat) for pat in MODEL_FILE_PATTERNS)]
-    if not any(name == "model.bin" for name, _ in files):
-        raise RuntimeError(f"Model files for {model} were not found on Hugging Face.")
-    grand_total = sum(size for _, size in files) or MODEL_PRESETS[model]["size_mb"] * 1024 * 1024
-    done_before = 0
-    for name, size in sorted(files, key=lambda f: f[1]):
+    with _download_locks_guard:
+        lock = _download_locks.setdefault(model, threading.Lock())
+    while not lock.acquire(timeout=0.25):
         check(cancel)
-        dest = target / name
-        base = done_before
+    try:
+        target = _models_root() / model
+        if _complete(target) and (target / ".complete").exists():      # already there (another download just got it)
+            size = sum(f.stat().st_size for f in target.iterdir() if f.is_file())
+            progress(size, size)
+            return target
+        target.mkdir(parents=True, exist_ok=True)
+        session = requests.Session()
+        session.headers["User-Agent"] = "IEUStudia (+https://github.com/mirzaisi/IEUStudia)"
+        info = session.get(f"https://huggingface.co/api/models/{repo}", params={"blobs": "true"}, timeout=30)
+        info.raise_for_status()
+        siblings = info.json().get("siblings", [])
+        files = [(s["rfilename"], int(s.get("size") or 0)) for s in siblings
+                 if any(fnmatch.fnmatch(s["rfilename"], pat) for pat in MODEL_FILE_PATTERNS)]
+        if not any(name == "model.bin" for name, _ in files):
+            raise RuntimeError(t("Model files for {model} were not found on Hugging Face.", model=model))
+        grand_total = sum(size for _, size in files) or MODEL_PRESETS[model]["size_mb"] * 1024 * 1024
+        done_before = 0
+        for name, size in sorted(files, key=lambda f: f[1]):
+            check(cancel)
+            dest = target / name
+            base = done_before
 
-        def cb(done: int, total: int, base: int = base) -> None:
-            progress(base + done, grand_total)
+            def cb(done: int, total: int, base: int = base) -> None:
+                progress(base + done, grand_total)
 
-        httpdl.download(f"https://huggingface.co/{repo}/resolve/main/{name}", dest,
-                        session=session, progress=cb, cancel=cancel, parts=8)
-        done_before += size or dest.stat().st_size
-    (target / ".complete").write_text(json.dumps({"repo": repo}), encoding="utf-8")
-    progress(grand_total, grand_total)
-    return target
+            httpdl.download(f"https://huggingface.co/{repo}/resolve/main/{name}", dest,
+                            session=session, progress=cb, cancel=cancel, parts=8)
+            done_before += size or dest.stat().st_size
+        (target / ".complete").write_text(json.dumps({"repo": repo}), encoding="utf-8")
+        progress(grand_total, grand_total)
+        return target
+    finally:
+        lock.release()
 
 
 def delete_model(model: str) -> None:
@@ -255,4 +276,4 @@ def cuda_compute_type(prefer: tuple[str, ...] = ("float16", "int8_float16", "int
         supported = set(ctranslate2.get_supported_compute_types("cuda"))
     except Exception:  # noqa: BLE001
         return prefer[0]
-    return next((t for t in prefer if t in supported), "float32")
+    return next((ct for ct in prefer if ct in supported), "float32")

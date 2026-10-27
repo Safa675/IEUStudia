@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from ..domain import Course, Recording, Transcript
+from ..i18n import N_
 
 log = logging.getLogger("studia")
 
@@ -109,7 +110,7 @@ def day_label(d: dt.date) -> str:
 
 def kind_label(kind: str) -> str:
     k = (kind or "lecture").strip().lower()
-    return {"lecture": "Lecture", "lab": "Lab"}.get(k, k.title() or "Lecture")
+    return {"lecture": N_("Lecture"), "lab": N_("Lab")}.get(k, k.title() or "Lecture")   # English (file names); t() to show it
 
 
 def recording_end(rec: Recording) -> dt.datetime:
@@ -150,11 +151,11 @@ def language_shares(transcripts: Iterable[Transcript]) -> dict[str, float]:
     transcript does not carry it.
     """
     totals: dict[str, float] = {}
-    for t in transcripts:
-        secs = {normalize_lang(k): float(v or 0) for k, v in (t.language_seconds or {}).items()}
+    for tx in transcripts:
+        secs = {normalize_lang(k): float(v or 0) for k, v in (tx.language_seconds or {}).items()}
         if sum(secs.values()) <= 0:
             secs = {}
-            for s in t.segments:
+            for s in tx.segments:
                 lang = normalize_lang(s.lang, BASE_LANGUAGE)
                 secs[lang] = secs.get(lang, 0.0) + max(0.0, float(s.end) - float(s.start))
         for k, v in secs.items():
@@ -202,9 +203,9 @@ def as_transcript_map(transcripts: Any) -> dict[str, Transcript]:
     if isinstance(transcripts, Mapping):
         return {str(k): v for k, v in transcripts.items() if v is not None}
     out: dict[str, Transcript] = {}
-    for t in transcripts:
-        if t is not None:
-            out[str(t.delivery_id)] = t
+    for tx in transcripts:
+        if tx is not None:
+            out[str(tx.delivery_id)] = tx
     return out
 
 
@@ -279,8 +280,8 @@ def app_version_label() -> str:
 def transcribed_on(transcripts: Iterable[Transcript]) -> str:
     """Date (``YYYY-MM-DD``) of the most recent transcript, or ``""``."""
     dates = []
-    for t in transcripts:
-        stamp = parse_iso_datetime(t.created_at)
+    for tx in transcripts:
+        stamp = parse_iso_datetime(tx.created_at)
         if stamp is not None:
             dates.append(stamp.date())
     return max(dates).isoformat() if dates else ""
@@ -290,8 +291,8 @@ def engine_summary(transcripts: Iterable[Transcript]) -> str:
     """``IEUStudia 1.0 (Whisper large-v3-turbo, GPU)``."""
     models: list[str] = []
     devices: list[str] = []
-    for t in transcripts:
-        m, d = model_label(t.model), device_label(t.device)
+    for tx in transcripts:
+        m, d = model_label(tx.model), device_label(tx.device)
         if m and m not in models:
             models.append(m)
         if d and d not in devices:

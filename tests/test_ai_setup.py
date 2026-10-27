@@ -184,6 +184,14 @@ def test_the_test_message(monkeypatch):
     assert ai_setup.test("codex") == {**ai_setup.last_test("codex"), "ok": False, "error": "No answer came back."}
     monkeypatch.setattr(ai, "_chatgpt_one_shot", lambda *a, **k: {"text": "OK"})
     assert ai_setup.test("chatgpt")["ok"] and not ai_setup.last_test("codex")["ok"]
+    from studia import chatgpt
+
+    def refused(*a, **k):
+        raise chatgpt.NotEligible("Your plan can't be used by apps.")      # the page knows it by the code, in any language
+
+    monkeypatch.setattr(ai, "_chatgpt_one_shot", refused)
+    r = ai_setup.test("chatgpt")
+    assert not r["ok"] and r["code"] == "plan_not_eligible" and r["error"] == "Your plan can't be used by apps."
 
 
 def test_status_for_one_ai_only(monkeypatch):

@@ -4,28 +4,27 @@
 (function () {
   "use strict";
   const St = window.Studia;
-  const { S, call, esc, I, SPIN, plural, toast, modal, closeModal, go, renderView, renderSidebar, emptyHTML, skeleton, A, fmtK } = St;
+  const { S, call, esc, I, SPIN, toast, modal, closeModal, go, renderView, renderSidebar, emptyHTML, skeleton, A, fmtK } = St;
   const $ = (s, el = document) => el.querySelector(s);
-  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const dm = (iso) => { if (!iso) return ""; const d = new Date(iso.slice(0, 10) + "T00:00:00"); return `${d.getDate()} ${MON[d.getMonth()]}`; };
-  const dmw = (iso) => { if (!iso) return ""; const d = new Date(iso.slice(0, 10) + "T00:00:00"); return `${DAYS[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]}`; };
+  const dmw = (iso) => t.date(String(iso || "").slice(0, 10), "dmw");    // Wed 14 Oct · 14 Eki Çar (the day written, not moved by the time zone)
   const ts = (s) => { s = Math.max(0, Math.round(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? `${h}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}` : `${m}:${String(x).padStart(2, "0")}`; };
   const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const STAGES = [["gather", "Course material"], ["concepts", "What to learn"], ["search", "YouTube search"], ["inspect", "Captions"], ["verify", "Verification"], ["assemble", "Your plan"]];
-  const ROLE = { required: "Required", prerequisite: "Prerequisite", optional: "Optional", alternative: "Alternative" };
-  const STATE = { verified: "Verified", partial: "Partly on video", supplement: "Written supplement", unverified: "Not checked", missing: "Missing", skipped: "Not in this plan" };
-  const HOW = { video: ["check", "Taught in a checked video part"], optional: ["check", "Only in an optional video"], supplement: ["book", "Explained in the written supplement"], missing: ["x", "Not covered"] };
-  const ytAt = (vid, t) => `https://www.youtube.com/watch?v=${encodeURIComponent(vid)}${t > 0 ? `&t=${Math.floor(t)}s` : ""}`;
+  // labels are made when drawn: the Turkish table arrives after this file has loaded
+  const STAGES = () => [["gather", t("Course material")], ["concepts", t("What to learn")], ["search", t("YouTube search")], ["inspect", t("Captions")], ["verify", t("Verification")], ["assemble", t("Your plan")]];
+  const ROLE = () => ({ required: t("Required"), prerequisite: t("Prerequisite"), optional: t("Optional"), alternative: t("Alternative") });
+  const STATE = () => ({ verified: t("Verified"), partial: t("Partly on video"), supplement: t("Written supplement"), unverified: t("Not checked"), missing: t("Missing"), skipped: t("Not in this plan") });
+  const HOW = () => ({ video: ["check", t("Taught in a checked video part")], optional: ["check", t("Only in an optional video")], supplement: ["book", t("Explained in the written supplement")], missing: ["x", t("Not covered")] });
+  const ytAt = (vid, sec) => `https://www.youtube.com/watch?v=${encodeURIComponent(vid)}${sec > 0 ? `&t=${Math.floor(sec)}s` : ""}`;
   // captions with "[m:ss]" marks: each mark opens the video at that moment
   const stamped = (vid, text) => esc(text || "").replace(/\[(\d+(?::\d{2}){1,2})\]/g, (m, st) =>
     `<button class="pl-ts" data-act="url" data-url="${esc(ytAt(vid, st.split(":").reduce((a, x) => a * 60 + +x, 0)))}">${st}</button>`);
-  const fmtMin = (m) => (m >= 60 ? `${Math.round(m / 6) / 10} h` : `${m} min`);
+  const hours = (h) => t.num(h, Number.isInteger(h) ? 0 : 1);           // h already rounded to tenths: 2 · 1.5 (1,5)
+  const fmtMin = (m) => (m >= 60 ? t("{h} h", { h: hours(Math.round(m / 6) / 10) }) : t("{m} min", { m }));
   const weekSpan = (weeks) => {
-    if (!weeks || !weeks.length) return "all weeks so far";
+    if (!weeks || !weeks.length) return t("all weeks so far");
     const runs = [];
     weeks.forEach((w) => { const r = runs[runs.length - 1]; if (r && w === r[1] + 1) r[1] = w; else runs.push([w, w]); });
-    return runs.map(([a, b]) => (a === b ? `week ${a}` : `weeks ${a}–${b}`)).join(", ");
+    return runs.map(([a, b]) => (a === b ? t("week {n}", { n: a }) : t("weeks {a}–{b}", { a, b }))).join(", ");
   };
 
   S.plans = null;           // list (briefs)
@@ -51,32 +50,32 @@
 
   // ------------------------------------------------------------------ list view
   function stateLine(p) {
-    if (p.status === "running" || p.status === "queued") return `<span class="pl-run">${SPIN()} ${esc(p.message || "Working…")}</span><span class="bar"><i style="width:${Math.round(100 * (p.progress || 0))}%"></i></span>`;
-    if (p.status === "done") return `<span class="dim">${esc(p.message || "Ready")}</span>`;
-    if (p.status === "error") return `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error || "Failed")}</span>`;
-    if (p.status === "paused") return `<span class="dim">${I("stop", "sm")} ${esc(p.message || "Stopped")}</span>`;
+    if (p.status === "running" || p.status === "queued") return `<span class="pl-run">${SPIN()} ${esc(p.message || t("Working…"))}</span><span class="bar"><i style="width:${Math.round(100 * (p.progress || 0))}%"></i></span>`;
+    if (p.status === "done") return `<span class="dim">${esc(p.message || t("Ready"))}</span>`;
+    if (p.status === "error") return `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error || t("Failed"))}</span>`;
+    if (p.status === "paused") return `<span class="dim">${I("stop", "sm")} ${esc(p.message || t("Stopped"))}</span>`;
     return `<span class="dim">${esc(p.message || "")}</span>`;
   }
   function plansView() {
     const list = S.plans;
-    const head = `<div class="pl-head"><div><h1>Video study plans</h1>
-      <div class="dim">YouTube videos that really teach your course — checked through their captions, not their titles — in the order and the time you have.</div></div>
-      <button class="btn primary" data-act="plan-new">${I("plus", "sm")} New plan</button></div>`;
+    const head = `<div class="pl-head"><div><h1>${t("Video study plans")}</h1>
+      <div class="dim">${t("YouTube videos that really teach your course — checked through their captions, not their titles — in the order and the time you have.")}</div></div>
+      <button class="btn primary" data-act="plan-new">${I("plus", "sm")} ${t("New plan")}</button></div>`;
     if (list == null) return `<div class="view-inner">${head}${skeleton()}</div>`;
     if (!list.length) {
-      return `<div class="view-inner">${head}${emptyHTML("youtube", "No study plans yet",
-        "Pick a course and the weeks (or an upcoming quiz). IEUStudia reads your slides and lectures, finds videos on YouTube, checks what they actually teach, and builds a plan with a checklist and practice.")}</div>`;
+      return `<div class="view-inner">${head}${emptyHTML("youtube", t("No study plans yet"),
+        t("Pick a course and the weeks (or an upcoming quiz). IEUStudia reads your slides and lectures, finds videos on YouTube, checks what they actually teach, and builds a plan with a checklist and practice."))}</div>`;
     }
     const groups = {};
     list.forEach((p) => { (groups[p.course_id] = groups[p.course_id] || []).push(p); });
     let h = `<div class="view-inner">${head}`;
     for (const cid of Object.keys(groups)) {
       const c = courseOf(cid);
-      h += `<div class="section-title">${esc(c.code || "Course")} <span class="dim sm">${esc(c.display_name || "")}</span></div><div class="pl-list">`;
+      h += `<div class="section-title">${esc(c.code || t("Course"))} <span class="dim sm">${esc(c.display_name || "")}</span></div><div class="pl-list">`;
       h += groups[cid].map((p) => `<div class="card pl-card ${p.status}" data-act="plan-open" data-id="${esc(p.id)}" tabindex="0" role="button">
-        <div class="pl-title">${I(p.status !== "done" ? "hourglass" : (p.scope || {}).kind === "prep" ? "cap" : "youtube", "sm")}<b>${esc(p.title || (p.status === "done" ? "Study plan" : "New plan"))}</b>
-          <span class="pill">${(p.scope || {}).kind === "prep" ? "Prep pack" : "Videos"}</span>${p.parent_id ? `<span class="pill">Update</span>` : ""}</div>
-        <div class="pl-scope">${esc(weekSpan((p.scope || {}).weeks))}${(p.scope || {}).focus ? ` · for ${esc(p.scope.focus)}` : ""} · ${Math.round(((p.scope || {}).minutes || 0) / 60 * 10) / 10} h · ${esc(dmw(p.created_at))}</div>
+        <div class="pl-title">${I(p.status !== "done" ? "hourglass" : (p.scope || {}).kind === "prep" ? "cap" : "youtube", "sm")}<b>${esc(p.title || (p.status === "done" ? t("Study plan") : t("New plan")))}</b>
+          <span class="pill">${(p.scope || {}).kind === "prep" ? t("Prep pack") : t("Videos")}</span>${p.parent_id ? `<span class="pill">${t.c("noun", "Update")}</span>` : ""}</div>
+        <div class="pl-scope">${esc(weekSpan((p.scope || {}).weeks))}${(p.scope || {}).focus ? ` · ${t.html("for {focus}", { focus: p.scope.focus })}` : ""} · ${t("{h} h", { h: hours(Math.round(((p.scope || {}).minutes || 0) / 60 * 10) / 10) })} · ${esc(dmw(p.created_at))}</div>
         <div class="pl-state">${stateLine(p)}</div></div>`).join("");
       h += `</div>`;
     }
@@ -89,19 +88,19 @@
     if (!p) return `<div class="view-inner">${skeleton()}</div>`;
     const c = courseOf(p.course_id);
     const sc = p.scope || {};
-    const chips = [weekSpan(sc.weeks), sc.focus ? `for ${sc.focus}` : "", sc.los && sc.los.length ? sc.los.map((n) => "LO" + n).join(", ") : "",
-      sc.kind === "prep" ? "" : `${Math.round((sc.minutes || 0) / 60 * 10) / 10} h of viewing`, sc.deadline ? `by ${dmw(sc.deadline)}` : ""].filter(Boolean);
+    const chips = [weekSpan(sc.weeks), sc.focus ? t("for {focus}", { focus: sc.focus }) : "", sc.los && sc.los.length ? sc.los.map((n) => "LO" + n).join(", ") : "",
+      sc.kind === "prep" ? "" : t("{h} h of viewing", { h: hours(Math.round((sc.minutes || 0) / 60 * 10) / 10) }), sc.deadline ? t("by {date}", { date: dmw(sc.deadline) }) : ""].filter(Boolean);
     const busy = p.status === "running" || p.status === "queued";
     let h = `<div class="view-inner plan-page">
-      <div class="pl-top"><div class="grow"><div class="dim">${esc(c.code || "")} · ${sc.kind === "prep" ? "exam prep pack" : "video study plan"}</div>
-        <h1>${esc(p.title || (busy ? "Building your plan…" : "Study plan"))}</h1>
+      <div class="pl-top"><div class="grow"><div class="dim">${esc(c.code || "")} · ${sc.kind === "prep" ? t("exam prep pack") : t("video study plan")}</div>
+        <h1>${esc(p.title || (busy ? t("Building your plan…") : t("Study plan")))}</h1>
         <div class="pl-chips">${chips.map((x) => `<span class="chip">${esc(x)}</span>`).join("")}</div></div>
         <div class="pl-acts">
-          ${p.status === "done" ? `<button class="btn sm" data-act="plan-update" data-id="${esc(p.id)}">${I("refresh", "sm")} Update</button>
-            <button class="btn ghost sm" data-act="plan-file" data-id="${esc(p.id)}">${I("file-text", "sm")} Open as Markdown</button>` : ""}
-          ${busy ? `<button class="btn sm" data-act="plan-stop" data-id="${esc(p.id)}">${I("stop", "sm")} Stop</button>` : ""}
-          ${["error", "paused"].includes(p.status) ? `<button class="btn primary sm" data-act="plan-resume" data-id="${esc(p.id)}">${I("retry", "sm")} Resume</button>` : ""}
-          <button class="btn ghost icon sm" data-act="plan-delete" data-id="${esc(p.id)}" title="Delete this plan">${I("x", "sm")}</button></div></div>`;
+          ${p.status === "done" ? `<button class="btn sm" data-act="plan-update" data-id="${esc(p.id)}">${I("refresh", "sm")} ${t("Update")}</button>
+            <button class="btn ghost sm" data-act="plan-file" data-id="${esc(p.id)}">${I("file-text", "sm")} ${t("Open as Markdown")}</button>` : ""}
+          ${busy ? `<button class="btn sm" data-act="plan-stop" data-id="${esc(p.id)}">${I("stop", "sm")} ${t("Stop")}</button>` : ""}
+          ${["error", "paused"].includes(p.status) ? `<button class="btn primary sm" data-act="plan-resume" data-id="${esc(p.id)}">${I("retry", "sm")} ${t("Resume")}</button>` : ""}
+          <button class="btn ghost icon sm" data-act="plan-delete" data-id="${esc(p.id)}" title="${t("Delete this plan")}">${I("x", "sm")}</button></div></div>`;
     if (p.status !== "done") h += progressHTML(p);
     else if (sc.kind === "prep") h += prepHTML(p);
     else h += resultHTML(p);
@@ -109,11 +108,12 @@
   }
   function prepHTML(p) {
     const r = p.result || {};
-    return `${(r.materials_missing || []).length ? `<div class="note-sm">${I("info", "sm")}<span>${plural(r.materials_missing.length, "file")} of these weeks were not downloaded, so the pack could not use them.</span></div>` : ""}
+    const miss = (r.materials_missing || []).length;
+    return `${miss ? `<div class="note-sm">${I("info", "sm")}<span>${t.n(miss, "{n} file of these weeks were not downloaded, so the pack could not use them.", "{n} files of these weeks were not downloaded, so the pack could not use them.")}</span></div>` : ""}
       <div class="card pl-prep md">${St.mdToHtml(r.markdown || "")}</div>`;
   }
   function progressHTML(p) {
-    const stages = (p.scope || {}).kind === "prep" ? [["gather", "Course material"], ["write", "Writing the pack"]] : STAGES;
+    const stages = (p.scope || {}).kind === "prep" ? [["gather", t("Course material")], ["write", t("Writing the pack")]] : STAGES();
     const cur = stages.findIndex(([k]) => k === p.stage);
     const done = new Set(p.stages_done || []);
     const steps = stages.map(([k, l], i) => {
@@ -126,46 +126,50 @@
     return `<div class="card pl-progress"><div class="pl-steps">${steps}</div>
       <div class="pl-msg">${p.status === "error" ? `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error)}</span>` : esc(p.message || "")}</div>
       ${["running", "queued"].includes(p.status) ? `<div class="bar wide"><i style="width:${Math.round(100 * (p.progress || 0))}%"></i></div>` : ""}
-      ${concepts ? `<div class="pl-concepts"><div class="dim sm">Concepts to cover${(p.scope || {}).focus ? ` for ${esc(p.scope.focus)}` : ""} (hover for their skills)</div>${concepts}</div>` : ""}
-      ${extras.length ? `<div class="pl-concepts"><div class="dim sm">Also in these weeks, not on ${esc((p.scope || {}).focus || "the focus")}${(p.scope || {}).extras ? " — optional videos" : " — listed, no videos"}</div>${extras.map(chip).join("")}</div>` : ""}
-      <div class="note-sm">${I("info", "sm")}<span>Nothing is downloaded from YouTube — IEUStudia reads each candidate's captions and chapters to check what it really teaches. You can keep using the app meanwhile.</span></div></div>`;
+      ${concepts ? `<div class="pl-concepts"><div class="dim sm">${(p.scope || {}).focus ? t.html("Concepts to cover for {focus} (hover for their skills)", { focus: p.scope.focus }) : t("Concepts to cover (hover for their skills)")}</div>${concepts}</div>` : ""}
+      ${extras.length ? `<div class="pl-concepts"><div class="dim sm">${(p.scope || {}).extras ? t.html("Also in these weeks, not on {focus} — optional videos", { focus: (p.scope || {}).focus || t("the focus") })
+        : t.html("Also in these weeks, not on {focus} — listed, no videos", { focus: (p.scope || {}).focus || t("the focus") })}</div>${extras.map(chip).join("")}</div>` : ""}
+      <div class="note-sm">${I("info", "sm")}<span>${t("Nothing is downloaded from YouTube — IEUStudia reads each candidate's captions and chapters to check what it really teaches. You can keep using the app meanwhile.")}</span></div></div>`;
   }
-  function teachHTML(t, names) {
-    const name = esc(names[t.concept] || t.concept);
-    if (t.state === "unchecked") return `<div class="pl-teach unchecked"><b>${name}</b> <span class="dim">— not checked in this video's captions</span></div>`;
-    const sk = [...(t.skills || []).map((s) => `<span class="sk video">${I("check", "xs")}${esc(s)}</span>`),
-      ...(t.missing || []).map((s) => `<span class="sk missing" title="Not taught in this video">${I("x", "xs")}${esc(s)}</span>`)].join("");
-    return `<div class="pl-teach"><b>${name}</b>${t.state === "partial" && !(t.skills || []).length ? ` <span class="dim">— only partly</span>` : ""}${sk ? `<div class="sks">${sk}</div>` : ""}</div>`;
+  function teachHTML(teach, names) {
+    const name = esc(names[teach.concept] || teach.concept);
+    if (teach.state === "unchecked") return `<div class="pl-teach unchecked"><b>${name}</b> <span class="dim">— ${t("not checked in this video's captions")}</span></div>`;
+    const sk = [...(teach.skills || []).map((s) => `<span class="sk video">${I("check", "xs")}${esc(s)}</span>`),
+      ...(teach.missing || []).map((s) => `<span class="sk missing" title="${t("Not taught in this video")}">${I("x", "xs")}${esc(s)}</span>`)].join("");
+    return `<div class="pl-teach"><b>${name}</b>${teach.state === "partial" && !(teach.skills || []).length ? ` <span class="dim">— ${t("only partly")}</span>` : ""}${sk ? `<div class="sks">${sk}</div>` : ""}</div>`;
   }
   function checkedHTML(it) {
     const q = it.quotes || [], parts = it.excerpts || [];
-    if (it.state === "unchecked") return `<div class="pl-checked unverified">${I("alert", "xs")}<span>Not checked: its captions were not read for ${it.concepts.length === 1 ? "this concept" : "these concepts"}.</span></div>`;
+    if (it.state === "unchecked") return `<div class="pl-checked unverified">${I("alert", "xs")}<span>${it.concepts.length === 1 ? t("Not checked: its captions were not read for this concept.") : t("Not checked: its captions were not read for these concepts.")}</span></div>`;
     if (it.state === "unverified" || !it.captions && !parts.length) {
-      return `<div class="pl-checked ${it.state}">${I(it.state === "verified" ? "check-circle" : "alert", "xs")}<span>Checked: ${esc(it.inspected)}${it.evidence ? ` — “${esc(it.evidence)}”` : ""}</span></div>`;
+      return `<div class="pl-checked ${it.state}">${I(it.state === "verified" ? "check-circle" : "alert", "xs")}<span>${it.evidence ? t.html("Checked: {what} — “{quote}”", { what: it.inspected, quote: it.evidence }) : t.html("Checked: {what}", { what: it.inspected })}</span></div>`;
     }
-    const kind = { auto: "automatic", manual: "creator's" }[(it.captions || "").split(",")[0]] || "";
-    return `<div class="pl-checked ${it.state}">${I(it.state === "verified" ? "check-circle" : "alert", "xs")}<span>${it.state === "verified" ? "Checked in its" : "Its"} ${kind ? kind + " " : ""}captions${q.length ? " — what it says:" : it.evidence ? ` — “${esc(it.evidence)}”` : ""}</span></div>
-      ${q.map((x) => `<div class="pl-quote"><button class="pl-ts" data-act="url" data-url="${esc(x.url || ytAt(it.video, x.t))}" title="Open at ${ts(x.t)}">${ts(x.t)}</button><q>${esc(x.text)}</q></div>`).join("")}
-      ${parts.length ? `<details class="pl-parts"><summary>Read the caption ${parts.length === 1 ? "part" : `parts (${parts.length})`} the AI checked</summary>
+    const kind = (it.captions || "").split(",")[0];     // whose captions: "auto" (YouTube's) or "manual" (the creator's)
+    const caps = it.state === "verified"
+      ? { auto: t("Checked in its automatic captions"), manual: t("Checked in its creator's captions") }[kind] || t("Checked in its captions")
+      : { auto: t("Its automatic captions"), manual: t("Its creator's captions") }[kind] || t("Its captions");
+    return `<div class="pl-checked ${it.state}">${I(it.state === "verified" ? "check-circle" : "alert", "xs")}<span>${caps}${q.length ? ` — ${t("what it says:")}` : it.evidence ? ` — “${esc(it.evidence)}”` : ""}</span></div>
+      ${q.map((x) => `<div class="pl-quote"><button class="pl-ts" data-act="url" data-url="${esc(x.url || ytAt(it.video, x.t))}" title="${t("Open at {time}", { time: ts(x.t) })}">${ts(x.t)}</button><q>${esc(x.text)}</q></div>`).join("")}
+      ${parts.length ? `<details class="pl-parts"><summary>${parts.length === 1 ? t("Read the caption part the AI checked") : t("Read the caption parts ({n}) the AI checked", { n: parts.length })}</summary>
         ${parts.map((x) => `<div class="pl-part"><div class="pl-part-h">${ts(x.start)}–${ts(x.end)}</div><div class="pl-part-t">${stamped(it.video, x.text)}</div></div>`).join("")}</details>` : ""}`;
   }
   function itemHTML(p, it, names, goal) {
     const marks = p.marks || {};
     const done = marks["v:" + it.n];
     const segs = (it.segments || []).length ? it.segments : [{ start: it.start, end: it.end, url: it.url }];
-    const part = it.whole ? "whole video" : segs.length > 1 ? `${segs.length} parts` : `${ts(segs[0].start)}–${ts(segs[0].end)}`;
+    const part = it.whole ? t("whole video") : segs.length > 1 ? t.n(segs.length, "{n} part", "{n} parts") : `${ts(segs[0].start)}–${ts(segs[0].end)}`;
     const teaches = it.teaches || null;
     return `<div class="pl-item ${done ? "watched" : ""} role-${it.role} ${it.extra ? "extra" : ""}">
-      <label class="pl-check" title="Watched"><input type="checkbox" data-act="plan-mark" data-id="${esc(p.id)}" data-key="v:${it.n}" ${done ? "checked" : ""}></label>
-      <button class="pl-thumb" data-act="url" data-url="${esc(it.url)}" title="Open on YouTube at ${esc(ts(segs[0].start))}"><img src="https://i.ytimg.com/vi/${encodeURIComponent(it.video)}/mqdefault.jpg" alt="" loading="lazy"><span class="len">${esc(part)}</span></button>
+      <label class="pl-check" title="${t("Watched")}"><input type="checkbox" data-act="plan-mark" data-id="${esc(p.id)}" data-key="v:${it.n}" ${done ? "checked" : ""}></label>
+      <button class="pl-thumb" data-act="url" data-url="${esc(it.url)}" title="${t.html("Open on YouTube at {time}", { time: ts(segs[0].start) })}"><img src="https://i.ytimg.com/vi/${encodeURIComponent(it.video)}/mqdefault.jpg" alt="" loading="lazy"><span class="len">${esc(part)}</span></button>
       <div class="pl-info"><div class="pl-it-title"><span class="n">${it.n}</span><button class="link" data-act="url" data-url="${esc(it.url)}">${esc(it.title)}</button></div>
-        <div class="pl-it-meta">${esc(it.channel)} · ${it.minutes} min · <span class="role">${esc(ROLE[it.role] || it.role)}</span>${it.alternative_to ? ` instead of ${it.alternative_to}` : ""}${it.extra ? ` <span class="pill extra" title="A topic of these weeks that ${esc(goal)} does not ask for">Extra — not on ${esc(goal)}</span>` : ""}</div>
-        ${!it.whole ? `<div class="pl-segs">${I("play", "xs")}<span>Watch</span>${segs.map((s) => `<button class="pl-seg" data-act="url" data-url="${esc(s.url || ytAt(it.video, s.start))}">${ts(s.start)}–${ts(s.end)}</button>`).join(`<span class="dim">then</span>`)}</div>` : ""}
-        ${teaches ? `<div class="pl-teaches">${teaches.map((t) => teachHTML(t, names)).join("")}</div>`
+        <div class="pl-it-meta">${esc(it.channel)} · ${t("{m} min", { m: it.minutes })} · <span class="role">${esc(ROLE()[it.role] || it.role)}</span>${it.alternative_to ? ` ${t("instead of {n}", { n: it.alternative_to })}` : ""}${it.extra ? ` <span class="pill extra" title="${t.html("A topic of these weeks that {goal} does not ask for", { goal })}">${t.html("Extra — not on {goal}", { goal })}</span>` : ""}</div>
+        ${!it.whole ? `<div class="pl-segs">${I("play", "xs")}<span>${t("Watch")}</span>${segs.map((s) => `<button class="pl-seg" data-act="url" data-url="${esc(s.url || ytAt(it.video, s.start))}">${ts(s.start)}–${ts(s.end)}</button>`).join(`<span class="dim">${t("then")}</span>`)}</div>` : ""}
+        ${teaches ? `<div class="pl-teaches">${teaches.map((x) => teachHTML(x, names)).join("")}</div>`
           : `<div class="pl-it-concepts">${it.concepts.map((c) => `<span class="chip">${esc(names[c] || c)}</span>`).join("")}</div>`}
         ${it.why ? `<div class="pl-why">${esc(it.why)}</div>` : ""}
         ${it.limits ? `<div class="pl-limits">${I("info", "xs")}<span>${esc(it.limits)}</span></div>` : ""}
-        ${(it.errors || []).map((e) => `<div class="pl-err">${I("alert", "xs")}<span><b>Possible mistake at <button class="pl-ts" data-act="url" data-url="${esc(e.url || ytAt(it.video, e.t))}">${ts(e.t)}</button>:</b> ${esc(e.text)} <span class="dim">(spotted in the captions by AI)</span></span></div>`).join("")}
+        ${(it.errors || []).map((e) => `<div class="pl-err">${I("alert", "xs")}<span><b>${t("Possible mistake at {time}:", { time: `<button class="pl-ts" data-act="url" data-url="${esc(e.url || ytAt(it.video, e.t))}">${ts(e.t)}</button>` })}</b> ${esc(e.text)} <span class="dim">${t("(spotted in the captions by AI)")}</span></span></div>`).join("")}
         ${checkedHTML(it)}</div></div>`;
   }
   function completenessHTML(r) {
@@ -174,33 +178,42 @@
     const ext = cp.extras || [];
     const withVid = ext.filter((x) => (x.items || []).length);
     const rows = [];
-    if ((cp.missing_list || []).length) rows.push(`<div class="pl-cp-row missing">${I("x", "xs")}<span><b>Not covered:</b> ${esc(cp.missing_list.join("; "))}</span></div>`);
-    if ((cp.supplement_list || []).length) rows.push(`<div class="pl-cp-row supplement">${I("book", "xs")}<span><b>Only in the written supplements:</b> ${esc(cp.supplement_list.join("; "))}</span></div>`);
+    if ((cp.missing_list || []).length) rows.push(`<div class="pl-cp-row missing">${I("x", "xs")}<span><b>${t("Not covered:")}</b> ${esc(cp.missing_list.join("; "))}</span></div>`);
+    if ((cp.supplement_list || []).length) rows.push(`<div class="pl-cp-row supplement">${I("book", "xs")}<span><b>${t("Only in the written supplements:")}</b> ${esc(cp.supplement_list.join("; "))}</span></div>`);
     if (ext.length) {
       const rest = ext.length - withVid.length;
-      rows.push(`<div class="pl-cp-row extra">${I("layers", "xs")}<span><b>Also in these weeks, not on ${esc(cp.goal)}:</b> ${ext.map((x) => esc(x.name) + ((x.items || []).length ? ` <span class="dim">(optional #${x.items.join(", #")})</span>` : "")).join(", ")}.
-        ${rest ? (cp.extras_searched ? `No checked video for ${withVid.length ? "the others" : "them"}.` : `This plan does not cover ${withVid.length ? "the others" : "them"} — update it with “Extras” on to add videos.`) : ""}</span></div>`);
+      const others = withVid.length;       // some extras have a video: the rest are "the others"
+      const tail = cp.extras_searched ? (others ? t("No checked video for the others.") : t("No checked video for them."))
+        : others ? t("This plan does not cover the others — update it with “Extras” on to add videos.") : t("This plan does not cover them — update it with “Extras” on to add videos.");
+      rows.push(`<div class="pl-cp-row extra">${I("layers", "xs")}<span><b>${t.html("Also in these weeks, not on {goal}:", { goal: cp.goal })}</b> ${ext.map((x) => esc(x.name) + ((x.items || []).length ? ` <span class="dim">${t("(optional {items})", { items: "#" + x.items.join(", #") })}</span>` : "")).join(", ")}.
+        ${rest ? tail : ""}</span></div>`);
     }
     const miss = (r.materials_missing || []).length, dm = r.days_missing || 0;
-    if (miss || dm) rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>Based on ${plural(r.materials_used || 0, "file")} and ${plural(r.days_used || 0, "lecture")} of these weeks. ${[miss ? `${plural(miss, "file")} ${miss === 1 ? "was" : "were"} not downloaded` : "", dm ? `${plural(dm, "class day")} ${dm === 1 ? "was" : "were"} not transcribed` : ""].filter(Boolean).join(" and ")} — topics only there may be missing.</span></div>`);
-    if (cp.over_budget) rows.push(`<div class="pl-cp-row over">${I("clock", "xs")}<span>The required videos take ${fmtMin(cp.required_minutes)} — ${cp.over_budget} min more than the ${fmtMin(cp.budget)} you planned.</span></div>`);
+    if (miss || dm) {
+      const lost = [miss ? t.n(miss, "{n} file was not downloaded", "{n} files were not downloaded") : "",
+        dm ? t.n(dm, "{n} class day was not transcribed", "{n} class days were not transcribed") : ""].filter(Boolean);
+      const based = t("Based on {files} and {lectures} of these weeks.", { files: t.n(r.materials_used || 0, "{n} file", "{n} files"), lectures: t.n(r.days_used || 0, "{n} lecture", "{n} lectures") });
+      rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>${based} ${lost.length > 1 ? t("{a} and {b} — topics only there may be missing.", { a: lost[0], b: lost[1] }) : t("{a} — topics only there may be missing.", { a: lost[0] })}</span></div>`);
+    }
+    if (cp.over_budget) rows.push(`<div class="pl-cp-row over">${I("clock", "xs")}<span>${t("The required videos take {time} — {n} min more than the {budget} you planned.", { time: fmtMin(cp.required_minutes), n: cp.over_budget, budget: fmtMin(cp.budget) })}</span></div>`);
     const good = cp.level ? ["full", "mostly"].includes(cp.level) : cp.complete;
     return `<div class="pl-complete ${good ? "ok" : "no"}"><div class="pl-cp-head">${I(good ? "check-circle" : "alert", "sm")}<b>${esc(cp.headline)}</b></div>${rows.join("")}</div>`;
   }
   function coverageHTML(r, names) {
     const cov = r.coverage || [];
-    const goal = (r.completeness || {}).goal || "the focus";
+    const goal = (r.completeness || {}).goal || t("the focus");
     const extras = cov.filter((c) => c.in_scope === false);
+    const state = STATE(), how = HOW();
     const row = (cv) => `<tr><td><b>${esc(cv.name || names[cv.concept] || cv.concept)}</b>${cv.note ? `<div class="dim sm">${esc(cv.note)}</div>` : ""}</td>
-      <td><span class="st st-${cv.state}">${esc(STATE[cv.state] || cv.state)}</span></td>
-      <td>${(cv.skills || []).map((s) => `<div class="sk ${s.how}" title="${esc((HOW[s.how] || [])[1] || "")}">${I((HOW[s.how] || ["info"])[0], "xs")}<span>${esc(s.text)}${(s.items || []).length ? ` <span class="dim">#${s.items.join(", #")}</span>` : s.how === "supplement" ? ` <span class="dim">supplement</span>` : ""}</span></div>`).join("") || `<span class="dim">—</span>`}</td>
+      <td><span class="st st-${cv.state}">${esc(state[cv.state] || cv.state)}</span></td>
+      <td>${(cv.skills || []).map((s) => `<div class="sk ${s.how}" title="${esc((how[s.how] || [])[1] || "")}">${I((how[s.how] || ["info"])[0], "xs")}<span>${esc(s.text)}${(s.items || []).length ? ` <span class="dim">#${s.items.join(", #")}</span>` : s.how === "supplement" ? ` <span class="dim">${t("supplement")}</span>` : ""}</span></div>`).join("") || `<span class="dim">—</span>`}</td>
       <td>${(cv.items || []).map((n) => `<span class="n">${n}</span>`).join(" ") || "—"}</td></tr>`;
-    const table = (rows) => `<table><thead><tr><th>Concept</th><th>State</th><th>Skills</th><th>Videos</th></tr></thead><tbody>${rows.map(row).join("")}</tbody></table>`;
+    const table = (rows) => `<table><thead><tr><th>${t("Concept")}</th><th>${t("State")}</th><th>${t("Skills")}</th><th>${t("Videos")}</th></tr></thead><tbody>${rows.map(row).join("")}</tbody></table>`;
     return `<div class="card pl-coverage">
-      <div class="pl-legend dim sm">${Object.entries(HOW).map(([k, [ic, l]]) => `<span class="sk ${k}">${I(ic, "xs")}${l}</span>`).join("")}</div>
-      ${extras.length ? `<div class="pl-cov-h">On ${esc(goal)}</div>` : ""}${table(cov.filter((c) => c.in_scope !== false))}
-      ${extras.length ? `<div class="pl-cov-h">Also in these weeks — not on ${esc(goal)}</div>${table(extras)}` : ""}
-      ${r.gaps ? `<div class="note-sm">${I("info", "sm")}<span>Not in your material: ${esc(r.gaps)}</span></div>` : ""}</div>`;
+      <div class="pl-legend dim sm">${Object.entries(how).map(([k, [ic, l]]) => `<span class="sk ${k}">${I(ic, "xs")}${l}</span>`).join("")}</div>
+      ${extras.length ? `<div class="pl-cov-h">${t.html("On {goal}", { goal })}</div>` : ""}${table(cov.filter((c) => c.in_scope !== false))}
+      ${extras.length ? `<div class="pl-cov-h">${t.html("Also in these weeks — not on {goal}", { goal })}</div>${table(extras)}` : ""}
+      ${r.gaps ? `<div class="note-sm">${I("info", "sm")}<span>${t.html("Not in your material: {gaps}", { gaps: r.gaps })}</span></div>` : ""}</div>`;
   }
   function resultHTML(p) {
     const r = p.result || {};
@@ -209,17 +222,18 @@
     const watched = (r.items || []).filter((it) => marks["v:" + it.n]).length;
     const ticked = (r.checklist || []).filter((x) => marks["c:" + x.concept]).length;
     const cp = r.completeness;
-    const goal = (cp || {}).goal || (p.scope || {}).focus || "the focus";
+    const goal = (cp || {}).goal || (p.scope || {}).focus || t("the focus");
     const tab = S.planTab;
-    const tabs = [["watch", "Watch", "youtube", (r.items || []).length], ["checklist", "Checklist", "list-checks", (r.checklist || []).length],
-      ["coverage", "Coverage", "target", 0], ["practice", "Practice", "pencil", (r.practice || []).length], ["supplements", "Supplements", "book", (r.supplements || []).length]]
+    const tabs = [["watch", t("Watch"), "youtube", (r.items || []).length], ["checklist", t("Checklist"), "list-checks", (r.checklist || []).length],
+      ["coverage", t("Coverage"), "target", 0], ["practice", t("Practice"), "pencil", (r.practice || []).length], ["supplements", t("Supplements"), "book", (r.supplements || []).length]]
       .filter(([k, , , n]) => k === "coverage" || n);
+    const miss = (r.materials_missing || []).length;
     let h = `<div class="card pl-summary">${completenessHTML(r)}<p>${esc(r.summary || "")}</p>
-      <div class="pl-stats"><div><b>${r.total_minutes || 0} min</b>required${r.optional_minutes ? ` · +${r.optional_minutes} optional` : ""}</div>
-        <div><b>${watched}/${(r.items || []).length}</b>watched</div><div><b>${ticked}/${(r.checklist || []).length}</b>concepts ticked</div>
-        ${cp ? `<div><b>${cp.video + cp.optional}/${cp.skills}</b>skills on video</div>` : `<div><b>${(r.coverage || []).filter((c) => c.state === "verified").length}/${(r.coverage || []).length}</b>verified</div>`}</div>
-      ${!cp && (r.materials_missing || []).length ? `<div class="note-sm">${I("info", "sm")}<span>${plural(r.materials_missing.length, "file")} of these weeks were not downloaded, so the plan could not read them.</span></div>` : ""}
-      <div class="note-sm">${I("info", "sm")}<span>The videos were checked by AI through their captions, and AI can make mistakes — the quotes under each video show what it actually says.</span></div>
+      <div class="pl-stats"><div><b>${t("{m} min", { m: r.total_minutes || 0 })}</b>${t("required")}${r.optional_minutes ? ` · ${t("+{m} optional", { m: r.optional_minutes })}` : ""}</div>
+        <div><b>${watched}/${(r.items || []).length}</b>${t("watched")}</div><div><b>${ticked}/${(r.checklist || []).length}</b>${t("concepts ticked")}</div>
+        ${cp ? `<div><b>${cp.video + cp.optional}/${cp.skills}</b>${t("skills on video")}</div>` : `<div><b>${(r.coverage || []).filter((c) => c.state === "verified").length}/${(r.coverage || []).length}</b>${t("verified")}</div>`}</div>
+      ${!cp && miss ? `<div class="note-sm">${I("info", "sm")}<span>${t.n(miss, "{n} file of these weeks were not downloaded, so the plan could not read them.", "{n} files of these weeks were not downloaded, so the plan could not read them.")}</span></div>` : ""}
+      <div class="note-sm">${I("info", "sm")}<span>${t("The videos were checked by AI through their captions, and AI can make mistakes — the quotes under each video show what it actually says.")}</span></div>
       ${changesHTML(r.changes)}</div>
       <div class="tabs" role="tablist">${tabs.map(([k, l, ic, n]) => `<button class="tab ${tab === k ? "on" : ""}" data-act="plan-tab" data-tab="${k}">${I(ic, "sm")}${l}${n ? `<span class="count">${n}</span>` : ""}</button>`).join("")}</div>`;
     if (tab === "checklist") {
@@ -231,13 +245,13 @@
       h += coverageHTML(r, names);
     } else if (tab === "practice") {
       h += (r.practice || []).map((q, i) => `<div class="card pl-q"><div class="q"><span class="n">${i + 1}</span>${esc(q.question)}</div>
-        ${q.source ? `<div class="dim sm">From ${esc(q.source)}${names[q.concept] ? ` · ${esc(names[q.concept])}` : ""}</div>` : ""}
-        <details><summary>Show the answer</summary><div class="md">${St.mdToHtml(q.answer || "")}</div></details></div>`).join("");
+        ${q.source ? `<div class="dim sm">${t.html("From {source}", { source: q.source })}${names[q.concept] ? ` · ${esc(names[q.concept])}` : ""}</div>` : ""}
+        <details><summary>${t("Show the answer")}</summary><div class="md">${St.mdToHtml(q.answer || "")}</div></details></div>`).join("");
     } else if (tab === "supplements") {
       h += (r.supplements || []).map((s) => `<div class="card pl-sup"><h3>${esc(s.name || names[s.concept] || s.concept)}</h3><div class="md">${St.mdToHtml(s.text)}</div></div>`).join("");
     } else {
       if ((r.schedule || []).length) {
-        h += `<div class="pl-schedule">${r.schedule.map((s) => `<div class="pl-day"><b>${esc(s.day)}</b><span>${s.items.map((n) => `#${n}`).join(" ")} · ${s.minutes} min</span></div>`).join("")}</div>`;
+        h += `<div class="pl-schedule">${r.schedule.map((s) => `<div class="pl-day"><b>${esc(s.day)}</b><span>${s.items.map((n) => `#${n}`).join(" ")} · ${t("{m} min", { m: s.minutes })}</span></div>`).join("")}</div>`;
       }
       h += `<div class="pl-items">${(r.items || []).map((it) => itemHTML(p, it, names, goal)).join("")}</div>`;
     }
@@ -246,10 +260,10 @@
   function changesHTML(ch) {
     if (!ch || !((ch.added || []).length || (ch.replaced || []).length || (ch.removed || []).length)) return "";
     const li = (x) => (typeof x === "object" && x ? `${esc(x.old || "")}${x.new ? ` → #${esc(x.new)}` : ""}${x.why ? ` — ${esc(x.why)}` : ""}` : esc(x));
-    return `<div class="pl-changes"><b>What changed since the previous version</b><ul>
-      ${(ch.added || []).length ? `<li>Added: ${ch.added.map((n) => `#${esc(n)}`).join(", ")}</li>` : ""}
-      ${(ch.replaced || []).map((x) => `<li>Replaced: ${li(x)}</li>`).join("")}
-      ${(ch.removed || []).map((x) => `<li>No longer needed: ${li(x)}</li>`).join("")}</ul></div>`;
+    return `<div class="pl-changes"><b>${t("What changed since the previous version")}</b><ul>
+      ${(ch.added || []).length ? `<li>${t("Added: {items}", { items: ch.added.map((n) => `#${esc(n)}`).join(", ") })}</li>` : ""}
+      ${(ch.replaced || []).map((x) => `<li>${t("Replaced: {item}", { item: li(x) })}</li>`).join("")}
+      ${(ch.removed || []).map((x) => `<li>${t("No longer needed: {item}", { item: li(x) })}</li>`).join("")}</ul></div>`;
   }
 
   // ------------------------------------------------------------------ new plan / update dialog
@@ -260,7 +274,7 @@
     D.courseId = courseId || (S.view.name === "course" ? S.view.courseId : null) || (courses[0] || {}).id;
     D.parent = parent || null;
     D.est = null;
-    modal(`<h2>${I("youtube")} ${parent ? "Update the study plan" : "New video study plan"}</h2>${skeleton()}`);
+    modal(`<h2>${I("youtube")} ${parent ? t("Update the study plan") : t("New video study plan")}</h2>${skeleton()}`);
     const r = await call("plan_options", D.courseId);
     if (!r.ok) { closeModal(); toast(r.error, "error"); return; }
     D.opts = r;
@@ -277,10 +291,10 @@
   }
   function costHTML() {
     const e = D.est, ai = (D.opts && D.opts.ai) || {};
-    if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? "Plans and prep packs need ChatGPT or Claude (the offline model is too small)." : "Set up ChatGPT or Claude in Settings → AI first."}</span>`;
-    if (!e) return `<span class="dim">${SPIN()} Estimating…</span>`;
-    return `<div><b>≈${fmtK(e.main_input + (e.verify_input || 0))} tokens</b> from your ${esc(St.aiName())} plan · ${e.materials_used.length} files and ${e.days_used.length} lectures read${e.minutes ? ` · ${esc(e.minutes)}` : ""}</div>
-      <div class="dim sm">${I("info", "xs")} Runs in the background. AI can make mistakes — the plan shows the caption quotes it relied on.</div>`;
+    if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? t("Plans and prep packs need ChatGPT or Claude (the offline model is too small).") : t("Set up ChatGPT or Claude in Settings → AI first.")}</span>`;
+    if (!e) return `<span class="dim">${SPIN()} ${t("Estimating…")}</span>`;
+    return `<div>${t.html("<b>≈{k} tokens</b> from your {ai} plan", { k: fmtK(e.main_input + (e.verify_input || 0)), ai: St.aiName() })} · ${t("{files} files and {lectures} lectures read", { files: e.materials_used.length, lectures: e.days_used.length })}${e.minutes ? ` · ${esc(e.minutes)}` : ""}</div>
+      <div class="dim sm">${I("info", "xs")} ${t("Runs in the background. AI can make mistakes — the plan shows the caption quotes it relied on.")}</div>`;
   }
   function drawDialog() {
     const r = D.opts, sc = D.scope, courses = S.courses.filter((c) => c.code);
@@ -293,43 +307,46 @@
     const todo = picked.flatMap((w) => w.todo_days || []);
     const ai = r.ai || {};
     const prep = sc.kind === "prep";
-    const models = St.isChatGPT() ? [["sonnet", "Standard (recommended)"], ["haiku", "Quick"], ["opus", "Thorough (slowest)"]]
-      : [["sonnet", "Sonnet (recommended)"], ["haiku", "Haiku (lightest)"], ["opus", "Opus (best, heavy)"]];
-    const kinds = [["videos", "youtube", "Video study plan", "Finds YouTube videos for these weeks and checks each one's transcript (captions) to see what it really teaches."],
-      ["prep", "cap", "Exam prep pack", "A written pack: key ideas per learning outcome, a formula sheet, practice questions with solutions."]];
+    const models = St.isChatGPT() ? [["sonnet", t("Standard (recommended)")], ["haiku", t("Quick")], ["opus", t("Thorough (slowest)")]]
+      : [["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]];
+    const kinds = [["videos", "youtube", t("Video study plan"), t("Finds YouTube videos for these weeks and checks each one's transcript (captions) to see what it really teaches.")],
+      ["prep", "cap", t("Exam prep pack"), t("A written pack: key ideas per learning outcome, a formula sheet, practice questions with solutions.")]];
+    const missText = t.n(missing.length, "{n} file of these weeks is not on this PC. The plan is better when it can read them.", "{n} files of these weeks are not on this PC. The plan is better when it can read them.");
+    const todoText = t.n(todo.length, "{n} class day of these weeks is not transcribed: the plan then knows only the slides and PDFs.", "{n} class days of these weeks are not transcribed: the plan then knows only the slides and PDFs.");
     modal(`<div class="cp-scroll">
-      <h2>${I(prep ? "cap" : "youtube")} ${D.parent ? (prep ? "Update the prep pack" : "Update the study plan") : "New study plan"}</h2>
-      ${D.parent ? "" : `<div class="field"><div class="cp-modes two">${kinds.map(([v, ic, t, d]) => `<button type="button" class="cp-mode ${sc.kind === v ? "on" : ""}" data-act="pd-kind" data-val="${v}">
-        <span class="cp-mode-t">${I(ic, "sm")} ${t}</span><span class="cp-mode-d">${d}</span></button>`).join("")}</div></div>
-      <div class="field"><label>Course</label><select class="input" data-act="pd-course">${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === D.courseId ? "selected" : ""}>${esc(c.code)} — ${esc(c.display_name)}</option>`).join("")}</select></div>`}
-      ${r.assessments.length ? `<div class="field"><label>Prepare for</label><div class="pd-picks">${r.assessments.map((a, i) => `<button class="pd-pick ${sc.focus === a.name ? "on" : ""}" data-act="pd-assess" data-i="${i}">
-        <b>${esc(a.name)}</b><span>week ${a.week}${a.los.length ? ` · LO${a.los.join(", LO")}` : ""}</span></button>`).join("")}
-        <button class="pd-pick ${!sc.focus ? "on" : ""}" data-act="pd-assess" data-i="-1"><b>Just these weeks</b><span>no quiz in mind</span></button></div></div>` : ""}
-      <div class="field"><label class="cp-label">Weeks <span class="dim sm">${sel.size} picked</span><span class="cp-tools">${weeks.some((w) => w.current) ? `<button type="button" class="btn ghost sm" data-act="pd-thisweek">This week</button>` : ""}<button type="button" class="btn ghost sm" data-act="pd-clear">Clear</button></span></label>
+      <h2>${I(prep ? "cap" : "youtube")} ${D.parent ? (prep ? t("Update the prep pack") : t("Update the study plan")) : t("New study plan")}</h2>
+      ${D.parent ? "" : `<div class="field"><div class="cp-modes two">${kinds.map(([v, ic, label, desc]) => `<button type="button" class="cp-mode ${sc.kind === v ? "on" : ""}" data-act="pd-kind" data-val="${v}">
+        <span class="cp-mode-t">${I(ic, "sm")} ${label}</span><span class="cp-mode-d">${desc}</span></button>`).join("")}</div></div>
+      <div class="field"><label>${t("Course")}</label><select class="input" data-act="pd-course">${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === D.courseId ? "selected" : ""}>${esc(c.code)} — ${esc(c.display_name)}</option>`).join("")}</select></div>`}
+      ${r.assessments.length ? `<div class="field"><label>${t("Prepare for")}</label><div class="pd-picks">${r.assessments.map((a, i) => `<button class="pd-pick ${sc.focus === a.name ? "on" : ""}" data-act="pd-assess" data-i="${i}">
+        <b>${esc(a.name)}</b><span>${t("week {n}", { n: a.week })}${a.los.length ? ` · LO${a.los.join(", LO")}` : ""}</span></button>`).join("")}
+        <button class="pd-pick ${!sc.focus ? "on" : ""}" data-act="pd-assess" data-i="-1"><b>${t("Just these weeks")}</b><span>${t("no quiz in mind")}</span></button></div></div>` : ""}
+      <div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: sel.size })}</span><span class="cp-tools">${weeks.some((w) => w.current) ? `<button type="button" class="btn ghost sm" data-act="pd-thisweek">${t("This week")}</button>` : ""}<button type="button" class="btn ghost sm" data-act="pd-clear">${t("Clear")}</button></span></label>
         <div class="pd-weeks2">${weeks.map((w) => `<label class="pd-wk ${sel.has(w.no) ? "on" : ""} ${w.current ? "now" : ""}" title="${esc(w.topic)}">
-          <input type="checkbox" class="check" data-act="pd-week" data-no="${w.no}" ${sel.has(w.no) ? "checked" : ""}><span class="no">W${w.no}</span>
-          <span class="t">${esc(w.topic || "—")}${w.current ? ` <span class="pill now">this week</span>` : ""}</span>
-          <span class="st"><span class="${!w.files ? "" : w.files_ready === w.files ? "ok" : "miss"}" title="Slides and PDFs on this PC / listed on IEULearn">${I("file", "xs")}${w.files ? `${w.files_ready}/${w.files}` : "–"}</span>
-            <span class="${!w.lectures ? "" : w.lectures_done === w.lectures ? "ok" : "miss"}" title="Lectures transcribed / recorded">${I("video", "xs")}${w.lectures ? `${w.lectures_done}/${w.lectures}` : "–"}</span></span></label>`).join("")}</div></div>
+          <input type="checkbox" class="check" data-act="pd-week" data-no="${w.no}" ${sel.has(w.no) ? "checked" : ""}><span class="no">${t("W{n}", { n: w.no })}</span>
+          <span class="t">${esc(w.topic || "—")}${w.current ? ` <span class="pill now">${t("this week")}</span>` : ""}</span>
+          <span class="st"><span class="${!w.files ? "" : w.files_ready === w.files ? "ok" : "miss"}" title="${t("Slides and PDFs on this PC / listed on IEULearn")}">${I("file", "xs")}${w.files ? `${w.files_ready}/${w.files}` : "–"}</span>
+            <span class="${!w.lectures ? "" : w.lectures_done === w.lectures ? "ok" : "miss"}" title="${t("Lectures transcribed / recorded")}">${I("video", "xs")}${w.lectures ? `${w.lectures_done}/${w.lectures}` : "–"}</span></span></label>`).join("")}</div></div>
       ${missing.length || todo.length ? `<div class="pd-gaps">
-        ${missing.length ? `<div class="pd-gap">${I("file")}<span class="grow">${plural(missing.length, "file")} of these weeks ${missing.length === 1 ? "is" : "are"} not on this PC. The plan is better when it can read them.</span><button class="btn sm" data-act="pd-download">${I("download", "sm")} Download ${missing.length}</button></div>` : ""}
-        ${todo.length ? `<div class="pd-gap">${I("video")}<span class="grow">${plural(todo.length, "class day")} of these weeks ${todo.length === 1 ? "is" : "are"} not transcribed: the plan then knows only the slides and PDFs.</span><button class="btn sm" data-act="pd-transcribe">${I("wave", "sm")} Transcribe ${todo.length}</button></div>` : ""}</div>` : ""}
+        ${missing.length ? `<div class="pd-gap">${I("file")}<span class="grow">${missText}</span><button class="btn sm" data-act="pd-download">${I("download", "sm")} ${t("Download {n}", { n: missing.length })}</button></div>` : ""}
+        ${todo.length ? `<div class="pd-gap">${I("video")}<span class="grow">${todoText}</span><button class="btn sm" data-act="pd-transcribe">${I("wave", "sm")} ${t("Transcribe {n}", { n: todo.length })}</button></div>` : ""}</div>` : ""}
       <div class="cp-opts">
-        ${prep ? "" : `<div class="cp-opt"><div class="t">Time for videos</div><select class="input" data-pd="minutes">${[60, 120, 180, 300, 480, 720].map((m) => `<option value="${m}" ${+sc.minutes === m ? "selected" : ""}>${m / 60} h</option>`).join("")}</select></div>`}
-        <div class="cp-opt"><div class="t">Deadline</div><input class="input" type="date" data-pd="deadline" value="${esc(sc.deadline || "")}"></div>
-        <div class="cp-opt"><div class="t">${St.isChatGPT() ? "Reasoning" : "Model"}</div><select class="input" data-pd="model">${models.map(([k, l]) => `<option value="${k}" ${sc.model === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-        ${prep ? "" : `<label class="cp-opt cp-switch"><div><div class="t">Turkish videos too</div><div class="d">Also consider videos in Turkish.</div></div><input type="checkbox" class="switch" data-pd="allow_tr" ${sc.allow_tr ? "checked" : ""}></label>`}
-        ${prep || !sc.focus ? "" : `<label class="cp-opt cp-switch"><div><div class="t">Extras</div><div class="d">Also videos for the topics of these weeks that ${esc(sc.focus)} doesn't ask for (optional; a longer search).</div></div><input type="checkbox" class="switch" data-pd="extras" ${sc.extras ? "checked" : ""}></label>`}
+        ${prep ? "" : `<div class="cp-opt"><div class="t">${t("Time for videos")}</div><select class="input" data-pd="minutes">${[60, 120, 180, 300, 480, 720].map((m) => `<option value="${m}" ${+sc.minutes === m ? "selected" : ""}>${t("{h} h", { h: hours(m / 60) })}</option>`).join("")}</select></div>`}
+        <div class="cp-opt"><div class="t">${t("Deadline")}</div><input class="input" type="date" data-pd="deadline" value="${esc(sc.deadline || "")}"></div>
+        <div class="cp-opt"><div class="t">${St.isChatGPT() ? t("Reasoning") : t("Model")}</div><select class="input" data-pd="model">${models.map(([k, l]) => `<option value="${k}" ${sc.model === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        ${prep ? "" : `<label class="cp-opt cp-switch"><div><div class="t">${t("Turkish videos too")}</div><div class="d">${t("Also consider videos in Turkish.")}</div></div><input type="checkbox" class="switch" data-pd="allow_tr" ${sc.allow_tr ? "checked" : ""}></label>`}
+        ${prep || !sc.focus ? "" : `<label class="cp-opt cp-switch"><div><div class="t">${t("Extras")}</div><div class="d">${t.html("Also videos for the topics of these weeks that {focus} doesn't ask for (optional; a longer search).", { focus: sc.focus })}</div></div><input type="checkbox" class="switch" data-pd="extras" ${sc.extras ? "checked" : ""}></label>`}
       </div>
-      ${prep ? "" : `<div class="pd-how dim sm">${I("info", "xs")}<span>${sc.focus ? `Only what ${esc(sc.focus)} needs is required; ` : ""}every video is checked through its captions for the skills each topic needs, and the plan says plainly what is not covered.</span></div>`}
-      <details class="pd-more" ${sc.topics || sc.difficulties ? "open" : ""}><summary>Fine-tune (optional)</summary>
+      ${prep ? "" : `<div class="pd-how dim sm">${I("info", "xs")}<span>${sc.focus ? t.html("Only what {focus} needs is required; every video is checked through its captions for the skills each topic needs, and the plan says plainly what is not covered.", { focus: sc.focus })
+        : t("every video is checked through its captions for the skills each topic needs, and the plan says plainly what is not covered.")}</span></div>`}
+      <details class="pd-more" ${sc.topics || sc.difficulties ? "open" : ""}><summary>${t("Fine-tune (optional)")}</summary>
         <div class="pd-grid">
-          <div class="field"><label>Extra topics to recap</label><input class="input" data-pd="topics" value="${esc(sc.topics)}" placeholder="e.g. counting, combinations"></div>
-          <div class="field"><label>What do you find hard?</label><input class="input" data-pd="difficulties" value="${esc(sc.difficulties)}" placeholder="e.g. when to use Bayes vs. total probability"></div></div></details>
+          <div class="field"><label>${t("Extra topics to recap")}</label><input class="input" data-pd="topics" value="${esc(sc.topics)}" placeholder="${t("e.g. counting, combinations")}"></div>
+          <div class="field"><label>${t("What do you find hard?")}</label><input class="input" data-pd="difficulties" value="${esc(sc.difficulties)}" placeholder="${t("e.g. when to use Bayes vs. total probability")}"></div></div></details>
       </div>
       <div class="cp-foot"><div class="cp-cost" id="pd-cost">${costHTML()}</div>
-        <div class="cp-btns"><button class="btn" data-act="modal-close">Cancel</button>
-          <button class="btn primary" data-act="pd-go" ${sel.size && ai.available && ai.can_plans !== false ? "" : "disabled"}>${I(prep ? "cap" : "youtube", "sm")} ${prep ? (D.parent ? "Write it again" : "Write prep pack") : D.parent ? "Update plan" : "Build plan"}</button></div></div>`);
+        <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button>
+          <button class="btn primary" data-act="pd-go" ${sel.size && ai.available && ai.can_plans !== false ? "" : "disabled"}>${I(prep ? "cap" : "youtube", "sm")} ${prep ? (D.parent ? t("Write it again") : t("Write prep pack")) : D.parent ? t("Update plan") : t("Build plan")}</button></div></div>`);
     $(".modal").classList.add("pd");
     const nb = $(".modal .cp-scroll"); if (nb) nb.scrollTop = keepBody;
     const nw = $(".pd-weeks2"); if (nw) nw.scrollTop = keepWeeks;
@@ -356,13 +373,13 @@
   St.views.plans = plansView;
   St.views.plan = planView;
   St.crumbs = St.crumbs || {};
-  St.crumbs.plans = () => `${I("youtube")} Video study plans`;
-  St.crumbs.plan = (v) => { const p = S.planCache[v.planId] || {}; return `<button class="btn ghost sm" data-act="go" data-view="plans">${I("arrow-left", "sm")} Plans</button> ${esc(p.title || "Study plan")}`; };
+  St.crumbs.plans = () => `${I("youtube")} ${t("Video study plans")}`;
+  St.crumbs.plan = (v) => { const p = S.planCache[v.planId] || {}; return `<button class="btn ghost sm" data-act="go" data-view="plans">${I("arrow-left", "sm")} ${t("Plans")}</button> ${esc(p.title || t("Study plan"))}`; };
   St.onGo.plans = () => loadPlans();
   St.onGo.plan = (v) => loadPlan(v.planId);
   St.navExtra = (v) => {
     const n = running();
-    return `<button class="nav-item ${v.name === "plans" || v.name === "plan" ? "active" : ""}" data-act="go" data-view="plans">${I("youtube")}<span class="label"><span class="code">Study plans</span></span>${n ? `<span class="count">${SPIN()}</span>` : ""}</button>`;
+    return `<button class="nav-item ${v.name === "plans" || v.name === "plan" ? "active" : ""}" data-act="go" data-view="plans">${I("youtube")}<span class="label"><span class="code">${t("Study plans")}</span></span>${n ? `<span class="count">${SPIN()}</span>` : ""}</button>`;
   };
   St.onEvents.plan = (e) => {
     if (S.plans) {
@@ -372,8 +389,12 @@
     }
     const cached = S.planCache[e.id];
     if (cached) Object.assign(cached, { status: e.status, stage: e.stage, progress: e.progress, message: e.message, error: e.error, title: e.title || cached.title });
-    if (e.status === "done") { toast(`Study plan ready: ${e.title || ""}`, "success"); loadPlan(e.id, true); }
-    else if (e.status === "error") toast(`Study plan: ${e.error || "failed"}`, "error");
+    const prep = (e.kind || (((S.plans || []).find((x) => x.id === e.id) || cached || {}).scope || {}).kind) === "prep";
+    if (e.status === "done") {
+      toast(prep ? t("Prep pack ready: {title}", { title: e.title || "" }) : t("Study plan ready: {title}", { title: e.title || "" }), "success");
+      loadPlan(e.id, true);
+    }
+    else if (e.status === "error") toast(t("Study plan: {error}", { error: e.error || t("failed") }), "error");
     else if (cached && e.stage && !(cached.stages_done || []).includes(e.stage) && ["concepts", "search"].includes(e.stage)) loadPlan(e.id, true);
     if (S.view.name === "plans" || (S.view.name === "plan" && S.view.planId === e.id)) renderView();
     renderSidebar();
@@ -389,7 +410,7 @@
     "plan-resume": async (el) => { const r = await call("plan_resume", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-file": async (el) => { const r = await call("plan_open_file", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-delete": async (el) => {
-      if (!confirm("Delete this study plan? (Its Markdown file in your IEUStudia folder stays.)")) return;
+      if (!confirm(t("Delete this study plan? (Its Markdown file in your IEUStudia folder stays.)"))) return;
       await call("plan_delete", el.dataset.id);
       delete S.planCache[el.dataset.id];
       S.plans = (S.plans || []).filter((p) => p.id !== el.dataset.id);
@@ -424,14 +445,15 @@
       const days = D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.todo_days || []);
       let n = 0;
       for (const k of days) { const r = await call("transcribe_day", k); if (r.ok) n += r.queued || 0; }
-      toast(n ? `${plural(n, "recording")} queued for transcription — build the plan once they are done, or now with what is there` : "Nothing left to transcribe there", n ? "success" : "info");
+      toast(n ? t.n(n, "{n} recording queued for transcription — build the plan once they are done, or now with what is there", "{n} recordings queued for transcription — build the plan once they are done, or now with what is there")
+        : t("Nothing left to transcribe there"), n ? "success" : "info");
     },
     "pd-download": async () => {
       readInputs();
       const sel = new Set(D.scope.weeks);
       const ids = D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.missing);
       const r = await call("materials_download", ids);
-      if (r.ok) toast(`Downloading ${plural(ids.length, "file")} — the plan will read them once they are in`, "success");
+      if (r.ok) toast(t.n(ids.length, "Downloading {n} file — the plan will read them once they are in", "Downloading {n} files — the plan will read them once they are in"), "success");
     },
     "pd-go": async () => {
       readInputs();

@@ -1093,6 +1093,7 @@ button.link:hover { text-decoration-color: currentColor; }
 .su-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 14px 44px; border-top: 1px solid var(--border); background: var(--surface); }
 .su-foot .btn.primary { min-width: 190px; height: 40px; font-size: 14px; }
 .su-hero { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; }
+.su-lang { display: flex; justify-content: flex-end; margin: -6px 0 6px; }   /* the language, first thing on the welcome step */
 .su-logo { width: 76px; height: 76px; border-radius: 19px; flex: none; }
 .su-hero h1 { margin: 0 0 6px; font: 600 28px var(--font-display); letter-spacing: -.02em; }
 .su-body h2 { margin: 0 0 6px; font: 600 22px var(--font-display); letter-spacing: -.01em; }
@@ -1305,3 +1306,29 @@ button.link:hover { text-decoration-color: currentColor; }
 .queuebar { container-type: inline-size; }
 @container (max-width: 1060px) { .q-main .btn .lbl { display: none; } .q-main .bar { width: 140px; } }
 @container (max-width: 860px) { .q-main .q-batch { display: none; } .q-main .bar { width: 96px; } }
+
+/* your marks in a transcript */
+.para .ts-mark { position: absolute; left: 18px; top: 21px; border: 0; background: none; padding: 2px; border-radius: 5px;
+  color: var(--text-3); cursor: pointer; opacity: 0; transition: opacity .12s; line-height: 0; }
+.para:hover .ts-mark, .para .ts-mark:focus-visible, .para .ts-mark.on { opacity: 1; }
+.para .ts-mark:hover { color: var(--text); background: var(--surface-2); }
+.para .ts-mark.on { color: var(--blue); }
+.para .ts-mark.on svg { fill: currentColor; }
+.para.marked { box-shadow: inset 3px 0 0 var(--blue); border-radius: 0 8px 8px 0; }
+.para.marked.star { box-shadow: inset 3px 0 0 var(--blue), inset 6px 0 0 var(--amber); }
+.marks-card h3 { display: flex; align-items: center; gap: 8px; }
+.marks-card h3 .i { color: var(--blue); }
+.mk-item { position: relative; padding-right: 64px; }
+.mk-note { display: block; margin-top: 3px; color: var(--text-2); font-size: .92em; }
+.mk-acts { position: absolute; right: 2px; top: 2px; display: flex; gap: 2px; opacity: .5; }
+.mk-item:hover .mk-acts, .mk-item:focus-within .mk-acts { opacity: 1; }
+
+/* Settings: a row of links to its sections, kept in view */
+.set-nav { position: sticky; top: -1px; z-index: 5; display: flex; flex-wrap: wrap; gap: 2px; margin: -6px 0 12px; padding: 6px 0;
+  background: var(--bg); border-bottom: 1px solid var(--border); }
+.set-card { scroll-margin-top: 56px; }
+
+/* the top bar while the setup's downloads go on */
+.chip.dl-chip { cursor: pointer; border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 12.5px; }
+.chip.dl-chip:hover { border-color: var(--border-strong); }
+.chip.dl-chip.warn { color: var(--warning); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }

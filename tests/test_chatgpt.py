@@ -277,7 +277,10 @@ def test_answers_stream_and_errors_are_explained(openai):
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
     openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "par"},
                                         {"type": "response.failed", "response": {"error": {"code": "subscription_sharing_user_not_eligible"}}}))]
-    with pytest.raises(RuntimeError, match="Plus and Pro"):
+    with pytest.raises(chatgpt.NotEligible, match="Plus and Pro"):         # the set-up knows it by its class
+        chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
+    openai.stream_answers = [(403, {"error": {"code": "subscription_sharing_user_not_eligible"}})]
+    with pytest.raises(chatgpt.NotEligible):
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
     openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "half"}))]   # cut off
     with pytest.raises(RuntimeError, match="ended before"):
@@ -408,3 +411,48 @@ def test_rs256_verification():
     assert not chatgpt._verify_rs256(b"header.other", sig, N, E)
     assert not chatgpt._verify_rs256(msg, sig[:-1], N, E)
     assert not chatgpt._verify_rs256(msg, (int.from_bytes(sig, "big") ^ 1).to_bytes(k, "big"), N, E)
+
+
+def test_requests_that_begin_alike_share_a_cache_key_and_a_refusal_is_remembered(openai, monkeypatch):
+    import copy
+
+    _sign_in(openai)
+    monkeypatch.setattr(chatgpt, "_turned_down", set())
+    post = openai.post
+    monkeypatch.setattr(openai, "post", lambda url, data=None, json=None, **kw: post(url, data, copy.deepcopy(json), **kw))
+
+    def ok():
+        return (200, _sse({"type": "response.output_text.delta", "delta": "ok"}, {"type": "response.completed", "response": {}}))
+
+    lecture = [{"type": "text", "text": "=== LECTURE TRANSCRIPT ===\n\n[00:00] The lecture."}]
+    openai.stream_answers = [ok(), ok(), ok()]
+    chatgpt.one_shot("S", lecture + [{"type": "text", "text": "=== TASK ===\n\nStudy notes."}])
+    chatgpt.one_shot("S", lecture + [{"type": "text", "text": "=== TASK ===\n\nFlashcards."}])
+    chatgpt.one_shot("S", [{"type": "text", "text": "Another lecture."}])
+    a, b, c = [x[2] for x in openai.calls if x[1].endswith("/responses")][-3:]
+    assert a["prompt_cache_key"] == b["prompt_cache_key"] != c["prompt_cache_key"]
+    assert a["prompt_cache_key"].startswith("ieustudia-") and "lecture" not in a["prompt_cache_key"].lower()
+    # an account whose API turns the key down: asked again without it, and not sent again
+    openai.stream_answers = [(400, {"error": {"code": "unknown_parameter", "param": "prompt_cache_key",
+                                              "message": "Unknown parameter: 'prompt_cache_key'."}}), ok(), ok()]
+    assert chatgpt.one_shot("S", lecture)["text"] == "ok" and chatgpt.one_shot("S", lecture)["text"] == "ok"
+    bodies = [x[2] for x in openai.calls if x[1].endswith("/responses")][-3:]
+    assert "prompt_cache_key" in bodies[0] and all("prompt_cache_key" not in x for x in bodies[1:])
+    # other refusals are still errors
+    openai.stream_answers = [(400, {"error": {"code": "invalid_value", "param": "input", "message": "bad input"}})]
+    with pytest.raises(RuntimeError, match="bad input"):
+        chatgpt.one_shot("S", lecture)
+
+
+def test_a_chatgpt_chat_cuts_its_conversation_back_in_steps_and_keeps_one_cache_key():
+    sent = []
+    s = ai.ChatGPTSession("The lectures.")
+    s.request = lambda system, content, *a, **k: sent.append((content[-1]["text"], k)) or {"text": f"A{len(sent)}",
+                                                                                            "usage": {}}
+    for i in range(1, 18):
+        s.ask([{"type": "text", "text": f"Q{i}"}])
+    convo = [t.split("=== NEW QUESTION ===")[0] for t, _ in sent]
+    assert [c.count("[Student]") for c in convo[11:17]] == [11, 12, 8, 9, 10, 11]   # 12 turns at most, then the last 8
+    assert all(c.startswith("=== CONVERSATION SO FAR ===\n\n[Student]\nQ6\n") for c in convo[13:17])  # same beginning
+    keys = {k["cache_key"] for _, k in sent}
+    assert len(keys) == 1 and keys.pop().startswith("ieustudia-chat-")

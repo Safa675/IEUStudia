@@ -15,6 +15,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .i18n import t
+
 log = logging.getLogger("studia")
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -257,7 +259,7 @@ class Notifier:
     def notify(self, title: str, text: str, payload: Any = None) -> None:
         with self._lock:
             if self._tray is None:
-                tray = Tray("IEUStudia", self.icon, lambda: [(1, "Open IEUStudia", False, True)],
+                tray = Tray("IEUStudia", self.icon, lambda: [(1, t("Open IEUStudia"), False, True)],
                             lambda cmd: self._clicked(None), self._clicked,
                             class_name=f"IEUStudiaNotify{id(self):x}{next(_SERIAL)}", title="IEUStudia notification")
                 threading.Thread(target=tray.run, name="notifier", daemon=True).start()

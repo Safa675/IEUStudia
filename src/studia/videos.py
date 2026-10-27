@@ -32,6 +32,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlun
 
 import requests
 
+from .i18n import N_, t
 from .net import USER_AGENT
 from .paths import app_dir
 
@@ -179,7 +180,7 @@ def _video_id(value: str) -> str:
     m = _ID_IN_URL.search(value)
     if m:
         return m.group(1)
-    raise VideoError("That isn't a YouTube video.", "unavailable")
+    raise VideoError(t("That isn't a YouTube video."), "unavailable")
 
 
 def _num(v: Any) -> float:
@@ -216,7 +217,7 @@ def _date(d: dict[str, Any]) -> str:
 
 def _check(cancel: Optional[threading.Event]) -> None:
     if cancel is not None and cancel.is_set():
-        raise VideoError("Cancelled", "cancelled")
+        raise VideoError(t("Cancelled"), "cancelled")
 
 
 # ------------------------------------------------------------------ yt-dlp
@@ -244,28 +245,28 @@ def _ydl(**extra: Any) -> Any:
     })
 
 
-# (kind, pattern in yt-dlp's error text, message for the user): the first match wins
+# (kind, pattern in yt-dlp's error text, message for the user, in English: t() when raised): the first match wins
 _ERRORS = (
-    ("bot", r"not a bot|captcha|unusual traffic", "YouTube asked to confirm you're not a bot. Try again later."),
-    ("private", r"private video|video is private", "This video is private."),
-    ("members", r"members[- ]only|join this channel|channel members", "This video is for the channel's members only."),
-    ("age", r"confirm your age|age[- ]restricted|inappropriate for some users", "This video is age-restricted."),
-    ("geo", r"in your country|geo[- ]?restrict", "This video isn't available in your country."),
-    ("upcoming", r"premieres? in|will begin in|live event will begin", "This video hasn't been released yet."),
-    ("payment", r"requires payment|purchase this video|rent this video", "This video has to be bought or rented."),
+    ("bot", r"not a bot|captcha|unusual traffic", N_("YouTube asked to confirm you're not a bot. Try again later.")),
+    ("private", r"private video|video is private", N_("This video is private.")),
+    ("members", r"members[- ]only|join this channel|channel members", N_("This video is for the channel's members only.")),
+    ("age", r"confirm your age|age[- ]restricted|inappropriate for some users", N_("This video is age-restricted.")),
+    ("geo", r"in your country|geo[- ]?restrict", N_("This video isn't available in your country.")),
+    ("upcoming", r"premieres? in|will begin in|live event will begin", N_("This video hasn't been released yet.")),
+    ("payment", r"requires payment|purchase this video|rent this video", N_("This video has to be bought or rented.")),
     ("rate_limit", r"http error 429|too many requests|\b429\b|try again later|rate[- ]?limit",
-     "YouTube is limiting requests right now. Try again in a few minutes."),
-    ("timeout", r"timed? ?out", "YouTube took too long to answer. Try again."),
+     N_("YouTube is limiting requests right now. Try again in a few minutes.")),
+    ("timeout", r"timed? ?out", N_("YouTube took too long to answer. Try again.")),
     ("network", r"getaddrinfo|name resolution|resolve host|nodename|connection (?:refused|reset|aborted|error)|"
                 r"network is unreachable|no route to host|remote end closed|failed to establish|\bssl\b|"
-                r"certificate|errno 1100\d", "Can't reach YouTube. Check your internet connection."),
+                r"certificate|errno 1100\d", N_("Can't reach YouTube. Check your internet connection.")),
     ("unavailable", r"unavailable|not available|no longer|removed|terminated|deleted|does not exist|"
-                    r"incomplete youtube id|unsupported url|not a valid url", "This video is unavailable."),
+                    r"incomplete youtube id|unsupported url|not a valid url", N_("This video is unavailable.")),
 )
 
 
 def _video_error(exc: BaseException, default: str) -> VideoError:
-    """yt-dlp's long, technical error -> a short message for the user."""
+    """yt-dlp's long, technical error -> a short message for the user (``default``: English, marked with N_)."""
     if isinstance(exc, VideoError):
         return exc
     text = str(exc)
@@ -275,7 +276,7 @@ def _video_error(exc: BaseException, default: str) -> VideoError:
     text = _line(re.sub(r"\x1b\[[\d;]*m", "", text))
     kind, message = next(((k, msg) for k, rx, msg in _ERRORS if re.search(rx, text, re.I)), ("error", default))
     (log.warning if kind in BLOCKING_KINDS else log.info)("YouTube: %s (%s)", message, text[:300])
-    return VideoError(message, kind)
+    return VideoError(t(message), kind)
 
 
 # ------------------------------------------------------------------ search
@@ -305,7 +306,7 @@ def search(query: str, limit: int = 8, *, cancel: Optional[threading.Event] = No
         try:
             result = ydl.extract_info(f"ytsearch{limit}:{q}", download=False)
         except Exception as exc:  # noqa: BLE001 - yt-dlp wraps every failure in DownloadError
-            raise _video_error(exc, "YouTube search failed. Try again later.") from exc
+            raise _video_error(exc, N_("YouTube search failed. Try again later.")) from exc
     hits: list[VideoHit] = []
     for entry in list((result or {}).get("entries") or []):
         hit = _hit(entry, q)
@@ -354,16 +355,16 @@ def inspect(video_id: str, *, langs: tuple[str, ...] = ("en",), cancel: Optional
             # withholds (PO tokens) would fail with "Requested format is not available" despite its captions
             raw = ydl.extract_info(watch_url(vid), download=False, process=False)
         except Exception as exc:  # noqa: BLE001 - yt-dlp wraps every failure in DownloadError
-            raise _video_error(exc, "Couldn't read this video from YouTube.") from exc
+            raise _video_error(exc, N_("Couldn't read this video from YouTube.")) from exc
         if not isinstance(raw, dict) or raw.get("_type", "video") != "video":
-            raise VideoError("This video is unavailable.", "unavailable")
+            raise VideoError(t("This video is unavailable."), "unavailable")
         info = _video_info(vid, raw)
         for lang, kind, formats in _caption_tracks(raw, langs):
             _check(cancel)
             try:
                 cues = _fetch_cues(ydl, formats, cancel)
             except _FetchError as exc:   # not "no captions": don't remember the video without them
-                raise _video_error(exc, "Couldn't download this video's captions.") from exc
+                raise _video_error(exc, N_("Couldn't download this video's captions.")) from exc
             if cues:
                 info.cues, info.caption_lang, info.caption_kind = cues, lang, kind
                 break
@@ -720,7 +721,7 @@ def _run_many(keys: list[str], fn: Callable[[str], Any], workers: int, cancel: O
                 results[key] = exc
             except Exception as exc:  # noqa: BLE001 - one failure never stops the others
                 log.warning("Video task %r failed: %s", key, exc, exc_info=True)
-                results[key] = VideoError("Something went wrong with this video.")
+                results[key] = VideoError(t("Something went wrong with this video."))
             if progress is not None:
                 try:
                     progress(done, len(keys), label(key, results[key]))
@@ -747,9 +748,9 @@ def _stem(word: str) -> str:
 def _tokens(text: str) -> list[str]:
     """Words for matching: case-, accent- and punctuation-insensitive, possessives and plurals folded
     ("Bayes'", "Bayes's" and "bayes" are one word)."""
-    t = unicodedata.normalize("NFKD", (text or "").translate(_APOSTROPHES).casefold())
-    t = re.sub(r"'s\b", "", "".join(ch for ch in t if not unicodedata.combining(ch))).replace("'", "")
-    return [_stem(w) for w in re.findall(r"[^\W_]+", t)]
+    folded = unicodedata.normalize("NFKD", (text or "").translate(_APOSTROPHES).casefold())
+    folded = re.sub(r"'s\b", "", "".join(ch for ch in folded if not unicodedata.combining(ch))).replace("'", "")
+    return [_stem(w) for w in re.findall(r"[^\W_]+", folded)]
 
 
 @dc.dataclass
@@ -764,7 +765,7 @@ def _terms(terms: list[str]) -> list[_Term]:
     for term in terms or []:
         words = _tokens(str(term))
         phrase = " ".join(words)
-        if len(phrase) >= 2 and all(t.phrase != phrase for t in out):
+        if len(phrase) >= 2 and all(x.phrase != phrase for x in out):
             out.append(_Term(phrase, 1.0 + 0.5 * (len(words) - 1), re.compile(rf"(?<!\S){re.escape(phrase)}(?!\S)")))
     return out
 
@@ -848,7 +849,7 @@ def windows(info: VideoInfo, terms: list[str], *, window_s: float = 180, top: in
         b = max(a + 1, bisect.bisect_left(starts, ws + window_s))      # cues a..b-1 start in the window
         we = max(c.end for c in cues[a:b])
         found = [sum(row[j] for row in counts[a:b]) for j in range(len(tl))]
-        score = sum(t.weight * n for t, n in zip(tl, found)) + COVERAGE_BONUS * max(0, sum(1 for n in found if n) - 1)
+        score = sum(term.weight * n for term, n in zip(tl, found)) + COVERAGE_BONUS * max(0, sum(1 for n in found if n) - 1)
         in_titles = set().union(*[f for ch, f in titled if ch.start < we and ch.end > ws])
         score += CHAPTER_BONUS * sum(tl[j].weight for j in in_titles)
         if score > 0:
@@ -900,14 +901,14 @@ def rank(hits: list[VideoHit], terms: list[str], *, prefer_minutes: tuple[float,
         title, desc = " ".join(_tokens(h.title)), " ".join(_tokens(h.description))
         words = set(title.split())
         s = 0.0
-        for t in tl:
-            if t.rx.search(title):
-                s += TITLE_WEIGHT * t.weight
-            elif " " in t.phrase:
-                part = t.phrase.split()
-                s += 0.5 * TITLE_WEIGHT * t.weight * sum(w in words for w in part) / len(part)
-            if t.rx.search(desc):
-                s += DESCRIPTION_WEIGHT * t.weight
+        for term in tl:
+            if term.rx.search(title):
+                s += TITLE_WEIGHT * term.weight
+            elif " " in term.phrase:
+                part = term.phrase.split()
+                s += 0.5 * TITLE_WEIGHT * term.weight * sum(w in words for w in part) / len(part)
+            if term.rx.search(desc):
+                s += DESCRIPTION_WEIGHT * term.weight
         s += _length_fit(h.duration_s / 60, lo, hi)
         s += VIEWS_WEIGHT * math.log10(1 + h.view_count) if h.view_count and h.view_count > 0 else 0.0
         key = _channel_key(h.channel)

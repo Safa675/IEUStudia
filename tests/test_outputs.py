@@ -125,3 +125,14 @@ def test_a_transcript_written_by_an_earlier_version_is_kept(tmp_path):
     assert write_local(tmp_path, r"C:\Videos\Lecture.mp4", t).name == "Lecture (Videos).md"   # it may be another
     assert sorted(p.name for p in (tmp_path / "Local files").iterdir()) == ["Lecture (Videos).md", "Lecture.md"]
     assert write_local(tmp_path, r"C:\Videos\Lecture.mp4", t).name == "Lecture (Videos).md"   # no third copy
+
+
+def test_the_ai_text_leaves_out_paragraphs_with_nothing_in_them():
+    from studia.outputs.ai_copy import compact_day
+
+    segs = SEGS + [Segment(40, 41, "Stay tuned!", "en", 0.3),                      # unsure, two words
+                   Segment(45, 46, "Quiz next week!", "en", 0.3),                  # unsure but emphasised: kept
+                   Segment(50, 58, "Now the second example, with numbers.", "en", 0.9)]
+    text = compact_day(COURSE, [rec("a", 8, 28)], {"a": tr("a", segs)})
+    assert "[unclear]" not in text and "Stay tuned" not in text
+    assert "⭐ ⚠ Quiz next week!" in text and "second example" in text and "[00:15] [TR] ⭐ Arkadaşlar" in text

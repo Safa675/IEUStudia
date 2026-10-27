@@ -4,7 +4,7 @@
 (function () {
   "use strict";
   const St = window.Studia;
-  const { S, call, esc, I, plural, toast, go, A } = St;
+  const { S, call, esc, I, toast, go, A } = St;
   const $ = (s, el = document) => el.querySelector(s);
 
   const ICON = { video_plan: "youtube", prep_pack: "cap", get_ready: "list-checks", transcribe: "wave", download_files: "download",
@@ -12,24 +12,25 @@
   const found = {};                     // "seq:i" -> action
   const chatCourse = () => (S.chat.draft || S.chat.data || {}).course_id || "";
   const course = (cid) => St.findCourse(cid) || {};
-  const weeksText = (w) => (!w || !w.length ? "" : w.length === 1 ? `week ${w[0]}` : `weeks ${Math.min(...w)}–${Math.max(...w)}`);
+  const weeksText = (w) => (!w || !w.length ? "" : w.length === 1 ? t("week {n}", { n: w[0] }) : t("weeks {a}–{b}", { a: Math.min(...w), b: Math.max(...w) }));
   const dayOf = (cid, date) => ((course(cid).days || []).find((d) => d.date === date && d.mine !== false) || (course(cid).days || []).find((d) => d.date === date) || {}).day_key;
 
-  function describe(a, cid) {
-    const code = course(cid).code || "this course";
+  function describe(a, cid) {   // [title, what, button] of an action card
+    const code = course(cid).code || t("this course");
     const w = weeksText(a.weeks);
+    const focus = a.focus ? t("for {focus}", { focus: a.focus }) : "";
     return ({
-      video_plan: ["Video study plan", [code, w, a.focus && `for ${a.focus}`].filter(Boolean).join(" · "), "Set it up…"],
-      prep_pack: ["Exam prep pack", [code, w, a.focus && `for ${a.focus}`].filter(Boolean).join(" · "), "Set it up…"],
-      get_ready: ["Get ready", `${code} · ${a.focus || "the next quiz or exam"}`, "Open checklist"],
-      transcribe: ["Transcribe lectures", `${code} · ${a.date || w || "missing lectures"}`, "Transcribe…"],
-      download_files: ["Download files", `${code} · ${w || "all weeks"}`, "Download…"],
-      study_notes: ["Study notes", `${code} · ${a.date || ""}`, "Open"],
-      open_lecture: ["Open the lecture", `${code} · ${a.date || ""}${a.at ? ` at ${a.at}` : ""}`, "Open"],
-      weekly_digest: ["Weekly digest", "What happened this week and what is coming", "Open"],
-      calendar: ["Add to calendar", "The announced quizzes and exams as a calendar file", "Save"],
-      sync_course: ["Sync this course", `${code}: check IEULearn, transcribe and download what is missing`, "Review…"],
-      search: ["Search", a.query || "", "Search"],
+      video_plan: [t("Video study plan"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
+      prep_pack: [t("Exam prep pack"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
+      get_ready: [t("Get ready"), `${code} · ${a.focus || t("the next quiz or exam")}`, t("Open checklist")],
+      transcribe: [t("Transcribe lectures"), `${code} · ${a.date || w || t("missing lectures")}`, t("Transcribe…")],
+      download_files: [t("Download files"), `${code} · ${w || t("all weeks")}`, t("Download…")],
+      study_notes: [t("Study notes"), `${code} · ${a.date || ""}`, t("Open")],
+      open_lecture: [t("Open the lecture"), `${code} · ${a.at ? t("{date} at {time}", { date: a.date || "", time: a.at }) : a.date || ""}`, t("Open")],
+      weekly_digest: [t("Weekly digest"), t("What happened this week and what is coming"), t("Open")],
+      calendar: [t("Add to calendar"), t("The announced quizzes and exams as a calendar file"), t("Save")],
+      sync_course: [t("Sync this course"), t("{course}: check IEULearn, transcribe and download what is missing", { course: code }), t("Review…")],
+      search: [t("Search"), a.query || "", t("Search")],
     })[a.action];
   }
 
@@ -48,8 +49,8 @@
     const cid = chatCourse();
     const html = cards.length ? `<div class="act-cards">${cards.map((a, i) => {
       found[`${seq}:${i}`] = a;
-      const [t, d, label] = describe(a, cid);
-      return `<div class="act-card"><span class="act-ico">${I(ICON[a.action] || "zap", "sm")}</span><div class="grow"><b>${esc(t)}</b><div class="d">${esc(d)}</div></div>
+      const [title, d, label] = describe(a, cid);
+      return `<div class="act-card"><span class="act-ico">${I(ICON[a.action] || "zap", "sm")}</span><div class="grow"><b>${esc(title)}</b><div class="d">${esc(d)}</div></div>
         <button class="btn primary sm" data-act="chat-action" data-key="${seq}:${i}">${esc(label)}</button></div>`;
     }).join("")}</div>` : "";
     return { text: clean.trim(), html };
@@ -69,31 +70,31 @@
       case "get_ready": {
         const plan = ((d || {}).alerts || {}).plan || [];
         const e = assess || plan.find((x) => x.week && !(d.weeks.find((w) => w.no === x.week) || {}).past) || plan[0];
-        if (!e) { toast("No quiz or exam has been announced for this course yet.", "info"); return; }
+        if (!e) { toast(t("No quiz or exam has been announced for this course yet."), "info"); return; }
         return A["ready-open"]({ dataset: { cid, name: e.name } });
       }
       case "transcribe": {
         const weeks = new Set(a.weeks || []);
         const keys = a.date ? [dayOf(cid, a.date)].filter(Boolean)
           : (d ? d.weeks.filter((w) => weeks.has(w.no)).flatMap((w) => w.days.filter((x) => x.mine !== false && !x.transcribed).map((x) => x.day_key)) : []);
-        if (!keys.length) { toast("Those lectures are already transcribed (or not recorded yet).", "info"); return; }
-        if (!confirm(`Transcribe ${plural(keys.length, "class day")} of ${course(cid).code || "this course"} on this PC?`)) return;
+        if (!keys.length) { toast(t("Those lectures are already transcribed (or not recorded yet)."), "info"); return; }
+        if (!confirm(t.n(keys.length, "Transcribe {n} class day of {course} on this PC?", "Transcribe {n} class days of {course} on this PC?", { course: course(cid).code || t("this course") }))) return;
         let n = 0;
         for (const k of keys) { const r = await call("transcribe_day", k); if (r.ok) n += r.queued || 0; }
-        toast(`${plural(n, "recording")} queued`, "success");
+        toast(t.n(n, "{n} recording queued", "{n} recordings queued"), "success");
         return;
       }
       case "download_files": {
         const weeks = new Set(a.weeks || []);
         const ids = d ? d.weeks.filter((w) => !weeks.size || weeks.has(w.no)).flatMap((w) => w.units.flatMap((u) => u.materials)).filter((m) => !m.downloaded && !m.gone).map((m) => m.id) : [];
-        if (!ids.length) { toast("Those files are already on this PC.", "info"); return; }
+        if (!ids.length) { toast(t("Those files are already on this PC."), "info"); return; }
         const r = await call("materials_download", ids);
-        if (r.ok) toast(`Downloading ${plural(ids.length, "file")}`, "success");
+        if (r.ok) toast(t.n(ids.length, "Downloading {n} file", "Downloading {n} files"), "success");
         return;
       }
       case "study_notes": case "open_lecture": {
         const k = a.date && dayOf(cid, a.date);
-        if (!k) { toast("That lecture was not found in this course.", "info"); return; }
+        if (!k) { toast(t("That lecture was not found in this course."), "info"); return; }
         await St.openDay(k);
         if (a.action === "study_notes") setTimeout(() => A.claude(), 300);
         else if (a.at) { const [mm, ss] = String(a.at).split(":").map(Number); setTimeout(() => St.jumpTo(+a.part || 1, (mm || 0) * 60 + (ss || 0)), 300); }
@@ -103,34 +104,38 @@
       case "calendar": return A["export-calendar"]();
       case "sync_course": return A["course-sync"]({ dataset: { id: cid } });
       case "search": go({ name: "library" }); setTimeout(() => { const box = $("[data-act='search']"); if (box) { box.value = a.query || ""; St.runSearch(a.query || ""); } }, 200); return;
-      default: toast("IEUStudia cannot do that yet.", "info");
+      default: toast(t("IEUStudia cannot do that yet."), "info");
     }
   }
   St.runAction = run;
 
   // ---------------------------------------------------------------- "/" commands and quick actions
-  const CMDS = [
-    ["plan", "video_plan", "Video study plan for this course (add a quiz name or weeks)"],
-    ["prep", "prep_pack", "Exam prep pack (add a quiz or exam name)"],
-    ["ready", "get_ready", "Get-ready checklist for the next quiz or exam"],
-    ["notes", "study_notes", "Study notes for this lecture"],
-    ["transcribe", "transcribe", "Transcribe lectures (add week numbers)"],
-    ["files", "download_files", "Download the files (add week numbers)"],
-    ["sync", "sync_course", "Sync this course: transcribe and download what is missing"],
-    ["digest", "weekly_digest", "This week in all your courses"],
-    ["calendar", "calendar", "Put the announced quizzes and exams in your calendar"],
-    ["search", "search", "Search your lectures and files"],
+  // the command words are typed, so they stay English; the descriptions are shown (made when drawn, after the table arrives)
+  const CMDS = () => [
+    ["plan", "video_plan", t("Video study plan for this course (add a quiz name or weeks)")],
+    ["prep", "prep_pack", t("Exam prep pack (add a quiz or exam name)")],
+    ["ready", "get_ready", t("Get-ready checklist for the next quiz or exam")],
+    ["notes", "study_notes", t("Study notes for this lecture")],
+    ["transcribe", "transcribe", t("Transcribe lectures (add week numbers)")],
+    ["files", "download_files", t("Download the files (add week numbers)")],
+    ["sync", "sync_course", t("Sync this course: transcribe and download what is missing")],
+    ["digest", "weekly_digest", t("This week in all your courses")],
+    ["calendar", "calendar", t("Put the announced quizzes and exams in your calendar")],
+    ["search", "search", t("Search your lectures and files")],
   ];
   function parse(text) {
     const m = /^\/(\w+)\s*(.*)$/s.exec(text.trim());
     if (!m) return null;
-    const c = CMDS.find(([k]) => k === m[1].toLowerCase());
+    const c = CMDS().find(([k]) => k === m[1].toLowerCase());
     if (!c) return null;
     const rest = m[2].trim();
+    // the assessment names are English (as on IEULearn): "/prep ara sınav" means the midterm
+    const named = rest.replace(/ara\s*s[ıi]nav[ıi]?|vize/gi, "midterm").replace(/s[ıi]nav[ıi]?/gi, "exam")
+      .replace(/[öo]dev[iı]?/gi, "homework").replace(/proje(si)?/gi, "project").replace(/\bfinali\b/gi, "final");
     const weeks = (rest.match(/\b\d{1,2}\b/g) || []).map(Number).filter((n) => n > 0 && n < 20);
     const a = { action: c[1] };
-    if (weeks.length && /week|hafta|^\d|\s\d/i.test(rest) && !/quiz|exam|midterm|final/i.test(rest)) a.weeks = weeks;
-    if (/quiz|exam|midterm|final|project/i.test(rest)) a.focus = rest.replace(/\b(for|the)\b/gi, "").replace(/\s+/g, " ").trim().replace(/^\w/, (x) => x.toUpperCase());
+    if (weeks.length && /week|hafta|^\d|\s\d/i.test(rest) && !/quiz|exam|midterm|final/i.test(named)) a.weeks = weeks;
+    if (/quiz|exam|midterm|final|project/i.test(named)) a.focus = named.replace(/\b(for|the)\b/gi, "").replace(/\s+/g, " ").trim().replace(/^\w/, (x) => x.toUpperCase());
     if (c[1] === "search") a.query = rest;
     if (c[1] === "study_notes") {
       const days = (S.chat.data || S.chat.draft || {}).days || [];
@@ -149,14 +154,14 @@
     const cid = chatCourse(); if (!cid) return "";
     const ai = S.system.ai || {};
     const btn = (cmd, ic, label, title) => `<button type="button" class="btn ghost sm" data-act="chat-cmd" data-cmd="${cmd}" title="${esc(title)}">${I(ic, "sm")} ${label}</button>`;
-    return `<div class="chat-tools">${ai.can_plans !== false ? btn("plan", "youtube", "Video plan", "Find videos that teach these weeks, checked through their transcripts") + btn("prep", "cap", "Prep pack", "A written exam prep pack") : ""}
-      ${btn("ready", "list-checks", "Get ready", "What to do before the next quiz or exam")}${btn("sync", "zap", "Sync course", "Transcribe and download what is missing")}
-      <span class="dim sm" style="align-self:center">or type / for more</span></div>`;
+    return `<div class="chat-tools">${ai.can_plans !== false ? btn("plan", "youtube", t("Video plan"), t("Find videos that teach these weeks, checked through their transcripts")) + btn("prep", "cap", t("Prep pack"), t("A written exam prep pack")) : ""}
+      ${btn("ready", "list-checks", t("Get ready"), t("What to do before the next quiz or exam"))}${btn("sync", "zap", t("Sync course"), t("Transcribe and download what is missing"))}
+      <span class="dim sm" style="align-self:center">${t("or type / for more")}</span></div>`;
   };
 
   // the "/" menu while typing
   let menuIndex = 0;
-  function menuItems(v) { const q = v.slice(1).toLowerCase(); return CMDS.filter(([k]) => k.startsWith(q.split(/\s/)[0])); }
+  function menuItems(v) { const q = v.slice(1).toLowerCase(); return CMDS().filter(([k]) => k.startsWith(q.split(/\s/)[0])); }
   function drawMenu() {
     const ta = $("#chat-input"); const box = ta && ta.closest(".composer-inner"); if (!box) return;
     let m = $(".cmd-menu", box);

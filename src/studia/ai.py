@@ -16,13 +16,16 @@ For Claude, to keep subscription usage low we:
   skips the stored subscription login,
 - send the compact transcript as text and only downscaled slide images (optional),
 - default to Sonnet with low effort, and cache notes on disk (never run twice for the same input),
-- keep one process per chat, so follow-up questions read the lectures from Claude's prompt cache.
+- keep one process per chat, so follow-up questions read the lectures from Claude's prompt cache,
+- write nothing to the prompt cache for one-off requests (notes, plans, digest): nothing reads it again, and with a
+  subscription Claude Code writes to a one-hour cache, priced at twice the rate of plain input.
 """
 
 from __future__ import annotations
 
 import base64
 import collections
+import datetime as dt
 import functools
 import glob
 import hashlib
@@ -41,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from .cancel import Cancelled
+from .i18n import N_, date_short, language, t
 
 log = logging.getLogger("studia")
 
@@ -108,7 +112,7 @@ def claude_cli_info() -> dict[str, Any]:
 def _require_claude() -> str:
     info = claude_cli_info()
     if not info["available"]:
-        raise RuntimeError("Claude Code is not installed on this PC. Settings → AI installs it for you.")
+        raise RuntimeError(t("Claude Code is not installed on this PC. Settings → AI installs it for you."))
     return info["path"]
 
 
@@ -204,31 +208,53 @@ def restore_limits(saved: dict[str, Any]) -> None:
 def _reset_text(resets_at: int) -> str:
     if not resets_at:
         return ""
-    t = time.localtime(resets_at)
-    same_day = time.strftime("%Y%m%d", t) == time.strftime("%Y%m%d")
-    return time.strftime("%H:%M" if same_day else "%a %d %b, %H:%M", t)
+    when = dt.datetime.fromtimestamp(resets_at)
+    clock = f"{when:%H:%M}"
+    if when.date() == dt.date.today():
+        return clock
+    day = f"{when:%a %d %b}" if language() == "en" else date_short(when.date())     # English as before: "Mon 02 Nov"
+    return f"{day}, {clock}"
+
+
+# friendly_error's own messages: given to it again (the set-up's test does), they are left as they are, in English
+# or in the language shown
+_OWN = (N_("You have reached your Claude usage limit — it resets {when}."),
+        N_("You have reached your Claude usage limit — it resets at {time}."),
+        N_("You have reached your Claude usage limit."),
+        N_("Your Claude plan doesn't include Claude Code. You need Claude Pro or Max."),
+        N_("Claude Code is not signed in. Settings → AI → Sign in with Claude."),
+        N_("Claude Code is not installed on this PC. Settings → AI installs it for you."))
+
+
+def _explained(m: str) -> bool:
+    if m.startswith(("Claude: ", "You have reached your Claude usage limit", "Claude Code is not signed in.",
+                     "Your Claude plan doesn't include", "Claude Code is not installed")):
+        return True
+    heads = (t(s).split("{", 1)[0].strip() for s in _OWN)      # the text before the first value
+    return any(head and m.startswith(head) for head in heads)
 
 
 def friendly_error(message: str) -> str:
     """Claude Code's error text, made understandable (usage limit, not signed in)."""
     m = (message or "").strip()
     low = m.lower()
-    if m.startswith(("Claude: ", "You have reached your Claude usage limit", "Claude Code is not signed in.",
-                     "Your Claude plan doesn't include", "Claude Code is not installed")):
+    if _explained(m):
         return m                                          # already explained
     if re.search(r"hit your [\w -]{0,20}limit|limit reached|usage limit|rate.?limit", low):
         said = re.search(r"\bresets\s+(.+?)[.\s]*$", m, flags=re.I)   # "You've hit your session limit · resets 10:40am (…)"
         if said:
-            return f"You have reached your Claude usage limit — it resets {said.group(1)}."
+            return t("You have reached your Claude usage limit — it resets {when}.", when=said.group(1))
         stamp = re.search(r"\|(\d{9,11})\b", m)          # "Claude AI usage limit reached|<epoch>"
         full = [w for w in usage_limits().values() if isinstance(w, dict) and w.get("used", 0) >= 0.99]
         reset = _reset_text(int(stamp.group(1)) if stamp else max((w.get("resets_at", 0) for w in full), default=0))
-        return "You have reached your Claude usage limit" + (f" — it resets at {reset}." if reset else ".")
+        if reset:
+            return t("You have reached your Claude usage limit — it resets at {time}.", time=reset)
+        return t("You have reached your Claude usage limit.")
     if "does not have access to claude code" in low or "free plan" in low:
-        return "Your Claude plan doesn't include Claude Code. You need Claude Pro or Max."
+        return t("Your Claude plan doesn't include Claude Code. You need Claude Pro or Max.")
     if any(k in low for k in ("/login", "not logged in", "invalid api key", "authentication", "oauth")):
-        return "Claude Code is not signed in. Settings → AI → Sign in with Claude."
-    return f"Claude: {m}"[:400] if m else "Claude did not return an answer."
+        return t("Claude Code is not signed in. Settings → AI → Sign in with Claude.")
+    return f"Claude: {m}"[:400] if m else t("Claude did not return an answer.")
 
 
 def usage_of(result: dict[str, Any]) -> dict[str, int]:
@@ -237,28 +263,34 @@ def usage_of(result: dict[str, Any]) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------- one-shot (study notes)
+TRANSCRIPT_MARK, TASK_MARK = "=== LECTURE TRANSCRIPT ===", "=== TASK ==="
+
+
 def run_claude(prompt: str, transcript: str, images: Sequence[Path] = (), model: str = "sonnet",
                effort: str = "low", cancel: Optional[threading.Event] = None,
                on_text: Optional[Callable[[str], None]] = None, timeout_s: int = 900) -> dict[str, Any]:
-    content: list[dict[str, Any]] = [{"type": "text", "text": f"{prompt}\n\n=== LECTURE TRANSCRIPT ===\n\n{transcript}"}]
+    """Study material from a lecture: the lecture (and its slides) first, the task last. Every kind of notes for the same
+    lecture then begins with the same text, which ChatGPT reads from its prompt cache for the next kind."""
+    content: list[dict[str, Any]] = [{"type": "text", "text": f"{TRANSCRIPT_MARK}\n\n{transcript}"}]
     content += [image_block(Path(img)) for img in images]
+    content.append({"type": "text", "text": f"{TASK_MARK}\n\n{prompt}"})
     return one_shot(SYSTEM_PROMPT, content, model, effort, cancel, on_text, timeout_s)
 
 
 def parse_json(text: str) -> Any:
     """The JSON value in an answer (also inside a ```json fence or surrounded by a sentence); None if there is none."""
-    t = (text or "").strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
+    body = (text or "").strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", body, re.S)
     if fence:
-        t = fence.group(1).strip()
+        body = fence.group(1).strip()
     try:
-        return json.loads(t)
+        return json.loads(body)
     except ValueError:
         pass
-    a, b = t.find("{"), t.rfind("}")
+    a, b = body.find("{"), body.rfind("}")
     if 0 <= a < b:
         try:
-            return json.loads(t[a:b + 1])
+            return json.loads(body[a:b + 1])
         except ValueError:
             return None
     return None
@@ -278,14 +310,15 @@ def ask_json(system_prompt: str, text: str, *, model: str = "sonnet", effort: st
             res["usage"][k] = res["usage"].get(k, 0) + v
         data = parse_json(again["text"])
         if data is None:
-            raise RuntimeError(f"{ai_name()}'s answer could not be read (it was not valid JSON). Try again.")
+            raise RuntimeError(t("{ai}'s answer could not be read (it was not valid JSON). Try again.", ai=ai_name()))
     return data, res
 
 
 def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "low",
              cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
-             timeout_s: int = 900) -> dict[str, Any]:
-    """One request (no tools, no history) to the AI the user chose: text, usage, model."""
+             timeout_s: int = 900, *, think: bool = True) -> dict[str, Any]:
+    """One request (no tools, no history) to the AI the user chose: text, usage, model. ``think=False``: a task that
+    needs no extended thinking (a summary of given facts) - Claude then answers without it."""
     p = provider()
     if p == "chatgpt":
         return _chatgpt_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
@@ -295,29 +328,41 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
         from . import appconfig, local_llm
 
         text = "\n\n".join(b.get("text", "") for b in content if b.get("type") == "text")
-        for marker in ("=== LECTURE TRANSCRIPT ===", "=== THE WEEK ==="):
-            task, found, rest = text.partition(marker)
-            if found:                  # the task stays whole; only the material is condensed when it is too long
-                system_prompt, text = f"{system_prompt}\n\n{task.strip()}", rest.strip()
-                break
+        material, found, task = text.partition(TASK_MARK)
+        if found:                      # the lecture first, the task last (run_claude)
+            system_prompt, text = f"{system_prompt}\n\n{task.strip()}", material.replace(TRANSCRIPT_MARK, "", 1).strip()
+        else:
+            for marker in (TRANSCRIPT_MARK, "=== THE WEEK ==="):
+                task, found, rest = text.partition(marker)
+                if found:              # the task stays whole; only the material is condensed when it is too long
+                    system_prompt, text = f"{system_prompt}\n\n{task.strip()}", rest.strip()
+                    break
         return local_llm.one_shot(system_prompt, text, appconfig.load().local_model, cancel, on_text)
     if p != "claude":
-        raise RuntimeError("AI features are turned off (Settings → AI).")
-    return _claude_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
+        raise RuntimeError(t("AI features are turned off (Settings → AI)."))
+    return _claude_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s, think=think)
 
 
 def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "low",
                      cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
-                     timeout_s: int = 900) -> dict[str, Any]:
-    """One request to Claude Code in a fresh headless process (no tools, no history): text, usage, model."""
+                     timeout_s: int = 900, think: bool = True) -> dict[str, Any]:
+    """One request to Claude Code in a fresh headless process (no tools, no history): text, usage, model.
+
+    The process ends after this one answer, so nothing would read its prompt cache: it writes none
+    (DISABLE_PROMPT_CACHING). With a subscription Claude Code would otherwise write the whole request to a one-hour
+    cache, priced at twice the rate of plain input. ``think=False``: no extended thinking (for Haiku, which
+    ``--effort`` does not apply to, Claude Code otherwise allows 31,999 thinking tokens)."""
     _require_claude()
+    env = {**_claude_env(), "DISABLE_PROMPT_CACHING": "1"}
+    if not think:
+        env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
     message = {"type": "user", "message": {"role": "user", "content": content}}
     with tempfile.TemporaryDirectory(prefix="studia-claude-") as work:
         sp = Path(work) / "system.txt"
         sp.write_text(system_prompt, encoding="utf-8")
         started = time.monotonic()
         proc = subprocess.Popen(_command(model, effort, sp), cwd=work, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, creationflags=_NO_WINDOW, env=_claude_env())
+                                stderr=subprocess.PIPE, creationflags=_NO_WINDOW, env=env)
         assert proc.stdin and proc.stdout
         proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
         proc.stdin.close()
@@ -355,7 +400,7 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
             raise Cancelled()
         err = (proc.stderr.read() or b"").decode("utf-8", "replace") if proc.stderr else ""
     if not result or result.get("is_error") or result.get("subtype") not in (None, "success"):
-        msg = result.get("result") or (err.strip().splitlines() or ["Claude did not return a result."])[-1]
+        msg = result.get("result") or (err.strip().splitlines() or [t("Claude did not return a result.")])[-1]
         raise RuntimeError(friendly_error(msg))
     return {
         "text": result.get("result") or "".join(text_parts),
@@ -428,7 +473,7 @@ class ClaudeSession:
         time.sleep(0.1)    # let the stderr reader catch the last lines
         tail = next((ln for ln in reversed(self._stderr) if ln), "")
         log.warning("Claude Code exited (code %s): %s", self._proc.returncode, " | ".join(self._stderr)[-600:])
-        return RuntimeError(friendly_error(tail) if tail else "Claude Code stopped unexpectedly. Try again.")
+        return RuntimeError(friendly_error(tail) if tail else t("Claude Code stopped unexpectedly. Try again."))
 
     def alive(self) -> bool:
         return self._proc.poll() is None
@@ -502,7 +547,7 @@ class ClaudeSession:
                     break
             self.last_used = time.monotonic()
             if timed_out:
-                raise RuntimeError("Claude took too long to answer.")
+                raise RuntimeError(t("Claude took too long to answer."))
             text = _join(blocks)
             if interrupted_at is None:
                 if result is None or result.get("is_error") or result.get("subtype") not in (None, "success"):
@@ -557,7 +602,8 @@ def _join(blocks: list[str]) -> str:
 
 # ======================================================================= which AI, and its sign-in
 # "chatgpt" is "Continue with ChatGPT" (chatgpt.py), "codex" ChatGPT through the Codex CLI
-PROVIDER_LABELS = {"chatgpt": "ChatGPT", "claude": "Claude", "codex": "ChatGPT", "local": "Offline model", "none": ""}
+PROVIDER_LABELS = {"chatgpt": "ChatGPT", "claude": "Claude", "codex": "ChatGPT", "local": N_("Offline model"),
+                   "none": ""}                  # English (the exported notes and chats say it); t() to show it
 PLAN_AIS = ("chatgpt", "claude", "codex")      # the user's own plan: big enough for study plans, reads images
 
 
@@ -576,7 +622,8 @@ def ai_info() -> dict[str, Any]:
     from . import appconfig
 
     p = provider()
-    out: dict[str, Any] = {"provider": p, "label": PROVIDER_LABELS.get(p, ""), "available": False, "path": "",
+    label = PROVIDER_LABELS.get(p, "")
+    out: dict[str, Any] = {"provider": p, "label": t(label) if p == "local" else label, "available": False, "path": "",
                            "version": "", "can_plans": p in PLAN_AIS, "can_images": p in PLAN_AIS}
     if p == "claude":
         out.update(claude_cli_info())
@@ -599,9 +646,9 @@ def claude_info() -> dict[str, Any]:          # the name the rest of the app use
 
 
 def ai_name() -> str:
-    """The chosen AI in messages: "ChatGPT", "Claude" or "The offline model"."""
+    """The chosen AI in messages: "ChatGPT", "Claude" or "The offline model" (in the language shown)."""
     p = provider()
-    return "The offline model" if p == "local" else PROVIDER_LABELS.get(p) or "The AI"
+    return t("The offline model") if p == "local" else PROVIDER_LABELS.get(p) or t("The AI")
 
 
 REASONING = {"haiku": "quick", "sonnet": "standard", "opus": "thorough"}      # the app's levels, for ChatGPT
@@ -689,7 +736,7 @@ def _codex_model() -> str:
 def _codex_command(work: Path, model: str, effort: str, images: Sequence[Path] = ()) -> list[str]:
     info = codex_cli_info()
     if not info["available"]:
-        raise RuntimeError("The Codex CLI is not installed on this PC (Settings → AI).")
+        raise RuntimeError(t("The Codex CLI is not installed on this PC (Settings → AI)."))
     cmd = [info["path"], "exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
            "-s", "read-only", "-C", str(work), "-c", f'model_reasoning_effort="{CODEX_EFFORT.get(model, effort)}"']
     chosen = _codex_model()
@@ -719,21 +766,21 @@ def _codex_text(system_prompt: str, content: list[dict[str, Any]], work: Path) -
 def _codex_error(message: str) -> str:
     low = (message or "").lower()
     if "usage limit" in low or "rate limit" in low or "too many requests" in low:
-        return "You have reached your ChatGPT usage limit for Codex. Try again later."
+        return t("You have reached your ChatGPT usage limit for Codex. Try again later.")
     if "not logged in" in low or "login" in low or "unauthorized" in low or "401" in low:
-        return "The Codex CLI is not signed in. Sign in under Settings → AI."
+        return t("The Codex CLI is not signed in. Sign in under Settings → AI.")
     if "not supported" in low and "model" in low:
-        return "Your ChatGPT plan does not offer the chosen model. Settings → AI → ChatGPT model: Default."
-    return f"ChatGPT: {message}"[:400] if message else "ChatGPT did not return an answer."
+        return t("Your ChatGPT plan does not offer the chosen model. Settings → AI → ChatGPT model: Default.")
+    return f"ChatGPT: {message}"[:400] if message else t("ChatGPT did not return an answer.")
 
 
 def _chatgpt_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
                       cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
-                      timeout_s: float) -> dict[str, Any]:
+                      timeout_s: float, **kw: Any) -> dict[str, Any]:
     """One request on the user's ChatGPT plan through "Continue with ChatGPT" (chatgpt.py)."""
     from . import chatgpt
 
-    return chatgpt.one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
+    return chatgpt.one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s, **kw)
 
 
 def _codex_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
@@ -797,10 +844,15 @@ class ChatGPTSession:
     turn is one request that carries the lecture context and the conversation so far (OpenAI caches the long,
     unchanged beginning, so follow-ups are cheap)."""
 
+    KEEP_TURNS, MAX_TURNS = 8, 12     # the conversation sent along: cut back to 8 turns only after 12, so its beginning
+                                      # stays the same for four questions in a row and comes from OpenAI's cache
+
     def __init__(self, system_prompt: str, model: str = "sonnet", effort: str = "low", cli: bool = False) -> None:
         if cli:
             codex_cli_info()
         self.request = _codex_one_shot if cli else _chatgpt_one_shot
+        self._extra: dict[str, Any] = {} if cli else {
+            "cache_key": "ieustudia-chat-" + hashlib.sha256(system_prompt.encode("utf-8", "ignore")).hexdigest()[:24]}
         self.model = model
         self.key: Any = None
         self.system = system_prompt
@@ -834,13 +886,15 @@ class ChatGPTSession:
                 self.slides = content[:last_image + 1]
             texts = [b.get("text", "") for b in content[last_image + 1:] if b.get("type") == "text"]
             question = texts[-1].strip() if texts else ""
-            found = "\n\n".join(t for t in texts[:-1] if t.strip())
-            convo = "".join(f"\n\n[Student]\n{q}\n\n[You]\n{a}" for q, a in self.history[-8:])
+            found = "\n\n".join(x for x in texts[:-1] if x.strip())
+            if len(self.history) > self.MAX_TURNS:
+                self.history = self.history[-self.KEEP_TURNS:]
+            convo = "".join(f"\n\n[Student]\n{q}\n\n[You]\n{a}" for q, a in self.history)
             text = ((f"=== CONVERSATION SO FAR ==={convo}\n\n" if convo else "") + (f"{found}\n\n" if found else "")
                     + f"=== NEW QUESTION ===\n{question}")
             try:
                 r = self.request(self.system, [*self.slides, {"type": "text", "text": text}], self.model, self.effort,
-                                 stop, on_text, timeout_s)
+                                 stop, on_text, timeout_s, **self._extra)
             except Cancelled:
                 return {"text": "", "usage": {}, "stopped": True}
             self.history.append((question, r["text"]))
@@ -868,7 +922,7 @@ def new_session(system_prompt: str, model: str = "sonnet", effort: str = "low") 
 
         return LocalSession(system_prompt, appconfig.load().local_model)
     if p != "claude":
-        raise RuntimeError("AI features are turned off (Settings → AI).")
+        raise RuntimeError(t("AI features are turned off (Settings → AI)."))
     return ClaudeSession(system_prompt, model, effort)
 
 
@@ -905,8 +959,9 @@ def ai_status(which: str = "") -> dict[str, Any]:
                         "plan_status": ai_setup.plan_status("codex", auth["plan"], auth["logged_in"]),
                         "job": ai_setup.job("codex"), "test": ai_setup.last_test("codex")}
     if not which:
-        out["local"] = {"model": cfg.local_model, "models": [{"id": k, **{kk: v[kk] for kk in ("label", "description", "size_mb")},
-                                                             "ready": llm_ready(k)} for k, v in LLM_PRESETS.items()]}
+        out["local"] = {"model": cfg.local_model, "models": [{"id": k, "label": t(v["label"]), "description": t(v["description"]),
+                                                             "size_mb": v["size_mb"], "ready": llm_ready(k)}
+                                                            for k, v in LLM_PRESETS.items()]}
     return out
 
 
@@ -942,12 +997,12 @@ def start_login(which: str) -> None:
     if which == "claude":
         info = claude_cli_info()
         if not info["available"]:
-            raise RuntimeError("Install Claude Code first.")
+            raise RuntimeError(t("Install Claude Code first."))
         subprocess.Popen([info["path"], "auth", "login", "--claudeai"], creationflags=_NEW_CONSOLE, env=_claude_env())
     elif which == "codex":
         info = codex_cli_info()
         if not info["available"]:
-            raise RuntimeError("Install the Codex CLI first.")
+            raise RuntimeError(t("Install the Codex CLI first."))
         subprocess.Popen([info["path"], "login"], creationflags=_NEW_CONSOLE)
     else:
         raise ValueError(which)

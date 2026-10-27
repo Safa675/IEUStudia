@@ -20,6 +20,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
+from .i18n import t
 from .paths import _home_override, app_dir, documents_dir, profile_output_name, set_profile_dir
 
 log = logging.getLogger("studia")
@@ -117,7 +118,7 @@ def set_active(account_id: str) -> Account:
         active_id, accounts = load()
         acc = next((a for a in accounts if a.id == account_id), None)
         if acc is None:
-            raise KeyError("This profile no longer exists.")
+            raise KeyError(t("This profile no longer exists."))
         acc.last_used = _now()
         _save(acc.id, accounts)
         return acc
@@ -157,12 +158,12 @@ def remove(account_id: str) -> None:
     with _lock:
         active_id, accounts = load()
         if account_id == MAIN:
-            raise ValueError("The first profile can't be removed; sign out of it instead.")
+            raise ValueError(t("The first profile can't be removed; sign out of it instead."))
         if account_id == active_id:
-            raise ValueError("Switch to another profile before removing this one.")
+            raise ValueError(t("Switch to another profile before removing this one."))
         acc = next((a for a in accounts if a.id == account_id), None)
         if acc is None or not _ID.fullmatch(acc.id):
-            raise KeyError("This profile no longer exists.")
+            raise KeyError(t("This profile no longer exists."))
         accounts.remove(acc)
         _save(active_id, accounts)
     folder = app_dir() / "profiles" / acc.id

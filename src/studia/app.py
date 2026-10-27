@@ -19,12 +19,24 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import APP_NAME, __version__
+from .i18n import t
 from .winutil import acquire_single_instance, focus_window, set_app_id
 
 ASSETS = Path(__file__).parent / "assets"
 WEB = Path(__file__).parent / "web"
 HANG_AFTER_S = 45
 log = logging.getLogger("studia")
+
+
+def _early_language() -> None:
+    """The language for a message shown before start-up has set it (or after a crash): the choice in Settings, else
+    Windows' language; English if even that can't be read."""
+    from . import i18n
+
+    try:
+        i18n.load_language()
+    except Exception:  # noqa: BLE001 - say it in English rather than not at all
+        log.debug("language not loaded", exc_info=True)
 
 
 def _on_shown(api: Any, instance: str = "") -> None:
@@ -108,9 +120,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             where = str(logs_dir())
         except Exception:  # noqa: BLE001
             where = "%LOCALAPPDATA%\\IEUStudia\\logs"
-        ctypes.windll.user32.MessageBoxW(None, f"IEUStudia could not start:\n\n{exc}\n\n"
-                                         f"{traceback.format_exc(limit=3)}\nDetails are in the log folder "
-                                         f"({where}).", APP_NAME, 0x10)
+        _early_language()
+        head, tail = t("IEUStudia could not start:"), t("Details are in the log folder ({where}).", where=where)
+        ctypes.windll.user32.MessageBoxW(None, f"{head}\n\n{exc}\n\n{traceback.format_exc(limit=3)}\n{tail}",
+                                         APP_NAME, 0x10)
 
 
 def _selftest(out: str) -> int:
@@ -159,7 +172,8 @@ def _windowless_python() -> str:
     return windowless_python()
 
 
-def _start_splash(dark: bool, recovered: bool, marker: Optional[Path] = None, logs: Optional[Path] = None) -> None:
+def _start_splash(dark: bool, recovered: bool, marker: Optional[Path] = None, logs: Optional[Path] = None,
+                  lang: str = "en") -> None:
     """The native start-up window (its own process, so it shows and animates at once, whatever this one is busy
     with); it closes itself when the real window appears. ``marker``: the instance file where start-up notes its
     phase; ``logs``: where a stuck start leaves its diagnostics."""
@@ -172,7 +186,7 @@ def _start_splash(dark: bool, recovered: bool, marker: Optional[Path] = None, lo
         subprocess.Popen(splash_command(str(os.getpid()), "dark" if dark else "light", "--python", restart[0],
                                         *(["--marker", str(marker)] if marker else []),
                                         *(["--logs", str(logs)] if logs else []),
-                                        *(["--recovered"] if recovered else [])), close_fds=True)
+                                        *(["--recovered"] if recovered else []), "--lang", lang), close_fds=True)
     except OSError:
         log.debug("no start-up window", exc_info=True)
 
@@ -185,9 +199,10 @@ def _webview2_missing() -> bool:
         return False
     from .winutil import message_box
 
-    if message_box("IEUStudia needs the Microsoft Edge WebView2 Runtime, which is not installed on this PC.\n\n"
-                   "It is free and comes with Windows 11 and current Windows 10. Open the download page now?",
-                   APP_NAME, 0x4 | 0x30) == 6:
+    _early_language()
+    if message_box(t("IEUStudia needs the Microsoft Edge WebView2 Runtime, which is not installed on this PC.")
+                   + "\n\n" + t("It is free and comes with Windows 11 and current Windows 10. Open the download page "
+                                "now?"), APP_NAME, 0x4 | 0x30) == 6:
         import webbrowser
 
         webbrowser.open("https://developer.microsoft.com/microsoft-edge/webview2/#download")
@@ -243,8 +258,9 @@ def _other_instance(name: str) -> bool:
     info = read_instance(name)
     if time.time() - float(info.get("started") or 0) < 60:
         return False                          # still starting; its own start-up window handles a hang
-    if message_box("IEUStudia is already running, but its window is not showing and it does not respond.\n\n"
-                   "Close that copy and start IEUStudia again?", APP_NAME, 0x4 | 0x30) != 6:     # MB_YESNO, IDYES
+    _early_language()
+    if message_box(t("IEUStudia is already running, but its window is not showing and it does not respond.") + "\n\n"
+                   + t("Close that copy and start IEUStudia again?"), APP_NAME, 0x4 | 0x30) != 6:   # MB_YESNO, IDYES
         return False
     if info.get("pid"):
         kill_tree(int(info["pid"]))
@@ -302,7 +318,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
         return
     write_instance(name)
     set_app_id()
-    from . import appconfig
+    from . import appconfig, i18n
     from .accounts import activate
     from .config import load_settings
     from .log import setup_logging
@@ -311,12 +327,13 @@ def _main(argv: Optional[list[str]] = None) -> None:
 
     moved = migrate_legacy_data()            # before anything opens the data folder
     appconfig.migrate()                      # the AI choice as an earlier version stored it
+    i18n.load_language()                     # before anything makes a message (threads, start-up window, tray)
     account = activate()                     # whose library, settings and password this run uses
     theme = load_settings().theme
     dark = theme == "dark" or (theme == "system" and windows_dark_mode())
     from .winutil import _instance_file
 
-    _start_splash(dark, "--recovered" in argv, _instance_file(name), logs_dir())   # on screen in a fraction of a second
+    _start_splash(dark, "--recovered" in argv, _instance_file(name), logs_dir(), i18n.language())   # on screen at once
     setup_logging(debug)
     log.info("IEUStudia %s starting (python %s), profile %s", __version__, sys.version.split()[0], account.id)
     if "--recovered" in argv:
@@ -351,7 +368,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
             services = Services(debug=debug)
         except Exception as exc:  # noqa: BLE001 - shown on the start-up screen
             log.exception("Services failed to start")
-            api._startup_failed(f"IEUStudia could not open its data folder or library: {exc}")
+            api._startup_failed(t("IEUStudia could not open its data folder or library: {error}", error=exc))
             return
         started["services"] = services
         api._set_services(services)
@@ -377,13 +394,14 @@ def _main(argv: Optional[list[str]] = None) -> None:
         # every question first: whoever keeps the window open at the second one has nothing cancelled
         setup = api._setup_running
         if setup and not window.create_confirmation_dialog(
-                "Download in progress", "IEUStudia is still downloading what it needs. Quit anyway? Next time "
-                "the download continues where it stopped."):
+                t("Download in progress"), t("IEUStudia is still downloading what it needs. Quit anyway? Next time "
+                                             "the download continues where it stopped.")):
             return False
         busy = services is not None and services.jobs.busy()
         if busy and not window.create_confirmation_dialog(
-                "Transcription in progress", "IEUStudia is still transcribing. Quit anyway? Lectures that aren't "
-                "transcribed yet are kept, and next time IEUStudia offers to go on with them."):
+                t("Transcription in progress"), t("IEUStudia is still transcribing. Quit anyway? Lectures that aren't "
+                                                  "transcribed yet are kept, and next time IEUStudia offers to go on "
+                                                  "with them.")):
             return False
         if setup and api._setup_cancel is not None:
             api._setup_cancel.set()
@@ -413,8 +431,8 @@ def _main(argv: Optional[list[str]] = None) -> None:
         if not updates.run_installer(api._update_installer):       # blocked by an antivirus, say
             from .winutil import message_box
 
-            message_box("IEUStudia couldn't start the update: Windows or your antivirus didn't let the installer "
-                        "run. IEUStudia opens again. You can also download the new version from its release page.",
+            message_box(t("IEUStudia couldn't start the update: Windows or your antivirus didn't let the installer "
+                          "run. IEUStudia opens again. You can also download the new version from its release page."),
                         APP_NAME, 0x30)
             _relaunch(argv)
 

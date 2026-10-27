@@ -37,19 +37,20 @@ from typing import Any, Callable, Optional
 
 from . import store
 from .cancel import Cancelled
+from .i18n import N_, language, t, tn
 
 log = logging.getLogger("studia")
 
-STAGES = [
-    ("gather", "Reading the course material"),
-    ("concepts", "Working out what you need to learn"),
-    ("search", "Searching YouTube"),
-    ("inspect", "Reading the videos' captions"),
-    ("verify", "Checking which videos really teach each concept"),
-    ("assemble", "Building your plan"),
+STAGES = [                                           # labels in English: t() to show them
+    ("gather", N_("Reading the course material")),
+    ("concepts", N_("Working out what you need to learn")),
+    ("search", N_("Searching YouTube")),
+    ("inspect", N_("Reading the videos' captions")),
+    ("verify", N_("Checking which videos really teach each concept")),
+    ("assemble", N_("Building your plan")),
 ]
 STAGE_NAMES = [s for s, _ in STAGES]
-PREP_STAGES = [("gather", "Reading the course material"), ("write", "Writing your exam prep pack")]
+PREP_STAGES = [("gather", N_("Reading the course material")), ("write", N_("Writing your exam prep pack"))]
 LABELS = dict(STAGES + PREP_STAGES)
 PACK_CHARS = 90_000           # course material sent for the concept list (~29k tokens)
 MAT_CHARS = 9_000             # per file
@@ -105,15 +106,24 @@ def main_model(scope: "Scope", settings: Any) -> str:
     return scope.model or getattr(settings, "plan_model", "") or getattr(settings, "ai_model", "") or "sonnet"
 
 
-def _week_span(weeks: list[int]) -> str:
+def _capital(s: str) -> str:
+    """``s`` with a capital first letter (in Turkish, i → İ)."""
+    first = "İ" if s[:1] == "i" and language() == "tr" else s[:1].upper()
+    return first + s[1:]
+
+
+def _week_span(weeks: list[int], shown: bool = False) -> str:
+    """"week 3, weeks 5–7": in English for the AI and the exported files, ``shown`` in the language shown."""
     if not weeks:
-        return "all weeks so far"
+        return t("all weeks so far") if shown else "all weeks so far"
     runs: list[list[int]] = []
     for w in weeks:
         if runs and w == runs[-1][1] + 1:
             runs[-1][1] = w
         else:
             runs.append([w, w])
+    if shown:
+        return ", ".join(t("week {n}", n=a) if a == b else t("weeks {a}–{b}", a=a, b=b) for a, b in runs)
     return ", ".join(f"week {a}" if a == b else f"weeks {a}–{b}" for a, b in runs)
 
 
@@ -129,7 +139,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
 
     d = course_detail(lib, settings, course_id)
     if d is None:
-        raise KeyError("This course is no longer in your list.")
+        raise KeyError(t("This course is no longer in your list."))
     course = lib.get_course(course_id)
     weeks = [w for w in d["weeks"] if not scope.weeks or w["no"] in scope.weeks]
     if not scope.weeks:                                       # default: everything up to this week
@@ -140,17 +150,17 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
         out.append(f"Course objectives: {d['objectives']}")
     if d["outcomes_en"]:
         out.append("LEARNING OUTCOMES (English syllabus numbering):")
-        out += [f"  LO{i}: {t}" for i, t in enumerate(d["outcomes_en"], 1)]
+        out += [f"  LO{i}: {lo}" for i, lo in enumerate(d["outcomes_en"], 1)]
     if d["outcomes_tr"] and d["outcomes_tr"] != d["outcomes_en"]:
         out.append("LEARNING OUTCOMES on IEULearn (Turkish; numbering may differ):")
-        out += [f"  LO{i}: {t}" for i, t in enumerate(d["outcomes_tr"], 1)]
+        out += [f"  LO{i}: {lo}" for i, lo in enumerate(d["outcomes_tr"], 1)]
     if plan:
         out.append("ASSESSMENTS ANNOUNCED BY THE LECTURER:")
         out += [f"  {e['name']}: week {e['week'] or '?'}" + (f", covers LO{', LO'.join(map(str, e['los']))}" if e["los"] else "")
                 for e in plan]
     out.append("WEEKS IN SCOPE:")
     for w in weeks:
-        topic = " / ".join(t for t in (w["topic_en"], w["topic_tr"]) if t) or ", ".join(u["title"] for u in w["units"])
+        topic = " / ".join(x for x in (w["topic_en"], w["topic_tr"]) if x) or ", ".join(u["title"] for u in w["units"])
         out.append(f"  Week {w['no']} ({w['start']} to {w['end']}): {topic}" + (f" — readings: {w['readings']}" if w["readings"] else ""))
     keys = [a for a in (d.get("alerts") or {}).get("items", []) if a["category"] != "important"
             and any(w["start"] and w["start"] <= a["date"][:10] <= (w["end"] or w["start"]) for w in weeks)]
@@ -229,14 +239,15 @@ def focused(scope: Scope) -> bool:
     return bool(scope.focus or scope.los)
 
 
-def target(scope: Scope, weeks: Optional[list[int]] = None) -> str:
-    """What the plan is for, in words: "Quiz 2 (LO1, LO2)", "the focus outcomes (LO3)" or "weeks 4–5"."""
+def target(scope: Scope, weeks: Optional[list[int]] = None, shown: bool = False) -> str:
+    """What the plan is for, in words: "Quiz 2 (LO1, LO2)", "the focus outcomes (LO3)" or "weeks 4–5" (in English for
+    the AI; ``shown``: in the language shown, for the student)."""
     los = ", ".join(f"LO{n}" for n in scope.los)
     if scope.focus:
         return scope.focus + (f" ({los})" if los else "")
     if los:
-        return f"the focus outcomes ({los})"
-    return _week_span(scope.weeks if weeks is None else weeks)
+        return t("the focus outcomes ({los})", los=los) if shown else f"the focus outcomes ({los})"
+    return _week_span(scope.weeks if weeks is None else weeks, shown)
 
 
 def searched(c: dict[str, Any], scope: Scope) -> bool:
@@ -306,7 +317,7 @@ def clean_concepts(raw: Any, scope: Optional[Scope] = None) -> tuple[list[dict[s
                          "queries": lst("queries")[:3] or [str(c["name"]).strip()]})
     concepts = concepts[:MAX_CONCEPTS]
     if not concepts:
-        raise RuntimeError("The AI found no concepts in the material for this scope.")
+        raise RuntimeError(t("The AI found no concepts in the material for this scope."))
     if not any(c["in_scope"] for c in concepts):        # an outcome mix-up: better a broad plan than an empty one
         for c in concepts:
             c["in_scope"] = True
@@ -334,8 +345,8 @@ def _secs(stamp: str) -> int:
 
 
 def _norm(word: str) -> str:
-    t = unicodedata.normalize("NFKD", word.casefold())
-    return "".join(ch for ch in t if not unicodedata.combining(ch))
+    folded = unicodedata.normalize("NFKD", word.casefold())
+    return "".join(ch for ch in folded if not unicodedata.combining(ch))
 
 
 def _words(text: str) -> list[str]:
@@ -346,13 +357,13 @@ def _run(q: list[str], part: dict[str, Any]) -> tuple[int, float, str]:
     """The longest run of the words ``q`` (in order) in a caption excerpt: (length, when it was said - from the
     excerpt's "[m:ss]" marks, before the first one its start -, the captions' own words for it)."""
     text = str(part.get("text") or "")
-    t = float(part.get("start") or 0)
+    when = float(part.get("start") or 0)
     words: list[tuple[str, float, int, int]] = []
     for m in _TOKEN.finditer(text):
         if m.group(1):
-            t = float(_secs(m.group(1)))
+            when = float(_secs(m.group(1)))
         else:
-            words.append((_norm(m.group()), t, m.start(), m.end()))
+            words.append((_norm(m.group()), when, m.start(), m.end()))
     best, end = 0, -1
     prev = [0] * (len(q) + 1)
     for i, (w, *_) in enumerate(words):
@@ -488,10 +499,10 @@ def clean_verdicts(raw: Any, asked: dict[str, set[str]], videos: dict[str, dict[
             if not text:
                 continue
             try:
-                t = max(0.0, float(e.get("t") or 0)) if isinstance(e, dict) else start
+                at = max(0.0, float(e.get("t") or 0)) if isinstance(e, dict) else start
             except (TypeError, ValueError):
-                t = start
-            errors.append({"t": round(min(t, dur) if dur else t), "text": text[:240]})
+                at = start
+            errors.append({"t": round(min(at, dur) if dur else at), "text": text[:240]})
         out.setdefault(cid, {})[vid] = {
             "coverage": coverage, "skills": taught,
             "start": round(start), "end": round(end), "level": str(v.get("level") or "course"),
@@ -608,7 +619,7 @@ def _listed(value: Any) -> list[Any]:
 def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], videos: dict[str, dict],
              practice: list[dict], gaps: str, *, verdicts: Optional[dict[str, dict[str, dict]]] = None,
              excerpts: Optional[dict[str, dict[str, list]]] = None, scope: Optional[Scope] = None,
-             goal: str = "") -> dict[str, Any]:
+             goal: str = "", goal_en: str = "") -> dict[str, Any]:
     """The AI's plan, checked against the real data: only known videos, parts within the video, exact titles,
     channels and links, the viewing time recomputed - and what each item teaches, the coverage of every concept and
     skill and how complete the plan is, all from the verdicts (the AI's own claims about coverage are not used)."""
@@ -657,7 +668,7 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
                        key=lambda p: p["start"])
         whole = len(segs) == 1 and segs[0][0] == 0 and (not dur or segs[0][1] >= dur - 15)
         secs = sum(b - a for a, b in segs)
-        state = ("verified" if any(t["state"] in ("full", "partial") for t in teaches)
+        state = ("verified" if any(x["state"] in ("full", "partial") for x in teaches)
                  else "unverified" if not v.get("has_captions") else "unchecked")
         extra = bool(concepts_of) and not any(by_id[c].get("in_scope", True) for c in concepts_of)
         role = it.get("role") if it.get("role") in ("required", "prerequisite", "optional", "alternative") else "required"
@@ -675,10 +686,11 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
             "why": str(it.get("why") or "").strip(), "limits": str(it.get("limits") or "").strip(),
             "teaches": teaches, "state": state, "quotes": quotes[:4], "errors": errors[:3], "excerpts": parts[:6],
             "captions": f"{v.get('caption_kind')}, {v.get('caption_lang')}" if v.get("has_captions") else "",
+            # with captions this goes only into the exported plan (English); the page shows the other one
             "inspected": (f"captions ({v.get('caption_kind')}, {v.get('caption_lang')}): {len(parts)} part{'s' if len(parts) != 1 else ''} read"
                           + (f" ({', '.join(f'{fmt_ts(p['start'])}–{fmt_ts(p['end'])}' for p in parts[:4])})" if parts else "")
                           + (f" + {len(v.get('chapters') or [])} chapters" if v.get("chapters") else ""))
-                         if v.get("has_captions") else "title, description and chapters only (no captions available)",
+                         if v.get("has_captions") else t("title, description and chapters only (no captions available)"),
             "evidence": quotes[0]["text"] if quotes else "",
         })
     for it in items:
@@ -713,7 +725,7 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
         "total_minutes": total,
         "optional_minutes": sum(it["minutes"] for it in items if it["role"] in ("optional", "alternative")),
         "coverage": coverage, "checklist": checklist, "supplements": supplements, "practice": practice,
-        "completeness": completeness(coverage, scope, goal, total),
+        "completeness": completeness(coverage, scope, goal, total, goal_en),
         "concepts": [{k: c.get(k, d) for k, d in (("id", ""), ("name", ""), ("summary", ""), ("importance", "core"),
                                                   ("focus", False), ("weeks", []), ("los", []), ("in_scope", True),
                                                   ("skills", []))} for c in concepts],
@@ -732,18 +744,18 @@ def _coverage(concepts: list[dict], items: list[dict], supplements: list[dict], 
     for c in concepts:
         cid, skills = c["id"], c.get("skills") or []
         its = [it for it in items if cid in it["concepts"]]
-        taught = [(it, t) for it in its for t in it.get("teaches", []) if t["concept"] == cid and t["state"] in ("full", "partial")]
+        taught = [(it, x) for it in its for x in it.get("teaches", []) if x["concept"] == cid and x["state"] in ("full", "partial")]
         rows = []
         for s in skills:
-            ns = [it["n"] for it, t in taught if s in t["skills"]]
-            core = any(it["role"] in ("required", "prerequisite") for it, t in taught if s in t["skills"])
+            ns = [it["n"] for it, x in taught if s in x["skills"]]
+            core = any(it["role"] in ("required", "prerequisite") for it, x in taught if s in x["skills"])
             rows.append({"text": s, "items": ns,
                          "how": "video" if core else "optional" if ns else "supplement" if cid in with_sup else "missing"})
         if skills:
             on_video = sum(r["how"] in ("video", "optional") for r in rows)
             state = "verified" if on_video == len(skills) else "partial" if on_video or taught else ""
         else:
-            state = "verified" if any(t["state"] == "full" for _, t in taught) else "partial" if taught else ""
+            state = "verified" if any(x["state"] == "full" for _, x in taught) else "partial" if taught else ""
         if not state:
             state = ("unverified" if its else "supplement" if cid in with_sup else "missing")
         if not c.get("in_scope", True) and state == "missing":
@@ -754,9 +766,11 @@ def _coverage(concepts: list[dict], items: list[dict], supplements: list[dict], 
     return out
 
 
-def completeness(coverage: list[dict], scope: Scope, goal: str, required_minutes: int) -> dict[str, Any]:
+def completeness(coverage: list[dict], scope: Scope, goal: str, required_minutes: int,
+                 goal_en: str = "") -> dict[str, Any]:
     """How complete the plan is for what it is for, counted over the skills of the in-scope concepts (a concept
-    without skills counts as one), with an honest one-line verdict."""
+    without skills counts as one), with an honest one-line verdict: ``headline`` for the page (``goal`` in the
+    language shown), ``headline_en`` for the exported plan (``goal_en``, English)."""
     units = []
     for cv in coverage:
         if not cv["in_scope"]:
@@ -768,26 +782,30 @@ def completeness(coverage: list[dict], scope: Scope, goal: str, required_minutes
             units.append((cv["name"], "", how))
     count = {k: sum(1 for u in units if u[2] == k) for k in ("video", "optional", "supplement", "missing")}
     n = len(units)
-    goal = goal or target(scope)
-    how = [f"{count['video']} in checked video parts"] if count["video"] else []
-    how += [f"{count['optional']} only in optional videos"] if count["optional"] else []
-    how += [f"{count['supplement']} only in the written supplements"] if count["supplement"] else []
+    goal = goal or target(scope, shown=True)
+    goal_en = goal_en or target(scope)
+    # how the skills are covered, as a list: "5 in checked video parts, 1 only in the written supplements"
+    ways = [(N_("{n} in checked video parts"), count["video"]), (N_("{n} only in optional videos"), count["optional"]),
+            (N_("{n} only in the written supplements"), count["supplement"])]
+    how, how_en = ", ".join(t(say, n=k) for say, k in ways if k), ", ".join(say.format(n=k) for say, k in ways if k)
     if not n:
-        level, headline = "incomplete", f"Nothing in your material for {goal} could be planned."
+        level, say = "incomplete", N_("Nothing in your material for {goal} could be planned.")
     elif count["missing"]:
-        level = "incomplete"
-        headline = (f"Not complete for {goal}: {count['missing']} of the {n} skills found in your material have "
-                    f"no checked video and no written supplement.")
+        level, say = "incomplete", N_("Not complete for {goal}: {missing} of the {n} skills found in your material have "
+                                      "no checked video and no written supplement.")
     elif count["video"] == n:
-        level, headline = "full", f"Complete for {goal}: all {n} skills found in your material are taught in checked video parts."
+        level, say = "full", N_("Complete for {goal}: all {n} skills found in your material are taught in checked video "
+                                "parts.")
     elif count["supplement"] + count["optional"] <= n / 4:
-        level = "mostly"
-        headline = f"Complete for {goal}: all {n} skills found in your material are covered — {', '.join(how)}."
+        level, say = "mostly", N_("Complete for {goal}: all {n} skills found in your material are covered — {how}.")
     else:                                        # covered, but much of it only in writing
-        level = "written"
-        headline = f"Covered for {goal}, but partly only in writing: of the {n} skills found in your material, {', '.join(how)}."
+        level, say = "written", N_("Covered for {goal}, but partly only in writing: of the {n} skills found in your "
+                                   "material, {how}.")
+    headline = _capital(t(say, goal=goal, how=how, missing=count["missing"], n=n))   # Turkish may begin with the goal
+    headline_en = say.format(goal=goal_en, how=how_en, missing=count["missing"], n=n)
     extras = [cv for cv in coverage if not cv["in_scope"]]
-    return {"goal": goal, "complete": bool(n) and not count["missing"], "level": level, "headline": headline, "skills": n, **count,
+    return {"goal": goal, "goal_en": goal_en, "complete": bool(n) and not count["missing"], "level": level,
+            "headline": headline, "headline_en": headline_en, "skills": n, **count,
             "missing_list": [f"{s} ({name})" if s else name for name, s, how in units if how == "missing"][:15],
             "supplement_list": [f"{s} ({name})" if s else name for name, s, how in units if how == "supplement"][:15],
             "extras": [{"name": cv["name"], "items": cv["items"], "state": cv["state"]} for cv in extras],
@@ -807,7 +825,7 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
         out += [result["summary"], ""]
     cp = result.get("completeness") or {}
     if cp.get("headline"):
-        out.append(f"> **{cp['headline']}**")
+        out.append(f"> **{cp.get('headline_en') or cp['headline']}**")
         if cp.get("missing_list"):
             out.append(f"> Not covered: {'; '.join(cp['missing_list'])}.")
         if cp.get("supplement_list"):
@@ -829,7 +847,7 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
             out.append(f"- Added: items {', '.join(map(str, ch['added']))}")
         out.append("")
     out += ["## Viewing plan", ""]
-    goal = cp.get("goal") or target(scope)
+    goal = cp.get("goal_en") or cp.get("goal") or target(scope)
     for it in result["items"]:
         segs = it.get("segments") or [{"start": it["start"], "end": it["end"], "url": it["url"]}]
         part = ("whole video" if it["whole"] else
@@ -838,11 +856,11 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
                    f"*{it['role']}*" + (f" (instead of {it['alternative_to']})" if it.get("alternative_to") else "")
                    + (f" · extra, not on {goal}" if it.get("extra") else ""))
         if it.get("teaches"):
-            for t in it["teaches"]:
-                what = ("teaches " + ", ".join(t["skills"]) if t["skills"] else
-                        {"full": "teaches it", "partial": "only partly", "unchecked": "not checked for this"}.get(t["state"], ""))
-                left = f" — not here: {', '.join(t['missing'])}" if t["missing"] and t["state"] != "unchecked" else ""
-                out.append(f"   - {names.get(t['concept'], t['concept'])}: {what}{left}")
+            for tch in it["teaches"]:
+                what = ("teaches " + ", ".join(tch["skills"]) if tch["skills"] else
+                        {"full": "teaches it", "partial": "only partly", "unchecked": "not checked for this"}.get(tch["state"], ""))
+                left = f" — not here: {', '.join(tch['missing'])}" if tch["missing"] and tch["state"] != "unchecked" else ""
+                out.append(f"   - {names.get(tch['concept'], tch['concept'])}: {what}{left}")
         else:
             out.append(f"   - Teaches: {', '.join(names.get(c, c) for c in it['concepts'])}")
         if it["why"]:
@@ -851,7 +869,8 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
             out.append(f"   - Limits: {it['limits']}")
         for e in it.get("errors") or []:
             out.append(f"   - ⚠ Possible mistake at [{fmt_ts(e['t'])}]({e['url']}): {e['text']}")
-        out.append(f"   - Checked: {it['inspected']}" + (f" — “{it['evidence']}”" if it.get("evidence") and not it.get("quotes") else ""))
+        inspected = it["inspected"] if it.get("captions") else "title, description and chapters only (no captions available)"
+        out.append(f"   - Checked: {inspected}" + (f" — “{it['evidence']}”" if it.get("evidence") and not it.get("quotes") else ""))
         for q in it.get("quotes") or []:
             out.append(f"     - [{fmt_ts(q['t'])}]({q['url']}) “{q['text']}”")
     if result.get("schedule"):
@@ -889,7 +908,7 @@ def extras_line(cp: dict[str, Any]) -> str:
     """The topics of these weeks that the focus does not ask for, and what the plan does with them."""
     extras = cp.get("extras") or []
     with_video = [x["name"] for x in extras if x["items"]]
-    line = f"Also in these weeks but not on {cp.get('goal', 'the focus')}: {', '.join(x['name'] for x in extras)}."
+    line = f"Also in these weeks but not on {cp.get('goal_en') or cp.get('goal', 'the focus')}: {', '.join(x['name'] for x in extras)}."
     if with_video:
         line += f" Optional videos for {', '.join(with_video)}."
     if len(with_video) < len(extras):
@@ -905,9 +924,10 @@ SYSTEM_PREP = ("You are an expert university tutor writing exam preparation mate
                "asking questions.")
 
 
-def prep_title(scope: Scope, facts: dict[str, Any]) -> str:
-    what = scope.focus or _week_span([w["no"] for w in facts["weeks"]]).capitalize()
-    return f"{what} prep pack"
+def prep_title(scope: Scope, facts: dict[str, Any], shown: bool = False) -> str:
+    """"Quiz 2 prep pack": in English for its file, ``shown`` in the language shown."""
+    what = scope.focus or _capital(_week_span([w["no"] for w in facts["weeks"]], shown))
+    return t("{what} prep pack", what=what) if shown else f"{what} prep pack"
 
 
 def prep_prompt(scope: Scope, facts: dict[str, Any], questions: int = 10) -> str:
@@ -959,7 +979,7 @@ class PlanRunner:
     def start(self, plan_id: str, from_stage: str = "") -> None:
         plan = self._s.lib.plan(plan_id)
         if plan is None:
-            raise KeyError("This plan no longer exists.")
+            raise KeyError(t("This plan no longer exists."))
         if from_stage in STAGE_NAMES:                 # redo a stage and everything after it
             data = plan["data"]
             for st in STAGE_NAMES[STAGE_NAMES.index(from_stage):]:
@@ -973,7 +993,7 @@ class PlanRunner:
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(target=self._work, name="plans", daemon=True)
                 self._worker.start()
-        self._s.lib.update_plan(plan_id, status="queued", message="Waiting…", error="")
+        self._s.lib.update_plan(plan_id, status="queued", message=t("Waiting…"), error="")
         self._emit(plan_id)
 
     def cancel(self, plan_id: str) -> None:
@@ -982,7 +1002,7 @@ class PlanRunner:
             if plan_id in self._queue:
                 self._queue.remove(plan_id)
                 self._cancel.pop(plan_id, None)
-                self._s.lib.update_plan(plan_id, status="paused", message="Stopped — resume to continue")
+                self._s.lib.update_plan(plan_id, status="paused", message=t("Stopped — resume to continue"))
                 self._emit(plan_id)
         if ev is not None:
             ev.set()
@@ -1010,11 +1030,11 @@ class PlanRunner:
             try:
                 self._run(plan_id, cancel)
             except Cancelled:
-                self._s.lib.update_plan(plan_id, status="paused", message="Stopped — resume to continue")
+                self._s.lib.update_plan(plan_id, status="paused", message=t("Stopped — resume to continue"))
             except Exception as exc:  # noqa: BLE001 - reported on the plan
                 log.exception("Plan %s failed", plan_id)
                 self._s.lib.update_plan(plan_id, status="error", error=str(exc) or exc.__class__.__name__,
-                                        message="Something went wrong")
+                                        message=t("Something went wrong"))
             finally:
                 with self._lock:
                     self._cancel.pop(plan_id, None)
@@ -1026,7 +1046,7 @@ class PlanRunner:
             return
         self._s.emit({"type": "plan", "id": plan_id, "course_id": p["course_id"], "status": p["status"],
                       "stage": p["stage"], "progress": p["progress"], "message": p["message"], "error": p["error"],
-                      "title": p["title"], **extra})
+                      "title": p["title"], "kind": (p.get("scope") or {}).get("kind", ""), **extra})
 
     def _ask_json(self, prompt: str, model: str, cancel: threading.Event) -> tuple[Any, dict]:
         from .ai import ask_json
@@ -1034,7 +1054,7 @@ class PlanRunner:
         return (self._ask or ask_json)(SYSTEM, prompt, model=model, cancel=cancel)
 
     def _stage(self, plan_id: str, name: str, progress: float, message: str = "") -> None:
-        label = LABELS[name]
+        label = t(LABELS[name])
         self._s.lib.update_plan(plan_id, status="running", stage=name, progress=round(progress, 3),
                                 message=message or label + "…")
         self._emit(plan_id)
@@ -1076,7 +1096,7 @@ class PlanRunner:
             return
         # concepts
         if "concepts" not in data:
-            self._stage(plan_id, "concepts", 0.08, f"Working out what you need to learn ({model})…")
+            self._stage(plan_id, "concepts", 0.08, t("Working out what you need to learn ({model})…", model=model))
             raw, res = self._ask_json(concepts_prompt(scope, facts), model, cancel)
             concepts, practice, gaps = clean_concepts(raw, scope)
             add_usage("concepts", res)
@@ -1093,9 +1113,10 @@ class PlanRunner:
 
             def on_search(n: int, total: int, label: str) -> None:
                 done_q[0] = n
-                self._stage(plan_id, "search", 0.25 + 0.15 * n / max(1, total), f"Searching YouTube: “{label}” ({n}/{total})")
+                self._stage(plan_id, "search", 0.25 + 0.15 * n / max(1, total),
+                            t("Searching YouTube: “{query}” ({n}/{total})", query=label, n=n, total=total))
 
-            self._stage(plan_id, "search", 0.25, f"Searching YouTube for {len(todo_c)} concepts…")
+            self._stage(plan_id, "search", 0.25, t("Searching YouTube for {n} concepts…", n=len(todo_c)))
             found = videos.search_many(queries, limit=8, cancel=cancel, progress=on_search)
             check()
             cands: dict[str, list[dict]] = {}
@@ -1115,7 +1136,7 @@ class PlanRunner:
                 cands[c["id"]] = [h.to_json() for h in ranked]
             if failures and not any(cands.values()):
                 err = next((r for r in found.values() if isinstance(r, Exception)), None)
-                raise RuntimeError(f"YouTube search failed: {err}" if err else "YouTube search failed.")
+                raise RuntimeError(t("YouTube search failed: {error}", error=err) if err else t("YouTube search failed."))
             data["search"] = cands
             save()
         cands = data["search"]
@@ -1131,9 +1152,10 @@ class PlanRunner:
                         ids.append(h["id"])
 
             def on_inspect(n: int, total: int, label: str) -> None:
-                self._stage(plan_id, "inspect", 0.40 + 0.2 * n / max(1, total), f"Reading captions: {label[:60]} ({n}/{total})")
+                self._stage(plan_id, "inspect", 0.40 + 0.2 * n / max(1, total),
+                            t("Reading captions: {title} ({n}/{total})", title=label[:60], n=n, total=total))
 
-            self._stage(plan_id, "inspect", 0.40, f"Reading the captions of {len(ids)} videos…")
+            self._stage(plan_id, "inspect", 0.40, t("Reading the captions of {n} videos…", n=len(ids)))
             infos = videos.inspect_many(ids, langs=("en", "tr") if scope.allow_tr else ("en",), cancel=cancel,
                                         progress=on_inspect)
             check()
@@ -1196,8 +1218,9 @@ class PlanRunner:
                 raw, res = self._ask_json(verify_prompt(batch, vids, excerpts), verify_with, cancel)
                 return clean_verdicts(raw, asked, vids, batch, excerpts), res
 
-            self._stage(plan_id, "verify", 0.62, f"Checking the captions against the course ({len(batches)} "
-                                                  f"request{'s' if len(batches) != 1 else ''}, {verify_with})…")
+            self._stage(plan_id, "verify", 0.62, tn(len(batches), "Checking the captions against the course ({n} request, "
+                                                    "{model})…", "Checking the captions against the course ({n} requests, "
+                                                    "{model})…", model=verify_with))
             with ThreadPoolExecutor(max_workers=VERIFY_PARALLEL, thread_name_prefix="plan-verify") as pool:
                 futures = [pool.submit(judge, b) for b in batches]
                 try:
@@ -1207,7 +1230,8 @@ class PlanRunner:
                         for cid, per in per_concept.items():
                             verdicts.setdefault(cid, {}).update(per)
                         self._stage(plan_id, "verify", 0.62 + 0.18 * n / len(batches),
-                                    f"Checking the captions against the course ({n}/{len(batches)}, {verify_with})…")
+                                    t("Checking the captions against the course ({n}/{total}, {model})…", n=n,
+                                      total=len(batches), model=verify_with))
                 except BaseException:
                     for f in futures:              # one failed: don't start the ones still waiting
                         f.cancel()
@@ -1245,12 +1269,13 @@ class PlanRunner:
         if plan.get("parent_id"):
             parent = self._s.lib.plan(plan["parent_id"])
             previous = (parent or {}).get("result") or None
-        self._stage(plan_id, "assemble", 0.82, f"Building your plan ({model})…")
+        self._stage(plan_id, "assemble", 0.82, t("Building your plan ({model})…", model=model))
         raw, res = self._ask_json(assemble_prompt(scope, facts, concepts, candidates, previous, dt.date.today()), model, cancel)
         add_usage("assemble", res)
         result = finalize(raw, concepts, candidates, vids, data["concepts"]["practice"], data["concepts"]["gaps"],
                           verdicts=verdicts, excerpts=excerpts, scope=scope,
-                          goal=target(scope, [w["no"] for w in facts["weeks"]]))
+                          goal=target(scope, [w["no"] for w in facts["weeks"]], shown=True),
+                          goal_en=target(scope, [w["no"] for w in facts["weeks"]]))
         result["materials_missing"] = facts.get("materials_missing", [])
         result["days_missing"] = len(facts.get("days_missing", []))
         result["days_used"] = len(facts.get("days_used", []))
@@ -1260,7 +1285,7 @@ class PlanRunner:
         except OSError:
             log.warning("Could not write the plan file", exc_info=True)
         save(result=result, title=result["title"], status="done", stage="done", progress=1.0,
-             message=f"{len(result['items'])} videos · {result['total_minutes']} min")
+             message=t("{n} videos · {minutes} min", n=len(result["items"]), minutes=result["total_minutes"]))
 
     def _write_prep(self, plan: dict[str, Any], scope: Scope, facts: dict[str, Any], model: str,
                     cancel: threading.Event, add_usage: Callable[[str, dict], None], save: Callable[..., None]) -> None:
@@ -1268,15 +1293,16 @@ class PlanRunner:
         from .ai import one_shot
 
         pid = plan["id"]
-        self._stage(pid, "write", 0.15, f"Writing your exam prep pack ({model})…")
+        self._stage(pid, "write", 0.15, t("Writing your exam prep pack ({model})…", model=model))
         progress = [0.15, 0.0]
 
-        def on_text(t: str) -> None:            # the pack is long: show that it is being written
+        def on_text(so_far: str) -> None:       # the pack is long: show that it is being written
             now = time.monotonic()
             if now - progress[1] > 1.5:
                 progress[1] = now
-                progress[0] = min(0.95, 0.15 + len(t) / 30_000)
-                self._stage(pid, "write", progress[0], f"Writing your exam prep pack… ({len(t) // 1000}k characters)")
+                progress[0] = min(0.95, 0.15 + len(so_far) / 30_000)
+                self._stage(pid, "write", progress[0],
+                            t("Writing your exam prep pack… ({k}k characters)", k=len(so_far) // 1000))
 
         prompt = prep_prompt(scope, facts)
         run = self._ask_text or one_shot
@@ -1284,17 +1310,18 @@ class PlanRunner:
         add_usage("write", res)
         md = (res.get("text") or "").strip()
         if len(md) < 200:
-            raise RuntimeError("The AI returned an empty prep pack. Try again.")
-        title = prep_title(scope, facts)
+            raise RuntimeError(t("The AI returned an empty prep pack. Try again."))
+        title = prep_title(scope, facts, shown=True)
+        english = prep_title(scope, facts)                     # the file's name and heading stay English
         result = {"kind": "prep", "title": title, "markdown": md,
                   "materials_missing": facts.get("materials_missing", []),
                   "materials_used": len(facts.get("materials_used", [])), "days_used": len(facts.get("days_used", []))}
         try:
-            result["file"] = str(self._write_file(plan, title, f"# {title}\n\n*{facts['course']['code']} · made with "
+            result["file"] = str(self._write_file(plan, english, f"# {english}\n\n*{facts['course']['code']} · made with "
                                                   f"IEUStudia on {dt.date.today():%d %b %Y}*\n\n{md}\n", "Exam prep"))
         except OSError:
             log.warning("Could not write the prep pack file", exc_info=True)
-        save(result=result, title=title, status="done", stage="done", progress=1.0, message="Prep pack ready")
+        save(result=result, title=title, status="done", stage="done", progress=1.0, message=t("Prep pack ready"))
 
     def _write_file(self, plan: dict[str, Any], title: str, text: str, sub: str) -> Path:
         from .outputs.writer import course_dir, safe_name
@@ -1324,7 +1351,7 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> 
         return {"main_model": main_model(s, settings), "verify_model": "", "main_input": pack,
                 "main_output": 7000, "verify_input": 0, "verify_output": 0, "concepts": 0, "weeks": facts["weeks"],
                 "materials_used": facts["materials_used"], "materials_missing": facts["materials_missing"],
-                "days_used": facts["days_used"], "minutes": "about 1–3 minutes"}
+                "days_used": facts["days_used"], "minutes": t("about 1–3 minutes")}
     n = max(6, min(MAX_CONCEPTS, 4 + 3 * len(facts["weeks"])))
     m = n if not focused(s) or s.extras else max(4, round(n * 0.6))          # the concepts that get videos
     batches = -(-m // VERIFY_BATCH)
@@ -1336,4 +1363,4 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> 
             "verify_output": batches * VERIFY_BATCH * 4 * 130, "concepts": n,
             "weeks": facts["weeks"], "materials_used": facts["materials_used"],
             "materials_missing": facts["materials_missing"], "days_used": facts["days_used"],
-            "minutes": "about 3–8 minutes"}
+            "minutes": t("about 3–8 minutes")}

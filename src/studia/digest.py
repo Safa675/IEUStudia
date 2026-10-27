@@ -9,9 +9,30 @@ import datetime as dt
 from typing import Any, Optional
 
 from . import store
+from .i18n import N_, day_month, t
+from .outputs.common import MONTHS, kind_label, long_date
 from .outputs.markdown import part_views
 
 KEY = ("quiz", "midterm", "final", "exam", "project", "homework", "schedule")
+
+
+def _range_en(week: dict[str, Any]) -> str:
+    """"28 Sep – 04 Oct 2026": the week in English, as the AI and the exported digest read it."""
+    try:
+        a, b = dt.date.fromisoformat(week["start"]), dt.date.fromisoformat(week["end"])
+    except (KeyError, TypeError, ValueError):
+        return str(week.get("label") or "")
+    return f"{a.day:02d} {MONTHS[a.month - 1][:3]} – {b.day:02d} {MONTHS[b.month - 1][:3]} {b.year}"
+
+
+def _kind(day_key: str) -> str:
+    """A class day's kind ("lecture", "lab") from its key ("<course>|<date>|<kind>")."""
+    return (day_key or "").rsplit("|", 1)[-1]
+
+
+def _lecture_en(lec: dict[str, Any]) -> tuple[str, str]:
+    """A lecture's kind and day in English ("Lecture", "Wednesday, 30 September 2026")."""
+    return kind_label(_kind(lec.get("day_key", ""))), long_date(dt.date.fromisoformat(lec["date"]))
 
 
 def week_bounds(offset: int = 0, today: Optional[dt.date] = None) -> tuple[dt.date, dt.date]:
@@ -80,9 +101,12 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
                     recs = [r for r in lib.recordings(c.id) if r.day_key == day["day_key"]]
                     for p in part_views(recs, store.load_transcripts([r.delivery_id for r in recs])):
                         stressed += [para.text[:220] for para in p.paragraphs if para.star][:3]
-                else:
+                else:                       # "text" for the page, "en" for the AI and the exported digest
+                    lab = _kind(day["day_key"]) == "lab"
+                    say = N_("Transcribe the lab of {day}") if lab else N_("Transcribe the lecture of {day}")
                     todo.append({"kind": "transcribe", "course": c.code, "course_id": c.id, "day_key": day["day_key"],
-                                 "text": f"Transcribe the {day['kind_label'].lower()} of {day['label']}"})
+                                 "text": t(say, day=day["label"]),
+                                 "en": say.format(day=long_date(dt.date.fromisoformat(day["date"])))})
                 lectures.append({"day_key": day["day_key"], "date": day["date"], "label": day["label"],
                                  "kind": day["kind_label"], "transcribed": day["transcribed"], "any_done": day["any_done"],
                                  "stressed": stressed[:3]})
@@ -91,8 +115,9 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
         week_files = [m for w in d["weeks"] if week and w["no"] == week["no"] for u in w["units"] for m in u["materials"]]
         for m in week_files:
             if not m["downloaded"]:
+                say = N_("Download “{title}” (this week's material)")
                 todo.append({"kind": "download", "course": c.code, "course_id": c.id, "resource_id": m["id"],
-                             "text": f"Download “{m['title']}” (this week's material)"})
+                             "text": t(say, title=m["title"]), "en": say.format(title=m["title"])})
         anns = [{"id": a["id"], "title": a["title"], "posted_at": a["posted_at"]} for a in d["announcements"]
                 if _in(a.get("posted_at") or "", mon, sun)]
         coming = []
@@ -109,7 +134,8 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
                                "dates": [x["date"] for x in classes],
                                "done": (w["end"] or w["start"]) < today.isoformat() or classes_over(classes, now)})
         said = [{"category": a["category"], "text": a["text"][:240], "date": a["date"], "source": a["source"],
-                 "other_section": a.get("other_section", "")}          # heard in another section: its dates may differ
+                 "other_section": a.get("other_section", ""),           # heard in another section: its dates may differ
+                 "other_section_en": a.get("other_section_en", "")}     # the same in English, for the AI and the export
                 for a in (d.get("alerts") or {}).get("items", []) if a["category"] in KEY and _in(a["date"], mon, sun)]
         if not (week or lectures or new_files or anns or coming or said):
             continue
@@ -121,19 +147,22 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
     for c in courses:
         for e in c["coming"]:
             if e["this_week"] and not e["done"]:
+                say = N_("{name} is this week ({los})") if e["los"] else N_("{name} is this week")
+                values = {"name": e["name"], "los": "LO" + ", LO".join(map(str, e["los"]))}     # the name is an id
                 todo.insert(0, {"kind": "prepare", "course": c["code"], "course_id": c["id"], "name": e["name"],
-                                "text": f"{e['name']} is this week" + (f" (LO{', LO'.join(map(str, e['los']))})" if e["los"] else "")})
+                                "text": t(say, **values), "en": say.format(**values)})
     return {"week": {"start": mon.isoformat(), "end": sun.isoformat(), "offset": offset,
-                     "label": f"{mon:%d %b} – {sun:%d %b %Y}"}, "courses": courses, "todo": todo[:30]}
+                     "label": f"{day_month(mon)} – {day_month(sun)} {sun.year}"}, "courses": courses, "todo": todo[:30]}
 
 
 def digest_prompt(digest: dict[str, Any]) -> str:
-    """For Claude: the week as facts, asking for a short motivating summary and a plan for the next days."""
-    lines = [f"WEEK: {digest['week']['label']}"]
+    """For Claude: the week as facts, asking for a short motivating summary and a plan for the next days (in English
+    whatever language the page shows)."""
+    lines = [f"WEEK: {_range_en(digest['week'])}"]
     for c in digest["courses"]:
         lines.append(f"\nCOURSE {c['code']} — {c['name']}" + (f" (week {c['week']['no']}: {c['week']['topic']})" if c["week"] else ""))
         for lec in c["lectures"]:
-            lines.append(f"  lecture {lec['label']} ({'transcribed' if lec['any_done'] else 'not transcribed yet'})")
+            lines.append(f"  lecture {_lecture_en(lec)[1]} ({'transcribed' if lec['any_done'] else 'not transcribed yet'})")
             lines += [f"    stressed: {s}" for s in lec["stressed"]]
         for e in c["coming"]:
             lines.append(f"  {'done' if e['done'] else 'coming'}: {e['name']} in week {e['week']} ({e['start']}–{e['end']})"
@@ -141,12 +170,12 @@ def digest_prompt(digest: dict[str, Any]) -> str:
                          + (f", LO{', LO'.join(map(str, e['los']))}" if e["los"] else ""))
         for s in c["said"]:
             lines.append(f"  lecturer said ({s['category']}, {s['date'][:10]}"
-                         + (f", in {s['other_section']}" if s.get("other_section") else "") + f"): {s['text']}")
+                         + (f", in {s['other_section_en']}" if s.get("other_section_en") else "") + f"): {s['text']}")
         if c["new_files"]:
             lines.append("  new files: " + ", ".join(f["title"] for f in c["new_files"]))
         if c["announcements"]:
             lines.append("  announcements: " + "; ".join(a["title"] for a in c["announcements"]))
-    lines.append("\nTO DO: " + "; ".join(t["text"] for t in digest["todo"]))
+    lines.append("\nTO DO: " + "; ".join(item.get("en") or item["text"] for item in digest["todo"]))
     return ("Write a short weekly digest for the student (Markdown, at most ~250 words): first 2–3 sentences on the week "
             "as a whole, then per course one or two bullets on what was covered and what matters next (quizzes, "
             "deadlines, what the lecturer stressed), then a prioritised list of 3–6 things to do in the next days. "
@@ -154,7 +183,8 @@ def digest_prompt(digest: dict[str, Any]) -> str:
 
 
 def digest_markdown(digest: dict[str, Any], summary: str = "") -> str:
-    out = [f"# Weekly digest — {digest['week']['label']}", ""]
+    """The digest as a Markdown file (English, like the app's other exported files)."""
+    out = [f"# Weekly digest — {_range_en(digest['week'])}", ""]
     if summary:
         out += [summary.strip(), ""]
     for c in digest["courses"]:
@@ -165,14 +195,15 @@ def digest_markdown(digest: dict[str, Any], summary: str = "") -> str:
             out.append(f"- **{e['name']}** — week {e['week']} ({e['start']} – {e['end']})" + (f", LO{', LO'.join(map(str, e['los']))}" if e["los"] else "")
                        + (" — done" if e["done"] else ""))
         for lec in c["lectures"]:
-            out.append(f"- {lec['kind']} {lec['label']}" + ("" if lec["any_done"] else " — not transcribed yet"))
+            kind, day = _lecture_en(lec)
+            out.append(f"- {kind} {day}" + ("" if lec["any_done"] else " — not transcribed yet"))
             out += [f"  - ⭐ {s}" for s in lec["stressed"]]
         for s in c["said"]:
-            out.append(f"- Lecturer ({s['category']}" + (f", {s['other_section']}" if s.get("other_section") else "")
+            out.append(f"- Lecturer ({s['category']}" + (f", {s['other_section_en']}" if s.get("other_section_en") else "")
                        + f"): {s['text']}")
         if c["new_files"]:
             out.append("- New files: " + ", ".join(f["title"] for f in c["new_files"]))
         out.append("")
     if digest["todo"]:
-        out += ["## To do", ""] + [f"- [ ] {t['course']}: {t['text']}" for t in digest["todo"]]
+        out += ["## To do", ""] + [f"- [ ] {item['course']}: {item.get('en') or item['text']}" for item in digest["todo"]]
     return "\n".join(out).rstrip() + "\n"

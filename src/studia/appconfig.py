@@ -28,6 +28,8 @@ class AppConfig:
     notify_reminders: bool = True      # the evening before an announced quiz, and before an exam week
     sync_minutes: int = 30             # how often the helper checks
     check_updates: bool = True         # look for a new version of IEUStudia on GitHub about once a day
+    pending_downloads: list = dc.field(default_factory=list)   # what the setup still has to download (component ids)
+    language: str = ""                 # "" (as Windows: Turkish Windows → Turkish) | en | tr (i18n.resolve)
     version: int = 0                   # 1: "codex" is only the Codex CLI (see migrate)
 
     def to_json(self) -> dict[str, Any]:
@@ -61,6 +63,11 @@ def _from_dict(raw: dict[str, Any]) -> AppConfig:
         setattr(c, f.name, value)
     if c.ai_provider not in AI_PROVIDERS:
         c.ai_provider = ""
+    if c.language not in ("", "en", "tr"):
+        c.language = ""
+    if not isinstance(c.pending_downloads, list):
+        c.pending_downloads = []
+    c.pending_downloads = [str(x) for x in c.pending_downloads if isinstance(x, str)]
     c.sync_minutes = max(10, min(240, c.sync_minutes))
     return c
 

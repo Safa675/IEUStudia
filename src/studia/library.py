@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS plans(
   result TEXT DEFAULT '{}', marks TEXT DEFAULT '{}', usage TEXT DEFAULT '{}', error TEXT DEFAULT '',
   parent_id TEXT DEFAULT '', created_at TEXT, updated_at TEXT);
 CREATE INDEX IF NOT EXISTS ix_plans_course ON plans(course_id);
+CREATE TABLE IF NOT EXISTS marks(
+  delivery_id TEXT, t REAL, text TEXT DEFAULT '', note TEXT DEFAULT '', created_at TEXT, PRIMARY KEY(delivery_id, t));
 """
 _REC_COLS = ["delivery_id", "course_id", "folder_id", "folder_path", "name", "start", "duration_s", "viewer_url",
              "session_id", "kind", "section_tag", "is_new", "duplicate_of", "hidden", "status", "error", "first_seen"]
@@ -716,9 +718,11 @@ class Library:
 
     def pause_running_plans(self) -> None:
         """Plans that were being built when the app closed can be resumed (their finished stages are kept)."""
+        from .i18n import t
+
         with self._lock:
-            self.db.execute("UPDATE plans SET status='paused', message='Interrupted — resume to continue' "
-                            "WHERE status IN ('running','queued')")
+            self.db.execute("UPDATE plans SET status='paused', message=? WHERE status IN ('running','queued')",
+                            (t("Interrupted — resume to continue"),))
             self.db.commit()
 
     # ------------------------------------------------------------------ chats with Claude
@@ -802,6 +806,37 @@ class Library:
             self.db.execute("UPDATE chat_messages SET text=?, status=?, usage=? WHERE chat_id=? AND seq=?",
                             (text, status, json.dumps(usage or {}), chat_id, seq))
             self.db.commit()
+
+    # ------------------------------------------------------------------ the student's own marks in transcripts
+    def set_mark(self, delivery_id: str, t: float, text: str = "", note: Optional[str] = None) -> None:
+        """Mark a passage (at its paragraph's start, ``t``), or change the note of a mark. ``text``: the passage,
+        kept so the mark still reads well if the lecture is transcribed again."""
+        t = round(float(t), 1)
+        with self._lock:
+            row = self.db.execute("SELECT 1 FROM marks WHERE delivery_id=? AND t=?", (delivery_id, t)).fetchone()
+            if row is None:
+                self.db.execute("INSERT INTO marks(delivery_id, t, text, note, created_at) VALUES(?,?,?,?,?)",
+                                (delivery_id, t, (text or "")[:400], (note or "").strip(), _now()))
+            elif note is not None:
+                self.db.execute("UPDATE marks SET note=? WHERE delivery_id=? AND t=?", (note.strip(), delivery_id, t))
+            self.db.commit()
+
+    def delete_mark(self, delivery_id: str, t: float) -> None:
+        with self._lock:
+            self.db.execute("DELETE FROM marks WHERE delivery_id=? AND t=?", (delivery_id, round(float(t), 1)))
+            self.db.commit()
+
+    def marks(self, delivery_ids: Optional[Iterable[str]] = None) -> list[dict[str, Any]]:
+        """Marks, of some recordings or all, in the order of the lecture."""
+        with self._lock:
+            if delivery_ids is None:
+                rows = self.db.execute("SELECT delivery_id, t, text, note, created_at FROM marks").fetchall()
+            else:
+                ids = list(delivery_ids)
+                rows = self.db.execute("SELECT delivery_id, t, text, note, created_at FROM marks "
+                                       f"WHERE delivery_id IN ({','.join('?' * len(ids))})", ids).fetchall() if ids else []
+        return sorted(({"delivery_id": r[0], "t": r[1], "text": r[2], "note": r[3], "created_at": r[4]} for r in rows),
+                      key=lambda m: (m["delivery_id"], m["t"]))
 
     def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
         words = re.findall(r"[\w']+", query or "", flags=re.UNICODE)

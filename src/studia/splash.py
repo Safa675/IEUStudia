@@ -30,6 +30,28 @@ SLOW_S, STUCK_S, AUTO_RESTART_S = 12.0, 30.0, 75.0
 WINDOW_STALL_S = 15.0                     # creating the window normally takes 1-2 s, even on a cold start
 ID_RESTART, ID_CLOSE = 101, 102
 
+# The start-up window runs with the standard library only (-I -S), so its few texts carry their own Turkish here;
+# the app passes --lang. tests/test_i18n.py checks that every text given to _() has an entry.
+TEXT_TR = {
+    "Starting…": "Açılıyor…",
+    "IEUStudia is not responding": "IEUStudia yanıt vermiyor",
+    "It got stuck while opening its window.": "Penceresini açarken takıldı.",
+    "Still starting…": "Hâlâ açılıyor…",
+    "The first start after an update can take a little longer.": "Güncellemeden sonraki ilk açılış biraz uzun sürebilir.",
+    "Restart IEUStudia": "Yeniden başlat",
+    "Close": "Kapat",
+    "IEUStudia is stuck again": "IEUStudia yine takıldı",
+    "Windows did not finish creating its window.": "Windows pencereyi oluşturmayı bitiremedi.",
+    "IEUStudia got stuck opening its window": "IEUStudia penceresini açarken takıldı",
+    "Restarting it…": "Yeniden başlatılıyor…",
+    "Restarting IEUStudia…": "IEUStudia yeniden başlatılıyor…",
+}
+LANG = "en"
+
+
+def _(text: str) -> str:
+    return TEXT_TR.get(text, text) if LANG == "tr" else text
+
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32")
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -164,7 +186,7 @@ class Splash:
         self.started = time.monotonic()
         self.phase = 0.0
         self.ticks = 0
-        self.status = "Starting…"
+        self.status = _("Starting…")
         self.detail = ""
         self.closing_in = -1
         self.buttons: list[int] = []
@@ -282,12 +304,12 @@ class Splash:
             elif state == "" and not self.stall_handled and not self.restarting and self.window_stalled():
                 self.on_stall()                                # no window at all (a busy one shows as "hung")
             elif elapsed > STUCK_S and not self.buttons:
-                self.status = "IEUStudia is not responding"
-                self.detail = "It got stuck while opening its window."
+                self.status = _("IEUStudia is not responding")
+                self.detail = _("It got stuck while opening its window.")
                 self._show_buttons()
             elif elapsed > SLOW_S and not self.buttons:
-                self.status = "Still starting…"
-                self.detail = "The first start after an update can take a little longer."
+                self.status = _("Still starting…")
+                self.detail = _("The first start after an update can take a little longer.")
             if self.buttons and elapsed > AUTO_RESTART_S and not self.recovered and state != "shown":
                 self.restart()
         r = wt.RECT(0, self.s(150), self.s(WIDTH), self.s(HEIGHT))
@@ -296,7 +318,7 @@ class Splash:
     def _show_buttons(self) -> None:
         y, bw, bh, gap = self.s(186), self.s(132), self.s(30), self.s(10)
         x0 = (self.s(WIDTH) - 2 * bw - gap) // 2
-        for i, (bid, text) in enumerate(((ID_RESTART, "Restart IEUStudia"), (ID_CLOSE, "Close"))):
+        for i, (bid, text) in enumerate(((ID_RESTART, _("Restart IEUStudia")), (ID_CLOSE, _("Close")))):
             b = user32.CreateWindowExW(0, "BUTTON", text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, x0 + i * (bw + gap), y,
                                        bw, bh, self.hwnd, wt.HMENU(bid), None, None)
             user32.SendMessageW(b, WM_SETFONT, self.fonts["button"], 1)
@@ -369,13 +391,13 @@ class Splash:
         self.stall_handled = True
         save_diagnostics(self.app_pid, self.logs)
         if self.recovered:                                     # stuck again right after a restart: let the user decide
-            self.status = "IEUStudia is stuck again"
-            self.detail = "Windows did not finish creating its window."
+            self.status = _("IEUStudia is stuck again")
+            self.detail = _("Windows did not finish creating its window.")
             if not self.buttons:
                 self._show_buttons()
         else:
-            self.status = "IEUStudia got stuck opening its window"
-            self.detail = "Restarting it…"
+            self.status = _("IEUStudia got stuck opening its window")
+            self.detail = _("Restarting it…")
             self.restart()
 
     def restart(self) -> None:
@@ -383,7 +405,7 @@ class Splash:
         if self.restarting:
             return
         self.restarting = True
-        self.status, self.detail = "Restarting IEUStudia…", ""
+        self.status, self.detail = _("Restarting IEUStudia…"), ""
         for b in self.buttons:
             user32.DestroyWindow(b)
         self.buttons = []
@@ -470,6 +492,8 @@ def main(argv: list[str]) -> int:
     def opt(flag: str) -> str:
         return rest[rest.index(flag) + 1] if flag in rest[:-1] else ""
 
+    global LANG
+    LANG = opt("--lang") or "en"
     splash = Splash(int(argv[0]), argv[1], "--recovered" in rest, opt("--python"), opt("--marker"), opt("--logs"),
                     "--frozen" in rest)
     splash.create()

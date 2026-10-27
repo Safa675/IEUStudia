@@ -1,4 +1,4 @@
-; Inno Setup script for the IEUStudia installer (per-user, no admin rights).
+﻿; Inno Setup script for the IEUStudia installer (per-user, no admin rights).
 ;   1. build the app:  uv run pyinstaller packaging\IEUStudia.spec --noconfirm --distpath build\dist --workpath build\work
 ;   2. build this:     ISCC.exe /DAppVersion=2.1.0 packaging\IEUStudia.iss
 ; or run scripts\build_release.ps1, which does both. The installer lands in build\installer\.
@@ -45,6 +45,18 @@ AppMutex=Local\Studia-SingleInstance
 CloseApplications=force
 RestartApplications=no
 LicenseFile=..\LICENSE
+; Turkish on a Turkish Windows, English otherwise, without asking
+ShowLanguageDialog=no
+
+[Languages]
+Name: "en"; MessagesFile: "compiler:Default.isl"
+Name: "tr"; MessagesFile: "compiler:Languages\Turkish.isl"
+
+[CustomMessages]
+en.NeedWebView2=IEUStudia needs the Microsoft Edge WebView2 Runtime, which was not found on this PC.%n%nIt is free and comes with Windows 11 and current Windows 10. Open the download page now? (You can continue the installation either way.)
+tr.NeedWebView2=IEUStudia için Microsoft Edge WebView2 Runtime gerekiyor, bu bilgisayarda bulunamadı.%n%nÜcretsiz ve Windows 11 ile güncel Windows 10'da zaten var. İndirme sayfası şimdi açılsın mı? (Kuruluma her iki durumda da devam edebilirsin.)
+en.DeleteData=Also delete IEUStudia's data on this PC?%n%nThis removes your settings, the stored (encrypted) IEULearn login, the library and the downloaded models in:%1%n%nYour transcripts and notes in your Documents folder are kept.
+tr.DeleteData=IEUStudia'nın bu bilgisayardaki verileri de silinsin mi?%n%nAyarların, saklanan (şifreli) IEULearn girişin, kitaplığın ve indirilen modeller şu klasörlerden silinir:%1%n%nBelgeler klasöründeki ders metinlerin ve notların kalır.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -89,9 +101,7 @@ var
 begin
   Result := True;
   if not WebView2Installed() then
-    if MsgBox('IEUStudia needs the Microsoft Edge WebView2 Runtime, which was not found on this PC.' + #13#10#13#10 +
-              'It is free and comes with Windows 11 and current Windows 10. Open the download page now? ' +
-              '(You can continue the installation either way.)', mbConfirmation, MB_YESNO) = IDYES then
+    if MsgBox(CustomMessage('NeedWebView2'), mbConfirmation, MB_YESNO) = IDYES then
       ShellExec('open', 'https://developer.microsoft.com/microsoft-edge/webview2/#download', '', '', SW_SHOWNORMAL, ewNoWait, code);
 end;
 
@@ -139,10 +149,7 @@ begin
       else
         data[i] := '';
     if (names <> '') and not UninstallSilent() then
-      if MsgBox('Also delete IEUStudia''s data on this PC?' + #13#10#13#10 +
-                'This removes your settings, the stored (encrypted) IEULearn login, the library and the downloaded ' +
-                'models in:' + names + #13#10#13#10 + 'Your transcripts and notes in your Documents folder are kept.',
-                mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+      if MsgBox(FmtMessage(CustomMessage('DeleteData'), [names]), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
         for i := 0 to 2 do
           if data[i] <> '' then
             DelTree(data[i], True, True, True);

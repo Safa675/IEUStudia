@@ -11,6 +11,7 @@ import av
 import numpy as np
 
 from .cancel import Cancelled, check
+from .i18n import t
 
 SAMPLE_RATE = 16000
 log = logging.getLogger("studia")
@@ -33,7 +34,7 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
     with av.open(str(path), mode="r") as container:
         streams = [s for s in container.streams if s.type == "audio"]
         if not streams:
-            raise NoAudioTrack("This file has no audio track.")
+            raise NoAudioTrack(t("This file has no audio track."))
         stream = streams[0]
         stream.thread_type = "AUTO"
         resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
@@ -57,7 +58,7 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
         log.warning("Skipped %d of %d corrupt audio packets in %s", skipped, packets, Path(path).name)
     if not chunks:
         if skipped:
-            raise ValueError("The audio could not be decoded (the file seems to be damaged).")
+            raise ValueError(t("The audio could not be decoded (the file seems to be damaged)."))
         return np.zeros(0, dtype=np.float32)
     pcm = np.concatenate(chunks)
     audio = pcm.astype(np.float32)

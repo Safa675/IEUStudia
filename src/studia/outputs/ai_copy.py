@@ -10,10 +10,18 @@ from .markdown import part_views
 from .prompts import ai_prompt
 
 
+def _noise(para: Any) -> bool:
+    """A paragraph with nothing in it for the AI: only "[unclear]", or at most three words the speech recognition
+    was unsure of (mostly its stock phrases in quiet moments), unless the lecturer emphasised it."""
+    words = para.text.replace("[unclear]", " ").strip(" .,!?…").split()
+    return not words or (para.uncertain and not para.star and len(words) <= 3)
+
+
 def compact_day(course: Course, recordings: Iterable[Recording], transcripts: Any, slides: Any = None,
                 label: str = "", only_starred: bool = False) -> str:
     """One class day as compact text. ``label`` (e.g. "L2") prefixes the heading when several days are
-    combined; ``only_starred`` keeps just the paragraphs the lecturer emphasised (⭐)."""
+    combined; ``only_starred`` keeps just the paragraphs the lecturer emphasised (⭐). Paragraphs with nothing in
+    them (``_noise``) are left out."""
     recs = sorted(recordings, key=lambda r: r.start)
     parts = [p for p in part_views(recs, transcripts, slides) if p.transcript]
     if not parts:
@@ -24,7 +32,7 @@ def compact_day(course: Course, recordings: Iterable[Recording], transcripts: An
         head += f" · Lecturer: {course.instructor}"
     lines = [head]
     for p in parts:
-        paras = [para for para in p.paragraphs if para.star or not only_starred]
+        paras = [para for para in p.paragraphs if (para.star or not only_starred) and not _noise(para)]
         if not paras and only_starred:
             continue
         lines.append(f"\n## Part {p.index} ({time_range(p.rec)})")

@@ -5,12 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>IEUStudia</title>
   <script>
-    // apply the theme before first paint (no white flash in dark mode)
+    // apply the theme before first paint (no white flash in dark mode), and the language the app last used (on the
+    // very first start, the browser's, which follows Windows), so the start-up line is in it
     (function () {
-      var t = "system";
-      try { t = localStorage.getItem("studia-theme") || localStorage.getItem("ls-theme") || "system"; } catch (e) {}
-      var dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      var theme = "system", l = "";
+      try { theme = localStorage.getItem("studia-theme") || localStorage.getItem("ls-theme") || "system"; l = localStorage.getItem("studia-lang") || ""; } catch (e) {}
+      var dark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
       document.documentElement.dataset.theme = dark ? "dark" : "light";
+      document.documentElement.lang = l || (/^tr/i.test(navigator.language || "") ? "tr" : "en");
     })();
   </script>
   <style>
@@ -53,10 +55,12 @@
       <div class="splash-name">IEUStudia</div>
       <div class="splash-bar"><i></i></div>
       <div class="splash-status" id="splash-status">Starting…</div>
+      <script>if (document.documentElement.lang === "tr") document.getElementById("splash-status").textContent = "Açılıyor…";</script>
     </div>
   </div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <div id="overlay"></div>
+  <script src="i18n.js"></script>
   <script src="icons.js"></script>
   <script src="app.js"></script>
   <script src="course.js"></script>

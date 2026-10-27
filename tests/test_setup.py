@@ -359,6 +359,8 @@ def test_setup_api(monkeypatch):
     monkeypatch.setattr(launch, "set_startup", lambda on: started.append(("startup", on)))
     monkeypatch.setattr(launch, "startup_enabled", lambda: False)
     api = Api(Services())
+    # get_bootstrap's check 6 s later (and app_config's) would otherwise run during a later test, in its folder
+    monkeypatch.setattr(api, "_system_info", lambda: None)
     st = api.setup_state()
     assert st["ok"] and "verdict" in st and st["catalog"]["speech"] and not st["app"]["onboarded"]
     r = api.app_config({"tray": True, "start_with_windows": True, "ai_provider": "none"})
@@ -399,3 +401,235 @@ def test_a_setup_download_error_reads_as_one_sentence(monkeypatch):
     assert api.setup_download(["speech-small"])["ok"] and idle.wait(10)
     (error,) = [e["error"] for e in pushed if e.get("state") == "error"]
     assert error.endswith("? (Downloading again continues where it stopped.)"), error
+
+
+def test_the_setup_can_go_on_while_it_downloads_and_a_cut_off_download_is_offered_again(monkeypatch):
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    pushed, idle, gate = [], threading.Event(), threading.Event()
+    monkeypatch.setattr(api, "_system_info", lambda: None)
+    monkeypatch.setattr(api, "_push", lambda e: pushed.append(e) or (e.get("state") == "idle" and idle.set()))
+    monkeypatch.setattr(components, "download", lambda cid, progress, cancel: gate.wait(10))
+    monkeypatch.setattr(components, "ready", lambda cid: False)
+    assert api.setup_download(["speech:small", "cuda"])["ok"]
+    assert api._s.jobs.setup_busy() is True                     # a transcription waits for it
+    boot = api.get_bootstrap()
+    assert boot["downloading"] is True
+    assert [d["id"] for d in boot["pending_downloads"]] == ["speech:small", "cuda"]    # if IEUStudia closed now
+    assert boot["pending_downloads"][0]["label"].startswith("Speech model")
+    gate.set()
+    assert idle.wait(10) and api._s.jobs.setup_busy() is False
+    assert appconfig.load().pending_downloads == []             # done: nothing left to offer
+
+
+def test_a_transcription_waits_for_the_setups_download(tmp_path, monkeypatch):
+    import datetime as dt
+
+    from studia import jobs as jobs_mod
+    from studia.config import Settings
+    from studia.domain import Course, Recording
+    from studia.library import Library
+
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c", title="t", code="EEE 215", name="n")])
+    lib.merge_recordings("c", [Recording(delivery_id="r1", course_id="c", folder_id="f", folder_path="", name="r1",
+                                         start=dt.datetime(2026, 10, 13, 11), duration_s=2400, viewer_url="u")],
+                         first_sync=True)
+    events = []
+    jm = jobs_mod.JobManager(lib, None, lambda: Settings(), lambda s: None, events.append, lambda did: {}, lambda *a: [])
+    jm.setup_busy = lambda: True
+    job = jobs_mod.Job(id="r1", title="t")
+    threading.Timer(0.6, job.cancel.set).start()               # cancelled while it waits
+    from studia.cancel import Cancelled
+
+    try:
+        jm._transcribe(job)
+        raise AssertionError("it should have waited")
+    except Cancelled:
+        pass
+    assert job.detail == "Waiting for the speech model to finish downloading"
+
+
+def test_a_transcription_waits_for_the_speech_model_not_for_the_offline_ai(monkeypatch):
+    """The setup gets the offline AI model (1.7 to 4 GB) last, and Settings → "Set up AI" gets only that: a lecture
+    waits only for what it needs, the speech model and the graphics card's files."""
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    idle = threading.Event()
+    monkeypatch.setattr(api, "_system_info", lambda: None)
+    monkeypatch.setattr(api, "_push", lambda e: e.get("state") == "idle" and idle.set())
+    ids = ["speech:small", "cuda", "llm:qwen3-1.7b"]
+    started, gates = {c: threading.Event() for c in ids}, {c: threading.Event() for c in ids}
+    monkeypatch.setattr(components, "download", lambda cid, progress, cancel: started[cid].set() or gates[cid].wait(10))
+    assert api.setup_download(ids)["ok"]
+    for cid in ids:
+        assert started[cid].wait(5)
+        assert api._s.jobs.setup_busy() is (cid != "llm:qwen3-1.7b"), cid
+        gates[cid].set()
+    assert idle.wait(10) and api._s.jobs.setup_busy() is False
+    idle.clear()
+    started["llm:qwen3-1.7b"].clear()
+    gates["llm:qwen3-1.7b"].clear()
+    assert api.setup_download(["llm:qwen3-1.7b"])["ok"]
+    assert started["llm:qwen3-1.7b"].wait(5) and api._setup_running and api._s.jobs.setup_busy() is False
+    gates["llm:qwen3-1.7b"].set()
+    assert idle.wait(10)
+
+
+def test_a_speech_model_is_downloaded_once_at_a_time(monkeypatch):
+    """A lecture's own download of its speech model and the setup's "Download now" would write the same part files:
+    the second one waits (and can be cancelled meanwhile), then finds the model there without going online."""
+    import types
+
+    from studia.cancel import Cancelled
+    from studia.engine import models
+
+    asked, inside, release = [], threading.Event(), threading.Event()
+
+    class Session:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, url, params=None, timeout=0):
+            asked.append(url)
+            return _Resp({"siblings": [{"rfilename": n, "size": 4} for n in ("config.json", "model.bin", "tokenizer.json")]})
+
+    def fake_download(url, dest, session=None, progress=None, cancel=None, parts=1):
+        inside.set()
+        release.wait(10)
+        dest.write_bytes(b"data")
+        return dest
+
+    monkeypatch.setattr(models, "requests", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr(models.httpdl, "download", fake_download)
+    first = threading.Thread(target=models.download_model, args=("small", lambda done, total: None))
+    first.start()
+    assert inside.wait(5)
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    with pytest.raises(Cancelled):                                    # Cancel works while it waits
+        models.download_model("small", lambda done, total: None, cancel)
+    seen = []
+    second = threading.Thread(target=lambda: seen.append(models.download_model("small", lambda *a: seen.append(a))))
+    second.start()
+    second.join(0.3)
+    assert second.is_alive() and len(asked) == 1                     # it waits for the first one...
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert not second.is_alive() and len(asked) == 1                 # ...and then finds the model there
+    assert seen[-1] == models._models_root() / "small" and seen[0][0] == seen[0][1] > 0
+    assert models.model_is_downloaded("small")
+
+
+def test_a_download_another_version_noted_never_stops_the_start(tmp_path, monkeypatch):
+    """IEUStudia was closed while it downloaded a speech model a later version offers, then this version was installed
+    again: the start skips what it doesn't know."""
+    from studia.api import Api
+    from studia.services import Services
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hf"))          # no model this PC has cached
+    api = Api(Services())
+    monkeypatch.setattr(api, "_system_info", lambda: None)
+    appconfig.update({"pending_downloads": ["speech:large-v4", "speech:small", "llm:qwen9"]})
+    assert components.ready("speech:large-v4") and components.describe("speech:large-v4") is None
+    boot = api.get_bootstrap()
+    assert boot["ok"] and [d["id"] for d in boot["pending_downloads"]] == ["speech:small"]
+    monkeypatch.setattr(components, "ready", lambda cid: 1 / 0)       # nor whatever else goes wrong there
+    boot = api.get_bootstrap()
+    assert boot["ok"] and boot["pending_downloads"] == []
+
+
+def test_a_setup_download_runs_even_while_app_json_is_held_open(monkeypatch):
+    """Another program (the tray helper, an antivirus) can hold app.json open for a moment: the download still runs and
+    reports its end, and nothing is left waiting for a download that never started."""
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    pushed, idle, got, update = [], threading.Event(), [], appconfig.update
+    monkeypatch.setattr(api, "_system_info", lambda: None)
+    monkeypatch.setattr(api, "_push", lambda e: pushed.append(e) or (e.get("state") == "idle" and idle.set()))
+    monkeypatch.setattr(components, "download", lambda cid, progress, cancel: got.append(cid))
+
+    def held(patch):
+        raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(appconfig, "update", held)
+    assert api.setup_download(["speech:small"]) == {"ok": True} and idle.wait(10)
+    assert got == ["speech:small"] and {"type": "setup", "id": "", "state": "idle", "ok": True} in pushed
+    assert not api._setup_running and api._s.jobs.setup_busy() is False
+    monkeypatch.setattr(appconfig, "update", lambda patch: 1 / 0)    # anything else: an error, but nothing stuck
+    assert not api.setup_download(["speech:small"])["ok"]
+    assert not api._setup_running and api._s.jobs.setup_busy() is False and got == ["speech:small"]
+    monkeypatch.setattr(appconfig, "update", update)                  # the next try downloads
+    idle.clear()
+    assert api.setup_download(["speech:small"]) == {"ok": True} and idle.wait(10)
+    assert got == ["speech:small", "speech:small"] and appconfig.load().pending_downloads == []
+
+
+def test_one_off_claude_requests_write_no_prompt_cache_and_a_chat_keeps_it(monkeypatch):
+    import os
+    import sys
+
+    probe = ("import json, os, sys; sys.stdin.read(); print(json.dumps({'type': 'result', 'subtype': 'success', "
+             "'usage': {}, 'result': json.dumps({k: os.environ.get(k, '') for k in "
+             "('DISABLE_PROMPT_CACHING', 'CLAUDE_CODE_DISABLE_THINKING')})}))")
+    monkeypatch.setattr(ai, "_require_claude", lambda: sys.executable)
+    monkeypatch.setattr(ai, "_claude_env", lambda: {"PATH": os.environ.get("PATH", ""),
+                                                    "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")})
+    monkeypatch.setattr(ai, "_command", lambda model, effort, sp, partial=False: [sys.executable, "-c", probe])
+    seen = json.loads(ai._claude_one_shot("S", [{"type": "text", "text": "x"}])["text"])
+    assert seen == {"DISABLE_PROMPT_CACHING": "1", "CLAUDE_CODE_DISABLE_THINKING": ""}
+    appconfig.update({"ai_provider": "claude"})
+    seen = json.loads(ai.one_shot("S", [{"type": "text", "text": "x"}], "haiku", think=False)["text"])
+    assert seen == {"DISABLE_PROMPT_CACHING": "1", "CLAUDE_CODE_DISABLE_THINKING": "1"}
+    envs = []
+
+    def popen(cmd, **kw):                      # a chat's process: follow-up questions read its prompt cache
+        envs.append(kw["env"])
+        raise OSError("not started in this test")
+
+    monkeypatch.setattr(ai.subprocess, "Popen", popen)
+    with pytest.raises(OSError):
+        ai.ClaudeSession("S")
+    assert "DISABLE_PROMPT_CACHING" not in envs[0]
+
+
+def test_study_notes_send_the_lecture_first_and_the_task_last(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ai, "one_shot", lambda system, content, *a, **k: sent.append(content) or {"text": ""})
+    monkeypatch.setattr(ai, "image_block", lambda p: {"type": "image", "source": {"data": str(p)}})
+    for task in ("Study notes.", "Flashcards."):
+        ai.run_claude(task, "[00:00] The lecture.", ["s1.jpg"])
+    assert sent[0][:2] == sent[1][:2]                      # every kind of notes begins alike (cached by ChatGPT)
+    assert sent[0][0]["text"] == "=== LECTURE TRANSCRIPT ===\n\n[00:00] The lecture." and sent[0][1]["type"] == "image"
+    assert sent[0][-1]["text"] == "=== TASK ===\n\nStudy notes." and sent[1][-1]["text"] == "=== TASK ===\n\nFlashcards."
+
+
+def test_a_lecture_does_not_wait_for_a_speech_model_it_does_not_use(monkeypatch):
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    monkeypatch.setattr(api, "_system_info", lambda: None)
+    idle, started, gate = threading.Event(), threading.Event(), threading.Event()
+    monkeypatch.setattr(api, "_push", lambda e: e.get("state") == "idle" and idle.set())
+    monkeypatch.setattr(components, "download", lambda cid, progress, cancel: started.set() or gate.wait(10))
+    api._s.update_settings({"model": "small"})                 # the student switched to Small in Settings
+    assert api.setup_download(["speech:medium"])["ok"]          # the setup still gets another model
+    assert started.wait(5)
+    busy_other = api._s.jobs.setup_busy()
+    gate.set()
+    assert idle.wait(10)
+    started.clear(); gate.clear(); idle.clear()
+    assert api.setup_download(["speech:small"])["ok"]           # its own model: it waits
+    assert started.wait(5)
+    busy_own = api._s.jobs.setup_busy()
+    gate.set()
+    assert idle.wait(10)
+    assert (busy_other, busy_own) == (False, True)

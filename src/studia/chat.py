@@ -3,7 +3,8 @@
 A chat's material (instructions + compact transcripts, optionally slide images) is fixed when it starts.
 While a chat is in use it keeps one Claude Code process, so follow-up questions read the lectures from
 Claude's prompt cache instead of paying for them again. Idle processes are closed after a while; the next
-question then starts a fresh process that receives the earlier conversation as text.
+question then starts a fresh process that receives the slides and the earlier conversation again (as text), so
+the process is kept for most of the hour Claude Code keeps a subscription's cache.
 """
 
 from __future__ import annotations
@@ -23,9 +24,10 @@ from typing import Any, Optional
 
 from . import ai, store
 from .domain import Course, Recording
+from .i18n import date_long, date_short, t, tn
 from .knowledge import course_brief, retrieve
 from .outputs.ai_copy import compact_day
-from .outputs.common import MONTHS, WEEKDAYS_SHORT, course_display, kind_label, long_date
+from .outputs.common import course_display, kind_label, long_date
 from .outputs.markdown import part_views
 from .outputs.writer import atomic_write, course_dir, safe_name
 
@@ -33,8 +35,9 @@ log = logging.getLogger("studia")
 
 MAX_CONTEXT_TOKENS = 150_000      # leaves room for the conversation in Claude's 200k context window
 MAX_SLIDES = 60
-IDLE_CLOSE_S = 600                # Claude's prompt cache expires after ~5 idle minutes anyway
-MAX_LIVE = 3                      # Claude Code processes kept open at once
+IDLE_CLOSE_S = 3300               # Claude Code keeps a subscription's prompt cache for an hour: a question after a
+                                  # break still reads the slides and the conversation from it in the same process
+MAX_LIVE = 2                      # Claude Code processes kept open at once (~160 MB of memory each while idle)
 MODELS = ("haiku", "sonnet", "opus")
 FOCUS = ("full", "highlights", "course")      # course: every lecture's highlights + search per question
 EMIT_EVERY_S = 0.08
@@ -107,10 +110,6 @@ def replay_text(history: list[dict[str, Any]]) -> str:
         lines.append("")
     lines.append("(End of the earlier conversation. My new question:)")
     return "\n".join(lines)
-
-
-def short_date(d: dt.date) -> str:
-    return f"{WEEKDAYS_SHORT[d.weekday()]} {d.day} {MONTHS[d.month - 1][:3]}"
 
 
 def _clean_stale_workdirs(max_age_s: float = 12 * 3600) -> None:
@@ -201,7 +200,7 @@ class ChatService:
         """The transcribed class days of a course with their size, for the "new chat" picker."""
         course = self.lib.get_course(course_id)
         if course is None:
-            raise RuntimeError("Unknown course.")
+            raise RuntimeError(t("Unknown course."))
         done = self.lib.transcribed_ids()
         keys = list(dict.fromkeys(r.day_key for r in self.lib.recordings(course_id) if r.delivery_id in done))
         days = []
@@ -216,8 +215,8 @@ class ChatService:
             parts = part_views(recs, trans)
             start = min(r.start for r in recs)
             days.append({
-                "day_key": key, "date": start.date().isoformat(), "label": short_date(start.date()),
-                "kind": recs[0].kind, "kind_label": kind_label(recs[0].kind),
+                "day_key": key, "date": start.date().isoformat(), "label": date_short(start.date()),
+                "kind": recs[0].kind, "kind_label": t(kind_label(recs[0].kind)),
                 "parts": sum(1 for p in parts if p.transcript),
                 "stars": sum(1 for p in parts for para in p.paragraphs if para.star),
                 "slides": sum(len({s.index for s in store.load_slides(r.delivery_id)}) for r in recs
@@ -243,17 +242,22 @@ class ChatService:
     def _scope_days(self, chat: dict[str, Any]) -> list[str]:
         return [str(k) for k in (chat.get("scope") or {}).get("days") or []]
 
-    def _day_labels(self, chat: dict[str, Any]) -> list[dict[str, Any]]:
+    def _day_labels(self, chat: dict[str, Any], shown: bool = True) -> list[dict[str, Any]]:
+        """The chat's class days with their labels in the language shown (``shown=False``: in English, as the exported
+        chat says them)."""
         out = []
         for n, key in enumerate(self._scope_days(chat), start=1):
             try:
                 _, recs = self._s.day(key)
-                start = min(r.start for r in recs)
-                out.append({"key": key, "n": n, "label": short_date(start.date()), "kind": kind_label(recs[0].kind),
-                            "long": long_date(start.date()), "gone": False})
+                d = min(r.start for r in recs).date()
+                kind = kind_label(recs[0].kind)
+                out.append({"key": key, "n": n, "label": date_short(d), "kind": t(kind) if shown else kind,
+                            "long": date_long(d) if shown else long_date(d), "gone": False})
             except KeyError:
                 _, date_s, kind = (key.split("|") + ["", ""])[:3]
-                out.append({"key": key, "n": n, "label": date_s, "kind": kind_label(kind), "long": date_s, "gone": True})
+                kind = kind_label(kind)
+                out.append({"key": key, "n": n, "label": date_s, "kind": t(kind) if shown else kind, "long": date_s,
+                            "gone": True})
         return out
 
     def _title(self, chat: dict[str, Any], days: list[dict[str, Any]]) -> str:
@@ -262,17 +266,20 @@ class ChatService:
         q = " ".join((chat.get("first_question") or "").split())
         if q:
             return q if len(q) <= 64 else q[:61].rstrip() + "…"
-        return "New chat"
+        return ""                           # no title yet: the page says "New chat" in its language
 
     def _scope_label(self, chat: dict[str, Any], days: list[dict[str, Any]]) -> str:
         if len(days) == 1:
             label = f"{days[0]['label']} · {days[0]['kind']}"
+        elif days:
+            label = tn(len(days), "{n} class day ({first} – {last})", "{n} class days ({first} – {last})",
+                       first=days[0]["label"], last=days[-1]["label"])
         else:
-            label = f"{len(days)} class days" + (f" ({days[0]['label']} – {days[-1]['label']})" if days else "")
+            label = tn(0, "{n} class day", "{n} class days")
         if (chat.get("scope") or {}).get("focus") == "course":
-            return f"Whole course · {len(days)} lectures' highlights + course files"
+            return t("Whole course · {n} lectures' highlights + course files", n=len(days))
         if (chat.get("scope") or {}).get("focus") == "highlights":
-            label += " · highlights only"
+            label = t("{label} · highlights only", label=label)
         return label
 
     def summary(self, chat: dict[str, Any]) -> dict[str, Any]:
@@ -296,7 +303,7 @@ class ChatService:
     def view(self, chat_id: str) -> dict[str, Any]:
         chat = next((c for c in self.lib.chats() if c["id"] == chat_id), None)
         if chat is None:
-            raise RuntimeError("This chat no longer exists.")
+            raise RuntimeError(t("This chat no longer exists."))
         scope = chat.get("scope") or {}
         ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"), bool(scope.get("slides")))
         course = self.lib.get_course(chat["course_id"])
@@ -313,11 +320,11 @@ class ChatService:
         model = model if model in MODELS else "sonnet"
         days = self.ordered_days(course_id, self.all_days(course_id) if focus == "course" else day_keys)
         if not days:
-            raise RuntimeError("Pick at least one transcribed class day.")
+            raise RuntimeError(t("Pick at least one transcribed class day."))
         ctx = self.context(course_id, days, focus, slides)
         if ctx["tokens"] > MAX_CONTEXT_TOKENS:
-            raise RuntimeError(f"That is too much for one chat (~{ctx['tokens'] // 1000}k tokens, the limit is "
-                               f"{MAX_CONTEXT_TOKENS // 1000}k). Pick fewer class days or use highlights only.")
+            raise RuntimeError(t("That is too much for one chat (~{k}k tokens, the limit is {max}k). Pick fewer class "
+                                 "days or use highlights only.", k=ctx["tokens"] // 1000, max=MAX_CONTEXT_TOKENS // 1000))
         chat_id = uuid.uuid4().hex[:12]
         self.lib.create_chat(chat_id, course_id, {"days": days, "focus": focus, "slides": bool(slides and ctx["images"])},
                              model)
@@ -325,7 +332,7 @@ class ChatService:
 
     def update(self, chat_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         if self.lib.get_chat(chat_id) is None:
-            raise RuntimeError("This chat no longer exists.")
+            raise RuntimeError(t("This chat no longer exists."))
         fields: dict[str, Any] = {}
         if "title" in patch:
             fields["title"] = " ".join(str(patch["title"] or "").split())[:120]
@@ -350,13 +357,13 @@ class ChatService:
     def send(self, chat_id: str, text: str) -> dict[str, Any]:
         chat = self.lib.get_chat(chat_id)
         if chat is None:
-            raise RuntimeError("This chat no longer exists.")
+            raise RuntimeError(t("This chat no longer exists."))
         text = (text or "").strip()
         if not text:
-            raise ValueError("Type a question first.")
+            raise ValueError(t("Type a question first."))
         with self._lock:
             if chat_id in self._running:
-                raise RuntimeError(f"{ai.ai_name()} is still answering the previous question.")
+                raise RuntimeError(t("{ai} is still answering the previous question.", ai=ai.ai_name()))
             stop = self._running[chat_id] = threading.Event()
         try:
             history = self.lib.chat_messages(chat_id)
@@ -373,13 +380,13 @@ class ChatService:
         """Ask the question behind a failed last answer again, replacing both (no duplicate in the history)."""
         msgs = self.lib.chat_messages(chat_id)
         if not msgs or msgs[-1]["seq"] != seq or msgs[-1]["role"] != "assistant" or msgs[-1]["status"] != "error":
-            raise RuntimeError("Only a failed last answer can be tried again.")
+            raise RuntimeError(t("Only a failed last answer can be tried again."))
         question = next((m for m in reversed(msgs) if m["role"] == "user"), None)
         if question is None:
-            raise RuntimeError("Only a failed last answer can be tried again.")
+            raise RuntimeError(t("Only a failed last answer can be tried again."))
         with self._lock:
             if chat_id in self._running:
-                raise RuntimeError(f"{ai.ai_name()} is still answering the previous question.")
+                raise RuntimeError(t("{ai} is still answering the previous question.", ai=ai.ai_name()))
         self.lib.delete_chat_messages(chat_id, question["seq"])
         return {**self.send(chat_id, question["text"]), "removed_from": question["seq"], "question": question["text"]}
 
@@ -401,7 +408,7 @@ class ChatService:
         scope = chat.get("scope") or {}
         ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"), bool(scope.get("slides")))
         if not ctx["n_days"]:
-            raise RuntimeError("The class days of this chat are no longer available.")
+            raise RuntimeError(t("The class days of this chat are no longer available."))
         session = ai.new_session(ctx["system"], model=chat.get("model") or "sonnet")
         session.key = key
         with self._lock:
@@ -418,16 +425,16 @@ class ChatService:
         text = ""
         last_emit, last_save = [0.0], [time.monotonic()]
 
-        def on_text(t: str) -> None:
+        def on_text(so_far: str) -> None:
             nonlocal text
-            text = t
+            text = so_far
             now = time.monotonic()
             if now - last_emit[0] >= EMIT_EVERY_S:
                 last_emit[0] = now
-                self._emit(cid, seq, "streaming", t)
+                self._emit(cid, seq, "streaming", so_far)
             if now - last_save[0] >= SAVE_EVERY_S:     # keep the partial answer if the app is closed meanwhile
                 last_save[0] = now
-                self.lib.update_chat_message(cid, seq, t, "streaming")
+                self.lib.update_chat_message(cid, seq, so_far, "streaming")
 
         try:
             self._emit(cid, seq, "streaming", "")
@@ -469,7 +476,7 @@ class ChatService:
             self._emit(cid, seq, state, text, usage=usage, limits=ai.usage_limits())
         except Exception as exc:  # noqa: BLE001 - reported in the chat
             log.warning("Chat %s failed: %s", cid, exc)
-            msg = str(exc) or f"{ai.ai_name()} could not answer."
+            msg = str(exc) or t("{ai} could not answer.", ai=ai.ai_name())
             self.lib.update_chat_message(cid, seq, text, "error", {"error": msg})
             self._drop(cid)
             self._emit(cid, seq, "error", text, error=msg, limits=ai.usage_limits())
@@ -484,10 +491,10 @@ class ChatService:
 
     # ------------------------------------------------------------------ processes
     def _close_later(self, session: ai.ClaudeSession) -> None:
-        t = threading.Thread(target=session.close, name="chat-close", daemon=True)
-        t.start()
+        th = threading.Thread(target=session.close, name="chat-close", daemon=True)
+        th.start()
         with self._lock:
-            self._closing = [x for x in self._closing if x.is_alive()] + [t]
+            self._closing = [x for x in self._closing if x.is_alive()] + [th]
 
     def _drop(self, chat_id: str) -> None:
         with self._lock:
@@ -515,18 +522,20 @@ class ChatService:
             closing = list(self._closing)
         for s in sessions:
             s.terminate()
-        for t in closing:
-            t.join(timeout=6)
+        for th in closing:
+            th.join(timeout=6)
 
     # ------------------------------------------------------------------ export
     def export(self, chat_id: str) -> Path:
         v = self.view(chat_id)
         course = self.lib.get_course(v["course_id"])
         if course is None:
-            raise RuntimeError("Unknown course.")
-        days = ", ".join(f"{d['long']} ({d['kind']})" for d in v["days"])
+            raise RuntimeError(t("Unknown course."))
+        en = self._day_labels(self.lib.get_chat(chat_id) or {}, shown=False)      # the exported file stays English
+        days = ", ".join(f"{d['long']} ({d['kind']})" for d in en)
         who = ai.PROVIDER_LABELS.get(ai.provider()) or "AI"
-        lines = [f"# {v['title']}", "",
+        title = v["title"] or "New chat"         # the heading and the file name stay English
+        lines = [f"# {title}", "",
                  f"**Course:** {v['course_name']}  ", f"**Class days:** {days}  ",
                  f"**Model:** {ai.model_label(v['model'])}" + (" · highlights only" if v["focus"] == "highlights" else ""),
                  "", f"*Chat with {who} in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
@@ -537,7 +546,7 @@ class ChatService:
                 lines += [f"**{who}:**", "", m["text"].strip() + (" *(stopped)*" if m["status"] == "stopped" else ""),
                           "", "---", ""]
         stamp = ((self.lib.get_chat(chat_id) or {}).get("created_at") or "")[:10]
-        name = safe_name(f"{stamp} - {v['title']}" if stamp else v["title"], limit=110) + f" [{chat_id[:6]}]"
+        name = safe_name(f"{stamp} - {title}" if stamp else title, limit=110) + f" [{chat_id[:6]}]"
         path = course_dir(self._s.output_root, course, self.lib.courses(True)) / "AI chats" / f"{name}.md"
         atomic_write(path, "\n".join(lines).rstrip() + "\n")
         return path

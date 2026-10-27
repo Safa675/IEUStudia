@@ -16,6 +16,7 @@ import requests
 from . import hls, httpdl
 from .cancel import check
 from .domain import Recording
+from .i18n import t
 from .sections import parse_section_tag
 
 log = logging.getLogger("studia")
@@ -138,8 +139,8 @@ class Panopto:
         data = r.json()
         if "Delivery" not in data:
             if data.get("ErrorCode") == 2 or data.get("LoginRedirect"):
-                raise NeedPanoptoAuth("Panopto session expired.")
-            raise RuntimeError(re.sub(r"<[^>]+>", "", data.get("ErrorMessage") or "Panopto refused the request."))
+                raise NeedPanoptoAuth(t("Panopto session expired."))
+            raise RuntimeError(re.sub(r"<[^>]+>", "", data.get("ErrorMessage") or t("Panopto refused the request.")))
         return data
 
     def media_sources(self, delivery_id: str, info: Optional[dict[str, Any]] = None) -> list[MediaSource]:
@@ -157,7 +158,7 @@ class Panopto:
             if st.get("StreamUrl") and (st.get("Tag") or "").upper() != "SCREEN" and ".m3u8" in st["StreamUrl"]:
                 out.append(MediaSource("hls", st["StreamUrl"]))
         if not out:
-            raise NotReady("Panopto is still processing this recording. Try again later.")
+            raise NotReady(t("Panopto is still processing this recording. Try again later."))
         return out
 
     def screen_source(self, info: dict[str, Any]) -> Optional[tuple[MediaSource, float]]:

@@ -19,6 +19,7 @@ from typing import Callable, Optional
 import requests
 
 from .cancel import Cancelled, check
+from .i18n import t
 
 log = logging.getLogger("studia")
 ProgressFn = Callable[[int, int], None]  # (bytes_done, bytes_total)
@@ -71,7 +72,7 @@ def _fetch_range(session: requests.Session, url: str, part: Path, start: int, en
                              stream=True, timeout=(15, 60)) as r:
                 whole_file = r.status_code == 200 and start + have == 0   # server ignored Range: full body
                 if r.status_code != 206 and not whole_file:
-                    raise requests.HTTPError(f"expected HTTP 206, got {r.status_code}")
+                    raise requests.HTTPError(t("expected HTTP 206, got {code}", code=r.status_code))
                 if whole_file and part.exists():
                     part.unlink()
                 with open(part, "ab") as fh:
@@ -92,7 +93,7 @@ def _fetch_range(session: requests.Session, url: str, part: Path, start: int, en
             for _ in range(int(min(20.0, 0.8 * 2 ** attempt) / 0.25)):
                 check(cancel)
                 time.sleep(0.25)
-    raise IOError("Download did not complete; please retry.")
+    raise IOError(t("Download did not complete; please retry."))
 
 
 def _join(part_files: list[Path], tmp: Path) -> None:
@@ -189,7 +190,7 @@ def download(url: str, dest: Path, *, session: Optional[requests.Session] = None
         tmp.unlink(missing_ok=True)
         for pf in part_files:
             pf.unlink(missing_ok=True)
-        raise IOError(f"Download size mismatch for {dest.name}; please retry.")
+        raise IOError(t("Download size mismatch for {name}; please retry.", name=dest.name))
     os.replace(tmp, dest)
     for pf in part_files:                            # the download is complete: a part left over doesn't matter now
         try:

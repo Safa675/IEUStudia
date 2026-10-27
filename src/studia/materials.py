@@ -17,6 +17,7 @@ from urllib.parse import urljoin
 import requests
 
 from .cancel import check
+from .i18n import t
 from .outputs.writer import course_dir, safe_name
 from .paths import app_dir
 
@@ -56,9 +57,9 @@ def unit_week(unit: dict[str, Any], first: Optional[dt.date]) -> Optional[int]:
 def _xml_text(xml: str, para_tag: str, text_tag: str) -> str:
     paras = []
     for p in re.findall(rf"<{para_tag}\b[^>]*>(.*?)</{para_tag}>", xml, re.S):
-        t = "".join(re.findall(rf"<{text_tag}\b[^>]*>(.*?)</{text_tag}>", p, re.S))
-        if t.strip():
-            paras.append(t)
+        text = "".join(re.findall(rf"<{text_tag}\b[^>]*>(.*?)</{text_tag}>", p, re.S))
+        if text.strip():
+            paras.append(text)
     import html
 
     return html.unescape("\n".join(paras))
@@ -180,10 +181,10 @@ class MaterialStore:
                  cancel: Optional[threading.Event] = None) -> Path:
         m = self.lib.get_material(resource_id)
         if m is None:
-            raise RuntimeError("This material is no longer listed on IEULearn.")
+            raise RuntimeError(t("This material is no longer listed on IEULearn."))
         with self._lock:
             if resource_id in self._busy:
-                raise RuntimeError("Already downloading.")
+                raise RuntimeError(t("Already downloading."))
             self._busy.add(resource_id)
         part: Optional[Path] = None
         try:
@@ -196,8 +197,8 @@ class MaterialStore:
                     if "login" in r.url:
                         from .ieulearn import NeedLogin
 
-                        raise NeedLogin("Your IEULearn session has expired.")
-                    raise RuntimeError("IEULearn sent a web page instead of the file. Try again later.")
+                        raise NeedLogin(t("Your IEULearn session has expired."))
+                    raise RuntimeError(t("IEULearn sent a web page instead of the file. Try again later."))
                 r.raise_for_status()
                 total = int(r.headers.get("content-length") or 0)
                 done = 0

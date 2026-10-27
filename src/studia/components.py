@@ -26,18 +26,22 @@ import requests
 
 from . import httpdl
 from .cancel import check
+from .i18n import N_, t
 
 log = logging.getLogger("studia")
 MB = 1024 * 1024
 Progress = Callable[[int, int], None]
 
-# Apache-2.0 models, converted to CTranslate2 int8 (runs with the speech engine already installed).
+# Apache-2.0 models, converted to CTranslate2 int8 (runs with the speech engine already installed). Labels and
+# descriptions in English: t() to show them.
 LLM_PRESETS: dict[str, dict[str, Any]] = {
-    "qwen3-1.7b": {"repo": "jncraton/Qwen3-1.7B-ct2-int8", "label": "Basic", "size_mb": 1745,
-                   "description": "Short notes and simple questions; runs on most PCs with 8 GB of memory (Qwen3 1.7B).",
+    "qwen3-1.7b": {"repo": "jncraton/Qwen3-1.7B-ct2-int8", "label": N_("Basic"), "size_mb": 1745,
+                   "description": N_("Short notes and simple questions; runs on most PCs with 8 GB of memory "
+                                     "(Qwen3 1.7B)."),
                    "template": "qwen3"},
-    "qwen3-4b": {"repo": "jncraton/Qwen3-4B-Instruct-2507-ct2-int8", "label": "Better", "size_mb": 4045,
-                 "description": "Clearly better notes and answers; needs an NVIDIA graphics card with 8 GB of memory (Qwen3 4B).",
+    "qwen3-4b": {"repo": "jncraton/Qwen3-4B-Instruct-2507-ct2-int8", "label": N_("Better"), "size_mb": 4045,
+                 "description": N_("Clearly better notes and answers; needs an NVIDIA graphics card with 8 GB of memory "
+                                   "(Qwen3 4B)."),
                  "template": "qwen3-instruct"},
 }
 LLM_FILES = ["config.json", "generation_config.json", "model.bin", "tokenizer.json", "tokenizer_config.json",
@@ -122,7 +126,7 @@ def _pypi_wheel(package: str, prefix: str, session: requests.Session) -> dict[st
             if f["filename"].endswith("win_amd64.whl") and not f.get("yanked"):
                 return {"version": version, "url": f["url"], "size": int(f["size"]), "sha256": f["digests"]["sha256"],
                         "filename": f["filename"]}
-    raise RuntimeError(f"No Windows build of {package} {prefix}x was found on PyPI.")
+    raise RuntimeError(t("No Windows build of {package} {version}x was found on PyPI.", package=package, version=prefix))
 
 
 def _sha256(path: Path) -> str:
@@ -155,7 +159,7 @@ def download_cuda(progress: Progress, cancel: Optional[threading.Event] = None) 
             httpdl.download(w["url"], dest, session=session, progress=cb, cancel=cancel, parts=8)
         if _sha256(dest) != w["sha256"]:
             dest.unlink(missing_ok=True)
-            raise RuntimeError(f"The download of {w['filename']} was damaged. Try again.")
+            raise RuntimeError(t("The download of {name} was damaged. Try again.", name=w["filename"]))
         with zipfile.ZipFile(dest) as z:
             for info in z.infolist():
                 if info.filename.startswith(member) and info.filename.lower().endswith(".dll"):
@@ -191,7 +195,7 @@ def download_hf(repo: str, target: Path, patterns: list[str], progress: Progress
     files = [(s["rfilename"], int(s.get("size") or 0)) for s in info.json().get("siblings", [])
              if any(fnmatch.fnmatch(s["rfilename"], p) for p in patterns)]
     if not any(name == "model.bin" for name, _ in files):
-        raise RuntimeError(f"The model files of {repo} were not found on Hugging Face.")
+        raise RuntimeError(t("The model files of {repo} were not found on Hugging Face.", repo=repo))
     total = sum(size for _, size in files) or fallback_mb * MB
     done = 0
     for name, size in sorted(files, key=lambda f: f[1]):
@@ -227,10 +231,10 @@ def catalog(facts: Optional[dict[str, Any]] = None) -> dict[str, Any]:
 
     gpu = bool(facts and facts.get("gpu", {}).get("present"))
     return {
-        "speech": [{"id": k, "label": v["label"], "description": v["description"], "size_mb": v["size_mb"],
+        "speech": [{"id": k, "label": t(v["label"]), "description": t(v["description"]), "size_mb": v["size_mb"],
                     "ready": model_is_downloaded(k)} for k, v in MODEL_PRESETS.items()],
         "cuda": {"needed": gpu, "ready": cuda_ready(), "size_mb": CUDA_SIZE_MB, "disk_mb": 780},
-        "llm": [{"id": k, "label": v["label"], "description": v["description"], "size_mb": v["size_mb"],
+        "llm": [{"id": k, "label": t(v["label"]), "description": t(v["description"]), "size_mb": v["size_mb"],
                  "ready": llm_ready(k)} for k, v in LLM_PRESETS.items()],
     }
 
@@ -241,14 +245,45 @@ def plan(speech: str, llm: str = "", gpu: bool = False) -> list[dict[str, Any]]:
 
     out = []
     if speech and not model_is_downloaded(speech):
-        out.append({"id": f"speech:{speech}", "label": f"Speech model ({MODEL_PRESETS[speech]['label']})",
+        out.append({"id": f"speech:{speech}", "label": t("Speech model ({name})", name=t(MODEL_PRESETS[speech]["label"])),
                     "size_mb": MODEL_PRESETS[speech]["size_mb"]})
     if gpu and not cuda_ready():
-        out.append({"id": "cuda", "label": "NVIDIA graphics card support (from NVIDIA)", "size_mb": CUDA_SIZE_MB})
+        out.append({"id": "cuda", "label": t("NVIDIA graphics card support (from NVIDIA)"), "size_mb": CUDA_SIZE_MB})
     if llm and not llm_ready(llm):
-        out.append({"id": f"llm:{llm}", "label": f"Offline AI model ({LLM_PRESETS[llm]['label']})",
+        out.append({"id": f"llm:{llm}", "label": t("Offline AI model ({name})", name=t(LLM_PRESETS[llm]["label"])),
                     "size_mb": LLM_PRESETS[llm]["size_mb"]})
     return out
+
+
+def describe(component: str) -> Optional[dict[str, Any]]:
+    """A component of :func:`plan` by its id ({id, label, size_mb}), whether or not it is downloaded."""
+    from .engine.models import MODEL_PRESETS
+
+    kind, _, key = component.partition(":")
+    if kind == "speech" and key in MODEL_PRESETS:
+        return {"id": component, "label": t("Speech model ({name})", name=t(MODEL_PRESETS[key]["label"])),
+                "size_mb": MODEL_PRESETS[key]["size_mb"]}
+    if kind == "cuda":
+        return {"id": "cuda", "label": t("NVIDIA graphics card support (from NVIDIA)"), "size_mb": CUDA_SIZE_MB}
+    if kind == "llm" and key in LLM_PRESETS:
+        return {"id": component, "label": t("Offline AI model ({name})", name=t(LLM_PRESETS[key]["label"])),
+                "size_mb": LLM_PRESETS[key]["size_mb"]}
+    return None
+
+
+def ready(component: str) -> bool:
+    """Is this component of :func:`plan` on this PC? One this version doesn't know (another version noted it) has
+    nothing to download."""
+    from .engine.models import MODEL_PRESETS, model_is_downloaded
+
+    kind, _, key = component.partition(":")
+    if kind == "speech":
+        return key not in MODEL_PRESETS or model_is_downloaded(key)
+    if kind == "cuda":
+        return cuda_ready()
+    if kind == "llm":
+        return key not in LLM_PRESETS or llm_ready(key)
+    return True
 
 
 def download(component: str, progress: Progress, cancel: Optional[threading.Event] = None) -> None:

@@ -16,6 +16,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .i18n import t
+
 log = logging.getLogger("studia")
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36")
@@ -39,39 +41,52 @@ def use_windows_certificates() -> None:
 
 def _host(exc: BaseException, url: str = "") -> str:
     req = getattr(exc, "request", None)
-    return urlparse(url or getattr(req, "url", "") or "").hostname or "the server"
+    return urlparse(url or getattr(req, "url", "") or "").hostname or ""
 
 
 def plain_error(exc: BaseException, url: str = "") -> str:
     """What went wrong, in words for anyone: the connection, a full disk, memory, a file Windows would not let us
-    write. Other errors keep their own message (most are already written for people)."""
+    write. Other errors keep their own message (most are already written for people). Each message is a whole
+    sentence in both forms (with and without the name), never a sentence with a word put in: Turkish needs that."""
     if isinstance(exc, NetworkError):
         return str(exc)
+    host = _host(exc, url)
     if isinstance(exc, requests.exceptions.SSLError):          # before ConnectionError: it is one
-        return (f"A secure connection to {_host(exc, url)} was blocked. Antivirus web or HTTPS scanning, or a Wi-Fi "
-                "sign-in page, can do this: open any website in your browser, then try again.")
+        return (t("A secure connection to {host} was blocked. Antivirus web or HTTPS scanning, or a Wi-Fi sign-in page, "
+                  "can do this: open any website in your browser, then try again.", host=host) if host else
+                t("A secure connection to the server was blocked. Antivirus web or HTTPS scanning, or a Wi-Fi sign-in "
+                  "page, can do this: open any website in your browser, then try again."))
     if isinstance(exc, requests.Timeout):
-        return f"{_host(exc, url)} took too long to answer. Check your internet connection and try again."
+        return (t("{host} took too long to answer. Check your internet connection and try again.", host=host) if host
+                else t("The server took too long to answer. Check your internet connection and try again."))
     if isinstance(exc, requests.ConnectionError):
-        return (f"Can't reach {_host(exc, url)}. Check your internet connection (on campus Wi-Fi, make sure you are "
-                "signed in to it), then try again.")
+        return (t("Can't reach {host}. Check your internet connection (on campus Wi-Fi, make sure you are signed in to "
+                  "it), then try again.", host=host) if host else
+                t("Can't reach the server. Check your internet connection (on campus Wi-Fi, make sure you are signed in "
+                  "to it), then try again."))
     if isinstance(exc, requests.HTTPError) and exc.response is not None:
-        return f"{_host(exc, url)} answered with an error ({exc.response.status_code}). Try again in a while."
+        code = exc.response.status_code
+        return (t("{host} answered with an error ({code}). Try again in a while.", host=host, code=code) if host
+                else t("The server answered with an error ({code}). Try again in a while.", code=code))
     if isinstance(exc, MemoryError):
-        return "Not enough memory. Close other programs and try again."
+        return t("Not enough memory. Close other programs and try again.")
     if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
-        return "Your disk is full. Free up some space, then try again."
+        return t("Your disk is full. Free up some space, then try again.")
     if isinstance(exc, PermissionError):
-        name = os.path.basename(str(exc.filename or "")) or "a file"
-        return (f"Windows did not let IEUStudia use {name}: it may be open in another program (or syncing), or your "
-                "antivirus or Windows' ransomware protection blocked it.")
+        name = os.path.basename(str(exc.filename or ""))
+        return (t("Windows did not let IEUStudia use {name}: it may be open in another program (or syncing), or your "
+                  "antivirus or Windows' ransomware protection blocked it.", name=name) if name else
+                t("Windows did not let IEUStudia use a file: it may be open in another program (or syncing), or your "
+                  "antivirus or Windows' ransomware protection blocked it."))
     if getattr(exc, "winerror", None) in (3, 21, 53, 67):        # path, drive, network path or name not found
         where = str(getattr(exc, "filename", "") or "")
-        return (f"{where or 'A folder'} can't be reached: is the drive (or the network) connected, and is the folder "
-                "still there?")
+        return (t("{where} can't be reached: is the drive (or the network) connected, and is the folder still there?",
+                  where=where) if where else
+                t("A folder can't be reached: is the drive (or the network) connected, and is the folder still there?"))
     if isinstance(exc, FileNotFoundError):
-        name = os.path.basename(str(exc.filename or "")) or "A file"
-        return f"{name} isn't there any more: was it moved or deleted?"
+        name = os.path.basename(str(exc.filename or ""))
+        return (t("{name} isn't there any more: was it moved or deleted?", name=name) if name else
+                t("A file isn't there any more: was it moved or deleted?"))
     text = str(exc) or exc.__class__.__name__
     return text if text.endswith((".", "!", "?")) else text + "."
 
@@ -85,7 +100,7 @@ class _TimeoutSession(requests.Session):
             raise NetworkError(plain_error(exc, url)) from exc
         except (requests.ConnectionError, requests.Timeout) as exc:
             host = urlparse(url).hostname or url
-            raise NetworkError(f"Can't reach {host}. Check your internet connection.") from exc
+            raise NetworkError(t("Can't reach {host}. Check your internet connection.", host=host)) from exc
 
 
 def make_session() -> requests.Session:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..i18n import N_
+
 TRANSCRIPT_NOTES = (
     "About the material: it is an automatic speech-recognition transcript of a university lecture, so names, "
     "symbols and formulas may be misheard — fix obvious recognition errors from context (and from the slides, "
@@ -11,11 +13,11 @@ TRANSCRIPT_NOTES = (
     "Answer in English unless I ask otherwise."
 )
 
-TEMPLATES: dict[str, dict[str, str]] = {
+TEMPLATES: dict[str, dict[str, str]] = {          # labels in English; t() to show one (the prompts stay English)
     "notes": {
-        "label": "Study notes",
+        "label": N_("Study notes"),
         "prompt": (
-            "You are my study assistant. Turn the lecture below into complete, well-structured study notes.\n\n"
+            "You are my study assistant. Turn the lecture into complete, well-structured study notes.\n\n"
             "1. **Overview** — 3–5 sentences: what was covered and how it connects to the course.\n"
             "2. **Topics, in lecture order** — for each: a heading; a clear explanation; every definition, "
             "theorem and formula (LaTeX, e.g. $P(A\\mid B)$); the lecturer's worked examples step by step; "
@@ -29,9 +31,9 @@ TEMPLATES: dict[str, dict[str, str]] = {
         ),
     },
     "exam": {
-        "label": "Exam focus",
+        "label": N_("Exam focus"),
         "prompt": (
-            "You are helping me prepare for an exam. From the lecture below, extract only what is most likely "
+            "You are helping me prepare for an exam. From the lecture, extract only what is most likely "
             "to be examined:\n\n"
             "1. **Lecturer's explicit hints** — everything said to be important, on the exam/quiz, or to be "
             "remembered (⭐ moments), quoted briefly with timestamps.\n"
@@ -44,22 +46,22 @@ TEMPLATES: dict[str, dict[str, str]] = {
         ),
     },
     "flashcards": {
-        "label": "Flashcards",
+        "label": N_("Flashcards"),
         "prompt": (
-            "Create 20–30 flashcards from the lecture below, covering definitions, formulas, key ideas and the "
+            "Create 20–30 flashcards from the lecture, covering definitions, formulas, key ideas and the "
             "worked examples. Format each as:\n\nQ: …\nA: …  (Part n, mm:ss)\n\n"
             "Keep answers short and precise; put formulas in LaTeX. Prefer what the lecturer emphasised (⭐).\n\n"
         ),
     },
-    "plain": {"label": "Transcript only", "prompt": ""},
+    "plain": {"label": N_("Transcript only"), "prompt": ""},
 }
 
 
 def ai_prompt(template: str) -> str:
-    t = TEMPLATES.get(template) or TEMPLATES["notes"]
-    if not t["prompt"]:
+    tpl = TEMPLATES.get(template) or TEMPLATES["notes"]
+    if not tpl["prompt"]:
         return ""
-    return t["prompt"] + TRANSCRIPT_NOTES
+    return tpl["prompt"] + TRANSCRIPT_NOTES
 
 
 PROMPTS_MD = f"""# Using your transcripts with ChatGPT or Claude

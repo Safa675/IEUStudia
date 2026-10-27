@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from .i18n import date_short, t, tn
+
 log = logging.getLogger("studia")
 
 CMD_OPEN, CMD_SYNC, CMD_PAUSE, CMD_STARTUP, CMD_QUIT = 1, 2, 3, 4, 9
@@ -101,7 +103,7 @@ def _save_seen(seen: dict[str, list[str]]) -> None:
 def summarize(lib: Any, settings: Any, cfg: Any, new_recordings: list[str], new_announcements: list[str],
               new_materials: list[str], seen: dict[str, list[str]]) -> Optional[tuple[str, str, Any]]:
     """One notification for what a check found (or None): title, text and what clicking it opens."""
-    from .alerts import matches
+    from .alerts import LABELS, matches
     from .sections import available_sections, classify, guess_my_section
 
     lines: list[tuple[int, str, str]] = []            # (priority, course id, line)
@@ -123,8 +125,8 @@ def summarize(lib: Any, settings: Any, cfg: Any, new_recordings: list[str], new_
             mine = classify(c, all_recs, prefs.my_section or guess_my_section(c)) if available_sections(all_recs) else {}
             own = [r for r in recs if mine.get(r.delivery_id) is not False or prefs.show_mode == "all"]
             if own:
-                n = len(own)
-                lines.append((2, cid, f"{c.code}: {n} new lecture recording{'s' if n > 1 else ''}"))
+                lines.append((2, cid, tn(len(own), "{course}: {n} new lecture recording",
+                                         "{course}: {n} new lecture recordings", course=c.code)))
     if cfg.notify_announcements and new_announcements:
         fresh = set(new_announcements) - done.get("ann", set())
         for a in lib.announcements(limit=200):
@@ -133,8 +135,8 @@ def summarize(lib: Any, settings: Any, cfg: Any, new_recordings: list[str], new_
             c = courses.get(a["course_id"])
             cats = matches(f"{a['title']}\n{a['body'] or ''}")
             key = next((k for k in ("final", "midterm", "quiz", "exam", "project", "homework", "schedule") if k in cats), "")
-            prefix = f"{key.title()} · " if key else ""
-            lines.append((0 if key else 1, a["course_id"], f"{c.code if c else 'Course'}: {prefix}{a['title']}"))
+            prefix = f"{t(LABELS[key])} · " if key else ""              # "Quiz · ", "Midterm · " …
+            lines.append((0 if key else 1, a["course_id"], f"{c.code if c else t('Course')}: {prefix}{a['title']}"))
     if cfg.notify_materials and new_materials:
         fresh = [m for m in new_materials if m not in done.get("mat", set())]
         per: dict[str, int] = {}
@@ -144,7 +146,8 @@ def summarize(lib: Any, settings: Any, cfg: Any, new_recordings: list[str], new_
                 per[m["course_id"]] = per.get(m["course_id"], 0) + 1
         for cid, n in per.items():
             c = courses.get(cid)
-            lines.append((3, cid, f"{c.code if c else 'Course'}: {n} new file{'s' if n > 1 else ''} on IEULearn"))
+            lines.append((3, cid, tn(n, "{course}: {n} new file on IEULearn", "{course}: {n} new files on IEULearn",
+                                     course=c.code if c else t("Course"))))
     seen.setdefault("rec", []).extend(new_recordings)
     seen.setdefault("ann", []).extend(new_announcements)
     seen.setdefault("mat", []).extend(new_materials)
@@ -152,17 +155,17 @@ def summarize(lib: Any, settings: Any, cfg: Any, new_recordings: list[str], new_
         return None
     lines.sort(key=lambda x: x[0])
     targets = {cid for _, cid, _ in lines}
-    title = "IEUStudia: heads-up" if lines[0][0] == 0 else "IEUStudia: new on IEULearn"
-    text = "\n".join(line for _, _, line in lines[:4]) + (f"\n+{len(lines) - 4} more" if len(lines) > 4 else "")
+    title = t("IEUStudia: heads-up") if lines[0][0] == 0 else t("IEUStudia: new on IEULearn")
+    text = "\n".join(line for _, _, line in lines[:4])
+    if len(lines) > 4:
+        text += "\n" + t("+{n} more", n=len(lines) - 4)
     tab = {0: "announcements", 1: "announcements", 2: "lectures", 3: "materials"}[lines[0][0]]   # what it's about
     payload = f"course:{next(iter(targets))}:{tab}" if len(targets) == 1 else "home"
     return title, text, payload
 
 
 def _day(d: dt.date) -> str:
-    from .outputs.common import MONTHS, WEEKDAYS_SHORT
-
-    return f"{WEEKDAYS_SHORT[d.weekday()]} {d.day} {MONTHS[d.month - 1][:3]}"
+    return date_short(d)          # Tue 13 Oct / 13 Eki Sal
 
 
 def _los(los: list[int]) -> str:
@@ -208,20 +211,24 @@ def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, li
     seen.setdefault("rem", []).extend(key for key, *_ in due)
     lines = []
     for _, e, first, rest, n in due:
-        when = "today" if first == today else f"tomorrow ({_day(first)})"
-        los = f" Covers {_los(e['los'])}." if e.get("los") else ""
-        if e.get("kind") == "quiz" and n:
-            lines.append(f"{e['course']}: {e['name']} {'may be ' if n > 1 else ''}{when}"
-                         f"{' or ' + _day(rest[0]) if rest else ''}, as announced.{los}")
+        what = {"course": e["course"], "name": e["name"],
+                "when": t("today") if first == today else t("tomorrow ({day})", day=_day(first))}
+        los = " " + t("Covers {los}.", los=_los(e["los"])) if e.get("los") else ""
+        if e.get("kind") == "quiz" and n:             # one of its week's class days (rest: another one)
+            line = (t("{course}: {name} {when}, as announced.", **what) if n == 1 else
+                    t("{course}: {name} may be {when} or {day}, as announced.", day=_day(rest[0]), **what) if rest
+                    else t("{course}: {name} may be {when}, as announced.", **what))
         elif e.get("kind") == "quiz":
-            lines.append(f"{e['course']}: {e['name']} is in week {e['week']}, which starts {when}.{los}")
+            line = t("{course}: {name} is in week {week}, which starts {when}.", week=e["week"], **what)
         else:
-            lines.append(f"{e['course']}: {e['name']} is in week {e['week']}, which starts {when}. "
-                         f"The exam schedule on IEULearn has the day.{los}")
+            line = t("{course}: {name} is in week {week}, which starts {when}. The exam schedule on IEULearn has the "
+                     "day.", week=e["week"], **what)
+        lines.append(line + los)
     _, e, first, rest, n = due[0]
-    title = "IEUStudia: coming up"
+    title = t("IEUStudia: coming up")
     if len(due) == 1 and e.get("kind") == "quiz" and n == 1:
-        title = f"IEUStudia: {e['name']} {'today' if first == today else 'tomorrow'}"
+        title = (t("IEUStudia: {name} today", name=e["name"]) if first == today else
+                 t("IEUStudia: {name} tomorrow", name=e["name"]))
     payload = "home"
     if len(due) == 1 and e.get("course_id"):           # Get ready knows what was announced; a syllabus week: the week
         payload = (f"week:{e['course_id']}:{e['week']}" if "-syllabus-week" in e["uid"]
@@ -247,15 +254,16 @@ class Helper:
 
     # ---- tray
     def _menu(self) -> list[tuple[int, str, bool, bool]]:
-        from . import launch
+        from . import i18n, launch
 
-        return [(CMD_OPEN, "Open IEUStudia", False, True),
-                (CMD_SYNC, "Check IEULearn now", False, not ui_running()),
+        i18n.load_language()             # Settings may have changed it, and no check reads it while the window is open
+        return [(CMD_OPEN, t("Open IEUStudia"), False, True),          # built each time the menu opens: the language
+                (CMD_SYNC, t("Check IEULearn now"), False, not ui_running()),    # set in Settings applies at once
                 (0, "", False, False),
-                (CMD_PAUSE, "Pause notifications", self.paused, True),
-                (CMD_STARTUP, "Start with Windows", launch.startup_enabled(), True),
+                (CMD_PAUSE, t("Pause notifications"), self.paused, True),
+                (CMD_STARTUP, t("Start with Windows"), launch.startup_enabled(), True),
                 (0, "", False, False),
-                (CMD_QUIT, "Stop background checks", False, True)]
+                (CMD_QUIT, t("Stop background checks"), False, True)]
 
     def _command(self, cmd: int) -> None:
         from . import appconfig, launch
@@ -314,14 +322,16 @@ class Helper:
                 return
             st = updates.check()
             if st["available"] and not self.paused and updates.tell_once(st["version"]):
-                self.tray.notify(f"IEUStudia {st['version']} is available",
-                                 "Open IEUStudia to update. It takes about a minute.", "update")
+                self.tray.notify(t("IEUStudia {version} is available", version=st["version"]),
+                                 t("Open IEUStudia to update. It takes about a minute."), "update")
         except Exception:  # noqa: BLE001
             log.debug("Helper: update check failed", exc_info=True)
 
     def _check(self) -> bool:
         """Check IEULearn; True if a notification was shown."""
-        from . import __version__
+        from . import __version__, i18n
+
+        i18n.load_language()             # Settings may have changed it since the last check
         from .accounts import activate
         from .config import load_settings
         from .library import Library
@@ -339,16 +349,16 @@ class Helper:
             sync = SyncService(lib, lambda: settings, log)
             if not sync.has_credentials():
                 if secrets_store.rejected():
-                    self.tray.set_tooltip("IEUStudia · IEULearn didn't accept your saved password: open IEUStudia "
-                                          "to sign in again")
+                    self.tray.set_tooltip(t("IEUStudia · IEULearn didn't accept your saved password: open IEUStudia "
+                                            "to sign in again"))
                     if not self.told_rejected:
                         self.told_rejected = True
-                        self.tray.notify("IEULearn didn't accept your saved password",
-                                         "Did you change it? Open IEUStudia and sign in again; until then it can't "
-                                         "check for new lectures.")
+                        self.tray.notify(t("IEULearn didn't accept your saved password"),
+                                         t("Did you change it? Open IEUStudia and sign in again; until then it can't "
+                                           "check for new lectures."))
                         return True
                 else:
-                    self.tray.set_tooltip("IEUStudia · sign in in the app to get notifications")
+                    self.tray.set_tooltip(t("IEUStudia · sign in in the app to get notifications"))
             else:
                 self.told_rejected = False
                 try:
@@ -357,7 +367,7 @@ class Helper:
                     note = summarize(lib, settings, self.cfg, res.new_ids, content["new_announcements"],
                                      content["new_materials"], seen)
                     self.last = time.strftime("%H:%M")
-                    self.tray.set_tooltip(f"IEUStudia · checked {self.last}")
+                    self.tray.set_tooltip(t("IEUStudia · checked {time}", time=self.last))
                     log.info("Helper: checked IEULearn (%d new recordings, %d announcements, %d files)",
                              len(res.new_ids), len(content["new_announcements"]), len(content["new_materials"]))
                 except Exception:  # noqa: BLE001 - IEULearn can't be reached: the reminders still come
@@ -402,11 +412,12 @@ def main(argv: Optional[list[str]] = None) -> None:
     migrate_legacy_data()
     activate()
     setup_logging("--debug" in argv, "helper.log")
-    from . import appconfig
+    from . import appconfig, i18n
 
     if not appconfig.load().tray:
         log.info("Helper: background mode is off; not starting")
         return
+    i18n.load_language()
     log.info("Helper started%s", " at Windows sign-in" if "--at-login" in argv else "")
     Helper("--at-login" in argv).run()
     log.info("Helper stopped")

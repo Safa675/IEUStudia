@@ -216,6 +216,7 @@ def test_no_speech_is_reported_with_a_warning(env):
     assert wait_for(lambda: finals(env["events"], "r1"))
     assert env["lib"].get_recording("r1").status == "failed"
     assert env["lib"].warnings("r1")[0]["code"] == "no_speech"
+    assert finals(env["events"], "r1")[-1]["no_sound"] is True        # the page shows it in any language at once
 
 
 def test_model_is_unloaded_when_idle(env):
@@ -259,8 +260,10 @@ def test_batch_progress_counts_finished_lectures_and_estimates_time_left(env):
         assert b["finished"] == 1 and b["total"] == 2 and b["left_s"] and b["left_s"] > 0
     assert wait_for(lambda: not jm.busy())
     assert jm.batch() == {}                       # idle: no batch
+    FakePanopto.gate = threading.Event()          # held again, so it can't finish before it is counted
     jm.enqueue(["r1"])                            # a new batch starts from zero
     assert jm.batch()["finished"] == 0 and jm.batch()["total"] == 1
+    FakePanopto.gate.set()
     assert wait_for(lambda: not jm.busy())
 
 

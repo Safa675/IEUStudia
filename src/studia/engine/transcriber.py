@@ -15,9 +15,10 @@ import numpy as np
 from .. import __version__
 from ..cancel import Cancelled, check
 from ..domain import Segment, Transcript
+from ..i18n import num, t, tn
 from ..quality import NoSpeech, analyze_audio, analyze_transcript
-from .core import (SR, DecodeOptions, Decoded, Unit, UnitDecoder, choose, clean_text,
-                   hallucination_score, segment_language, sort_by_duration, speech_units)
+from .core import (SR, DecodeOptions, Decoded, Unit, UnitDecoder, ai_writing, choose, clean_text,
+                   hallucination_score, segment_language, sort_by_duration, speech_units, wait_for_ai)
 from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, local_model_path,
                      model_is_downloaded, resolve_device, setup_cuda_dlls)
 
@@ -26,6 +27,7 @@ __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "mo
 
 ENGINE_VERSION = "2.0"
 UNCLEAR = "[unclear]"
+MIN_CONF = 0.38                     # below this in both languages a passage makes no sense: it becomes [unclear]
 Progress = Callable[[str, float, str], None]
 
 
@@ -41,7 +43,7 @@ class Engine:
     def __init__(self, model: str = "large-v3-turbo", device: str = "auto",
                  languages: Sequence[str] = ("en", "tr"), log: Optional[logging.Logger] = None) -> None:
         if model not in MODEL_PRESETS:
-            raise ValueError(f"Unknown model '{model}'.")
+            raise ValueError(t("Unknown model '{model}'.", model=model))
         self.model_name = model
         self.device_pref = device
         self.languages = tuple(dict.fromkeys(l.strip().lower() for l in languages if l.strip())) or ("en",)
@@ -73,22 +75,23 @@ class Engine:
             path = local_model_path(self.model_name)
             if path is None:
                 size = MODEL_PRESETS[self.model_name]["size_mb"]
-                progress("model-download", 0.0, f"Downloading the {self.model_name} model (~{size} MB, one time)")
+                progress("model-download", 0.0, t("Downloading the {model} model (~{size} MB, one time)",
+                                                  model=self.model_name, size=size))
 
                 def cb(done: int, total: int) -> None:
                     frac = done / total if total else 0.0
                     progress("model-download", frac,
-                             f"Downloading model {done / 1e6:,.0f} / {total / 1e6:,.0f} MB")
+                             t("Downloading model {done} / {total} MB", done=num(done / 1e6), total=num(total / 1e6)))
 
                 path = download_model(self.model_name, cb, cancel)
             check(cancel)
-            progress("model-load", 0.0, "Loading the speech model")
+            progress("model-load", 0.0, t("Loading the speech model"))
             setup_cuda_dlls()
             from faster_whisper import WhisperModel
 
             device, compute = resolve_device(self.device_pref)
             threads = max(1, (os.cpu_count() or 4) - 2)
-            t = time.monotonic()
+            t0 = time.monotonic()
             try:
                 wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=threads)
                 if device == "cuda":  # surface missing cuBLAS/cuDNN now rather than mid-job
@@ -97,7 +100,7 @@ class Engine:
                 if device != "cuda":
                     raise
                 self.log.warning("GPU initialisation failed, falling back to CPU: %s", exc)
-                self._warning = "The GPU could not be used, so transcription runs on the CPU (slower)."
+                self._warning = t("The GPU could not be used, so transcription runs on the CPU (slower).")
                 device, compute = "cpu", "int8"
                 wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=threads)
             self._wm, self._device, self._compute = wm, device, compute
@@ -106,8 +109,8 @@ class Engine:
             if supported:
                 self.languages = tuple(l for l in self.languages if l in supported) or ("en",)
             self.log.info("Model %s loaded on %s/%s in %.1fs", self.model_name, device, compute,
-                          time.monotonic() - t)
-            progress("model-load", 1.0, f"Model ready ({'GPU' if device == 'cuda' else 'CPU'})")
+                          time.monotonic() - t0)
+            progress("model-load", 1.0, t("Model ready (GPU)") if device == "cuda" else t("Model ready (CPU)"))
 
     def unload(self) -> None:
         """Release the model (and its GPU memory)."""
@@ -130,10 +133,10 @@ class Engine:
         timings: dict[str, float] = {}
         duration = len(audio) / SR
 
-        t = time.monotonic()
-        progress("vad", 0.02, "Finding speech")
+        t0 = time.monotonic()
+        progress("vad", 0.02, t("Finding speech"))
         spans, units = self._units(audio, cancel)
-        timings["vad"] = time.monotonic() - t
+        timings["vad"] = time.monotonic() - t0
         speech_s = sum(u.dur for u in units)
         self.log.info("%d speech units, %.0fs of speech in %.0fs of audio", len(units), speech_s, duration)
 
@@ -142,12 +145,12 @@ class Engine:
         if gain != 1.0:
             audio = np.clip(audio * gain, -1.0, 1.0)
 
-        t = time.monotonic()
+        t0 = time.monotonic()
         decoded, best_conf = self._decode_units(audio, units, progress, cancel)
-        timings["decode"] = time.monotonic() - t
+        timings["decode"] = time.monotonic() - t0
 
-        t = time.monotonic()
-        progress("finalize", 0.97, "Cleaning up")
+        t0 = time.monotonic()
+        progress("finalize", 0.97, t("Cleaning up"))
         segments: list[Segment] = []
         lang_secs: Counter[str] = Counter()
         dominant = self._last_dominant
@@ -166,7 +169,7 @@ class Engine:
                 if u.dur >= 4.0 and top < 0.45:
                     unclear(u, top)
                 continue
-            if top < 0.38:  # neither language makes sense of it: say so instead of inventing words
+            if top < MIN_CONF:  # neither language makes sense of it: say so instead of inventing words
                 if u.dur >= 3.0:
                     unclear(u, top)
                 continue
@@ -179,8 +182,8 @@ class Engine:
             lang_secs[lang] += u.dur
         post_warnings, post_stats = analyze_transcript(segments, speech_s)
         meta["quality"] = {"warnings": warnings + post_warnings, "stats": {**stats, **post_stats}}
-        timings["finalize"] = time.monotonic() - t
-        progress("finalize", 1.0, "Done")
+        timings["finalize"] = time.monotonic() - t0
+        progress("finalize", 1.0, t("Done"))
         info = self.device_info
         return Transcript(
             delivery_id=str(meta.get("delivery_id", "")),
@@ -235,6 +238,13 @@ class Engine:
             b = self._encode_generate(audio, batch[half:], [l[half:] for l in langs_per_pass], opts)
             return [x + y for x, y in zip(a, b)]
 
+    def _make_way_for_ai(self, frac: float, progress: Progress, cancel: Optional[threading.Event]) -> float:
+        """Before a batch: while the offline AI writes on the processor, it goes first. The seconds waited."""
+        if self._device == "cuda" or not ai_writing():
+            return 0.0
+        progress("transcribe", frac, t("Waiting while the offline AI writes"))
+        return wait_for_ai(cancel)
+
     def _decode_units(self, audio: np.ndarray, units: list[Unit], progress: Progress,
                       cancel: Optional[threading.Event]) -> tuple[list[Optional[Decoded]], list[float]]:
         n = len(units)
@@ -254,6 +264,8 @@ class Engine:
         i = 0
         while i < n:
             check(cancel)
+            # the offline AI writing on the processor goes first (the time left leaves the wait out)
+            started += self._make_way_for_ai(0.05 + 0.88 * work_done / work_total, progress, cancel)
             size = min(opts.batch_size, self._oom_batch or opts.batch_size)
             idx = order[i:i + size]
             batch = [units[j] for j in idx]
@@ -267,16 +279,17 @@ class Engine:
             frac = work_done / work_total
             elapsed = time.monotonic() - started
             eta = elapsed / frac * (1 - frac) if frac > 0.05 else None
+            # the time left is an untranslated marker that jobs.py takes off (the page says it in its language)
             progress("transcribe", 0.05 + 0.88 * frac,
-                     f"Transcribing passage {done} of {n}" + (f" · ~{int(eta)}s left" if eta else ""))
+                     t("Transcribing passage {done} of {n}", done=done, n=n) + (f" · ~{int(eta)}s left" if eta else ""))
 
         dominant = self._dominant(cands, units)
         self._last_dominant = dominant
         chosen: list[Optional[Decoded]] = [choose(c, units[k].dur, dominant) if c else None
                                            for k, c in enumerate(cands)]
-        chosen = self._retry_bad(audio, units, chosen, opts, cancel, progress)
         best_conf = [max((d.conf for d in c if hallucination_score(d, units[k].dur) < 0.75), default=0.0)
                      for k, c in enumerate(cands)]
+        chosen = self._retry_bad(audio, units, chosen, opts, cancel, progress, best_conf)
         return chosen, best_conf
 
     @staticmethod
@@ -294,13 +307,16 @@ class Engine:
 
     def _retry_bad(self, audio: np.ndarray, units: list[Unit], chosen: list[Optional[Decoded]],
                    opts: DecodeOptions, cancel: Optional[threading.Event],
-                   progress: Progress = lambda *a: None) -> list[Optional[Decoded]]:
-        """Re-decode units with repetition loops / very low confidence using temperature fallback."""
+                   progress: Progress = lambda *a: None,
+                   best_conf: Optional[list[float]] = None) -> list[Optional[Decoded]]:
+        """Re-decode units with repetition loops / very low confidence using temperature fallback. A passage below
+        MIN_CONF in both languages (``best_conf``) is not retried: it becomes [unclear] whatever a retry finds, and on
+        the processor every retry costs another encoder pass."""
         dec = self._decoder
         assert dec is not None
         bad = [k for k, d in enumerate(chosen)
                if d is not None and d.text and (d.compression_ratio > 2.4 or d.avg_logprob < -1.0)
-               and hallucination_score(d, units[k].dur) < 0.75]
+               and hallucination_score(d, units[k].dur) < 0.75 and (best_conf is None or best_conf[k] >= MIN_CONF)]
         if not bad:
             return chosen
         self.log.info("Retrying %d low-quality passages", len(bad))
@@ -316,8 +332,11 @@ class Engine:
             groups = [ks[i:i + size] for ks in by_lang.values() for i in range(0, len(ks), size)]
             for g, idx in enumerate(groups):
                 check(cancel)
-                progress("transcribe", 0.93 + 0.02 * (round_no + g / len(groups)) / 2,
-                         f"Checking {first} unclear passage{'s' if first != 1 else ''} again")
+                frac = 0.93 + 0.02 * (round_no + g / len(groups)) / 2
+                self._make_way_for_ai(frac, progress, cancel)          # a retry is a batch too: the AI goes first
+                progress("transcribe", frac,
+                         tn(first, "Checking {n} unclear passage again", "Checking {n} unclear passages again"))
+                self._make_way_for_ai(frac, progress, cancel)          # again: a pause just ended may find the AI writing
                 batch = [units[k] for k in idx]
                 langs = [chosen[k].lang for k in idx]  # type: ignore[union-attr]
                 retry = self._encode_generate(audio, batch, [langs], DecodeOptions(temperature=temp, best_of=3))[0]

@@ -19,6 +19,7 @@ import json
 import logging
 import queue
 import re
+import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -30,6 +31,7 @@ import requests
 from . import hls, store
 from .cancel import Cancelled
 from .config import Settings
+from .i18n import date_short, t
 from .library import Library
 from .net import plain_error
 from .panopto import NeedPanoptoAuth, NotReady, Panopto
@@ -51,13 +53,30 @@ def decode_audio(path: Path, cancel: Optional[threading.Event] = None) -> np.nda
 Emit = Callable[[dict[str, Any]], None]
 IDLE_UNLOAD_S = 600   # free the GPU memory 10 minutes after the last job
 DECODED_MAX = 2       # decoded lectures in memory at once (~345 MB each for 90 minutes): one transcribing, one next
+LOW_MEMORY_GB = 6.0   # below this (e.g. 4 GB laptops) only one
 PENDING_KEY = "outputs_pending"     # library meta: recordings whose files in the output folder could not be written
 QUEUE_KEY = "transcribe_queue"      # library meta: the lectures still to transcribe, offered again after a restart
 NOW, BATCH = 0, 1                   # queue ranks: asked for now, a full or course sync's batch ("Do next" goes below 0)
-_ETA = re.compile(r"\s*·\s*~(\d+)s left")
+_ETA = re.compile(r"\s*·\s*~(\d+)s left")      # the engine's time left: an untranslated marker (the page says it)
 
 _STATUS = {"queued": "queued", "downloading": "downloading", "transcribing": "transcribing",
            "writing": "transcribing", "done": "done", "failed": "failed", "processing": "processing"}
+
+
+def _no_sound(exc: BaseException) -> bool:
+    """Panopto has no stream with sound (audio.NoAudioTrack). That module is loaded once a stream was decoded; it is
+    not imported just to ask (importing PyAV takes seconds)."""
+    audio = sys.modules.get(f"{__package__}.audio")
+    return audio is not None and isinstance(exc, audio.NoAudioTrack)
+
+
+def _memory_gb() -> float:
+    from .hardware import memory_gb
+
+    try:
+        return memory_gb()[0] or LOW_MEMORY_GB
+    except (AttributeError, OSError):
+        return LOW_MEMORY_GB
 
 
 @dc.dataclass
@@ -78,6 +97,7 @@ class Job:
     slides: Optional[Future] = None
     attempts: int = 0
     holds_audio: bool = False        # one of the DECODED_MAX places for decoded audio
+    no_sound: bool = False           # failed because the recording has no sound (the page shows it by this flag)
     no_audio: set = dc.field(default_factory=set)    # Panopto streams found without sound: not fetched again
     unwritten: bool = False          # done, but its files in the output folder could not be written yet
     prev_status: str = "available"
@@ -99,7 +119,7 @@ class Job:
         return {"id": self.id, "title": self.title, "course_code": self.course_code, "course_id": self.course_id,
                 "stage": self.stage, "progress": round(self.progress, 3), "detail": detail, "eta_s": eta,
                 "error": self.error, "local": self.local_path is not None, "first": self.rank < NOW,
-                "day": self.day_key or self.id}
+                "day": self.day_key or self.id, "no_sound": self.no_sound}
 
 
 class JobManager:
@@ -129,8 +149,9 @@ class JobManager:
         self._lanes = 1                                  # download threads that take any lecture (see _start)
         self._held: dict[int, tuple[Job, bool]] = {}     # lectures the download threads hold (job, overtaking)
         # places for decoded audio in memory: one lecture transcribing, one ready (downloads still run ahead, as
-        # files on disk). A free place goes to the waiting lecture that comes first in the queue.
-        self._places = DECODED_MAX
+        # files on disk). A free place goes to the waiting lecture that comes first in the queue. A PC with little
+        # memory keeps only the one it transcribes: decoding the next one takes seconds, swapping takes much longer.
+        self._places = DECODED_MAX if _memory_gb() >= LOW_MEMORY_GB else 1
         self._place_wait: dict[int, Job] = {}
         self._run = threading.Event()                    # cleared while the queue is paused
         self._run.set()
@@ -144,6 +165,7 @@ class JobManager:
         self._slides_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="slides")
         self._last_emit: dict[str, float] = {}
         self._idle_gen = 0
+        self.setup_busy: Callable[[], bool] = lambda: False      # the setup still downloads models (the app sets it)
 
     # ------------------------------------------------------------------ public
     def _start(self) -> None:
@@ -178,14 +200,14 @@ class JobManager:
                     continue
                 course = self.lib.get_course(rec.course_id)
                 code = course.code if course else ""
-                job = Job(id=did, title=f"{code} · {rec.start:%a %d %b} {rec.start:%H:%M}".strip(" ·"),
+                job = Job(id=did, title=f"{code} · {date_short(rec.start.date())} {rec.start:%H:%M}".strip(" ·"),
                           course_id=rec.course_id, course_code=code, prev_status=rec.status,
                           duration_s=max(0.0, rec.duration_s), rank=BATCH if batch else NOW, seq=next(self._seqs),
                           day_key=rec.day_key)
                 self._jobs[did] = job
                 self.lib.set_status(did, "queued")
                 self._put_dl(job)
-                self._update(job, "queued", 0.0, "Waiting", force=True)
+                self._update(job, "queued", 0.0, t("Waiting"), force=True)
                 n += 1
             if self._jobs:
                 self._working(True)
@@ -203,7 +225,7 @@ class JobManager:
                 job = Job(id=did, title=Path(path).name, local_path=Path(path), seq=next(self._seqs))
                 self._jobs[did] = job
                 self._put_dl(job)
-                self._update(job, "queued", 0.0, "Waiting", force=True)
+                self._update(job, "queued", 0.0, t("Waiting"), force=True)
             self._working(True)
         self._emit_queue()
         return did
@@ -463,9 +485,9 @@ class JobManager:
             if gen == self._idle_gen:
                 self.unload_engine()
 
-        t = threading.Timer(IDLE_UNLOAD_S, run)
-        t.daemon = True
-        t.start()
+        timer = threading.Timer(IDLE_UNLOAD_S, run)
+        timer.daemon = True
+        timer.start()
 
     # ------------------------------------------------------------------ events
     def queue_event(self) -> dict[str, Any]:
@@ -498,8 +520,8 @@ class JobManager:
             return
         if not self._try_place(job):
             try:
-                self._update(job, "queued", 0.0, "Waiting for its turn" if job.local_path else
-                             "Downloaded — waiting for its turn", force=True)
+                self._update(job, "queued", 0.0, t("Waiting for its turn") if job.local_path else
+                             t("Downloaded — waiting for its turn"), force=True)
                 while not self._try_place(job, 0.5):
                     if job.cancel.is_set():
                         raise Cancelled()
@@ -600,8 +622,8 @@ class JobManager:
                 self._prepare(job)
                 if job.cancel.is_set():
                     raise Cancelled()
-                self._update(job, "queued", 0.0, "Waiting for its turn" if job.local_path else
-                             "Downloaded — waiting for its turn")                              # Cancel ends it at once
+                self._update(job, "queued", 0.0, t("Waiting for its turn") if job.local_path else
+                             t("Downloaded — waiting for its turn"))                           # Cancel ends it at once
                 self._put_gpu(job)
                 continue
             except BaseException as exc:  # noqa: BLE001 - every way out gives back the place for its audio
@@ -619,16 +641,20 @@ class JobManager:
                 job.attempts += 1
                 if job.attempts <= 2 and not lasting and not job.cancel.is_set():
                     self.log.info("Download problem for %s (%s); retrying", job.id, error)
-                    self._update(job, "queued", 0.0, "Connection problem — retrying shortly", force=True)
+                    self._update(job, "queued", 0.0, t("Connection problem — retrying shortly"), force=True)
                     retry = threading.Timer(4.0 * job.attempts, self._put_dl, args=(job,))
                     retry.daemon = True
                     retry.start()
                 else:
                     self.log.warning("Download of %s failed: %s", job.id, error)
                     self._finish(job, "failed", plain_error(error) if lasting else
-                                 f"The download failed. {plain_error(error)}")
+                                 t("The download failed. {error}", error=plain_error(error)))
             elif isinstance(error, Exception):
                 self.log.error("Preparing %s failed", job.id, exc_info=error)
+                if job.local_path is None and _no_sound(error):
+                    # Panopto has no stream with sound: the page knows it by this code, not by the (translated) text
+                    self.lib.set_warnings(job.id, [{"code": "no_speech", "level": "error", "message": str(error)}])
+                    job.no_sound = True
                 self._finish(job, "failed", plain_error(error))
             else:
                 raise error
@@ -647,10 +673,10 @@ class JobManager:
     def _prepare(self, job: Job) -> None:
         if job.local_path is not None:
             self._take_audio_place(job)
-            self._update(job, "downloading", 0.5, "Reading the file")
+            self._update(job, "downloading", 0.5, t("Reading the file"))
             job.audio = decode_audio(job.local_path, job.cancel)
             return
-        self._update(job, "downloading", 0.0, "Contacting Panopto", force=True)
+        self._update(job, "downloading", 0.0, t("Contacting Panopto"), force=True)
         p, s, info = self._panopto(job)
         job.info = info
         sources = p.media_sources(job.id, info)
@@ -668,7 +694,7 @@ class JobManager:
                 # the first audio was silent: only fetch a camera (HLS) stream that demonstrably has sound
                 if src.kind != "hls":
                     continue
-                self._update(job, "downloading", 0.0, "The audio is silent — checking Panopto's other streams")
+                self._update(job, "downloading", 0.0, t("The audio is silent — checking Panopto's other streams"))
                 try:
                     peak = hls.audio_peak_dbfs(s, src.url)
                 except Exception as exc:  # noqa: BLE001
@@ -680,8 +706,9 @@ class JobManager:
 
             def prog(done: int, total: int) -> None:
                 frac = done / total if total else 0.0
-                mb = f"{done / 1e6:.0f}/{total / 1e6:.0f} MB" if total > 1000 else ""
-                self._update(job, "downloading", frac, f"Downloading audio {mb}".strip())
+                self._update(job, "downloading", frac,
+                             t("Downloading audio {done}/{total} MB", done=f"{done / 1e6:.0f}", total=f"{total / 1e6:.0f}")
+                             if total > 1000 else t("Downloading audio"))
 
             try:
                 p.download(src, dest, prog, job.cancel, prefer="audio")
@@ -693,7 +720,7 @@ class JobManager:
                 continue
             job.audio_path = dest
             self._take_audio_place(job)
-            self._update(job, "downloading", 1.0, "Decoding audio")
+            self._update(job, "downloading", 1.0, t("Decoding audio"))
             try:
                 audio = decode_audio(dest, job.cancel)
             except ValueError as exc:
@@ -705,8 +732,8 @@ class JobManager:
                 self.log.info("%s: %s has no audio track; trying another stream", job.id, src.kind)
                 job.no_audio.add(src.url)
                 if last_exc is None or isinstance(last_exc, NoAudioTrack):     # a failed download says more
-                    last_exc = NoAudioTrack("Panopto has no sound for this recording (only a picture), so there's "
-                                            "nothing to transcribe.")
+                    last_exc = NoAudioTrack(t("Panopto has no sound for this recording (only a picture), so there's "
+                                              "nothing to transcribe."))
                 job.audio_path = None
                 try:
                     dest.unlink()
@@ -723,7 +750,7 @@ class JobManager:
             if silent is not None:
                 job.audio = silent    # the engine reports "no sound" with a clear message
             else:
-                raise last_exc or RuntimeError("No downloadable audio for this recording.")
+                raise last_exc or RuntimeError(t("No downloadable audio for this recording."))
         self.sync.absorb(s)
 
     # ------------------------------------------------------------------ GPU side
@@ -762,6 +789,7 @@ class JobManager:
             except NoSpeech as exc:
                 if job.local_path is None:
                     self.lib.set_warnings(job.id, [{"code": "no_speech", "level": "error", "message": str(exc)}])
+                    job.no_sound = True
                 self._finish(job, "failed", str(exc))
             except Exception as exc:  # noqa: BLE001
                 self.log.exception("Transcribing %s failed", job.id)
@@ -783,12 +811,18 @@ class JobManager:
             # the engine counts the time paused as time spent: take it out of its estimate
             left = max(0, round(int(m.group(1)) - paused * (1 - done) / done))
             detail = f"{detail[:m.start()]} · ~{left}s left{detail[m.end():]}"
-        self._update(job, "transcribing", frac, detail)
+        self._update(job, "transcribing", frac, detail, force=not m)    # a message without a time left is rare: show it
 
     def _transcribe(self, job: Job) -> None:
+        if self.setup_busy():                     # the speech model (or the graphics card's files) are on their way
+            self._update(job, "transcribing", 0.0, t("Waiting for the speech model to finish downloading"), force=True)
+            while self.setup_busy():
+                if job.cancel.is_set():
+                    raise Cancelled()
+                time.sleep(0.5)
         settings = self.settings()
         engine = self._get_engine(settings)
-        self._update(job, "transcribing", 0.0, "Preparing the speech model", force=True)
+        self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True)
         engine.ensure_model(lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel)
         self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
         meta: dict[str, Any] = {"delivery_id": job.id}
@@ -797,23 +831,23 @@ class JobManager:
             meta.update(expected_duration=float(d.get("Duration") or 0.0), recording_name=d.get("SessionName", ""))
         if job.local_path is not None:
             meta["source_path"] = str(job.local_path)
-        t = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel, meta)
+        transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel, meta)
         self._drop_audio(job)
-        t.delivery_id = job.id
-        path = store.save_transcript(t)
-        quality = (t.meta or {}).get("quality") or {}
+        transcript.delivery_id = job.id
+        path = store.save_transcript(transcript)
+        quality = (transcript.meta or {}).get("quality") or {}
         warnings = quality.get("warnings") or []
         if job.local_path is None:
-            self.lib.save_transcript(t, path, quality=quality.get("stats"))
+            self.lib.save_transcript(transcript, path, quality=quality.get("stats"))
             self.lib.set_warnings(job.id, warnings)
         self.note_unwritten(job.id, True)         # until its files are written (closing now writes them next start)
         if job.slides is not None:
-            self._update(job, "writing", 0.97, "Finishing slides", force=True)
+            self._update(job, "writing", 0.97, t("Finishing slides"), force=True)
             try:
                 job.slides.result(timeout=900)
             except Exception as exc:  # noqa: BLE001 - slides are optional
                 self.log.warning("Slides for %s failed: %s", job.id, exc)
-        self._update(job, "writing", 0.99, "Writing files", force=True)
+        self._update(job, "writing", 0.99, t("Writing files"), force=True)
         try:
             self.write_outputs(job.id)
             self.note_unwritten(job.id, False)
@@ -824,9 +858,9 @@ class JobManager:
             if job.local_path is None:
                 self.lib.set_warnings(job.id, warnings + [{
                     "code": "not_written", "level": "warning",
-                    "message": f"Transcribed, but its files in your IEUStudia folder could not be written. "
-                               f"{plain_error(exc)} IEUStudia tries again the next time it starts; you can also "
-                               f"choose another folder in Settings → Files."}])
+                    "message": t("Transcribed, but its files in your IEUStudia folder could not be written. {error} "
+                                 "IEUStudia tries again the next time it starts; you can also choose another folder in "
+                                 "Settings → Files.", error=plain_error(exc))}])
         if job.audio_path and not settings.keep_audio:
             for p in (job.audio_path,):
                 try:
