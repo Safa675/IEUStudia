@@ -93,8 +93,11 @@ def test_the_instance_files_are_in_the_users_own_folder(run_dir, monkeypatch, is
     assert linuxutil._lock_path(name).parent == run_dir.path
     assert not list(os.scandir(tempfile.gettempdir()))                 # nothing in the shared temp folder
     monkeypatch.delenv("XDG_RUNTIME_DIR")                             # none: a folder in the app's data folder
-    assert linuxutil._instance_file(name).parent == isolated_home / "run" and (isolated_home / "run").is_dir()
+    assert linuxutil._instance_file(name).parent == isolated_home / "run"
     assert linuxutil._lock_path(name).parent == isolated_home / "run"
+    assert linuxutil.take_open_request(name) == "" and not isolated_home.exists()   # a reader makes no folders
+    linuxutil.write_instance(name)                                    # the first file written makes it
+    assert (isolated_home / "run" / (short + ".json")).is_file()
 
 
 def test_a_second_start_only_brings_the_window_forward(run_dir):

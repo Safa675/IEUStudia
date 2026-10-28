@@ -55,12 +55,17 @@ def _run_dir() -> Path:
     base = os.environ.get("XDG_RUNTIME_DIR", "").strip()
     if base and os.path.isdir(base):
         return Path(base)
-    from .paths import app_dir
+    from . import paths
 
-    run = app_dir() / "run"
-    with contextlib.suppress(OSError):           # writing a file there then fails, and says so where it matters
-        run.mkdir(exist_ok=True)
-    return run
+    # where app_dir() is, without making it: a reader (the window's poll for open requests) makes no folders; the
+    # first file written there does (_made)
+    return (paths._home_override() or paths._legacy_in_use() or paths._local_root() / paths.APP_NAME) / "run"
+
+
+def _made(path: Path) -> Path:
+    with contextlib.suppress(OSError):           # writing the file then fails, and says so where it matters
+        path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _lock_path(name: str) -> Path:
@@ -77,7 +82,7 @@ def _open_file(name: str) -> Path:
 
 def _write_json(path: Path, data: dict) -> None:
     """Replace ``path`` whole (a reader never sees half of it)."""
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp = _made(path).with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(data), encoding="utf-8")
         os.replace(tmp, path)
@@ -114,7 +119,7 @@ def acquire_single_instance(name: str = "Local\\Studia-SingleInstance", wait_s: 
 
     if name in _locks:
         return True
-    fd = os.open(_lock_path(name), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(_made(_lock_path(name)), os.O_RDWR | os.O_CREAT, 0o600)
     deadline = time.monotonic() + wait_s
     while True:
         try:
@@ -204,7 +209,7 @@ def focus_window(title: str) -> bool:
         return False
     f = _open_file(name)
     try:
-        with open(f, "x", encoding="utf-8") as fh:          # only if nothing is asked for yet
+        with open(_made(f), "x", encoding="utf-8") as fh:   # only if nothing is asked for yet
             fh.write(json.dumps({"raise": True, "at": time.time()}))
     except FileExistsError:
         with contextlib.suppress(OSError):
