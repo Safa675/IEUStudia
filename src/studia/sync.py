@@ -19,7 +19,7 @@ from .domain import Course, Profile
 from .i18n import t
 from .ieulearn import AuthError, IEULearn, NeedLogin
 from .library import Library
-from .net import clone_session, export_cookies, import_cookies, make_session, merge_cookies
+from .net import clone_session, export_cookies, import_cookies, make_session, merge_cookies, plain_session
 from .panopto import Panopto
 
 log = logging.getLogger("studia")
@@ -43,6 +43,7 @@ class SyncService:
         self._session = make_session()
         self._gen = 0                    # + 1 at each sign-in and sign-out
         import_cookies(self._session, secrets_store.load_cookies())
+        self._stored: Optional[list] = export_cookies(self._session)   # what secrets.bin has: not written again
 
     # ------------------------------------------------------------------ session helpers
     def http(self) -> requests.Session:
@@ -64,8 +65,12 @@ class SyncService:
             self._save_cookies()
 
     def _save_cookies(self) -> None:
+        cookies = export_cookies(self._session)
+        if cookies == self._stored:      # nothing changed: no DPAPI round and no rewrite of secrets.bin
+            return
         try:
-            secrets_store.save_cookies(export_cookies(self._session))
+            secrets_store.save_cookies(cookies)
+            self._stored = cookies
         except OSError:
             self.log.warning("Could not store session cookies", exc_info=True)
 
@@ -112,6 +117,7 @@ class SyncService:
         with self._lock:
             secrets_store.clear_all()
             self._session = make_session()
+            self._stored = None
             self._gen += 1
 
     @staticmethod
@@ -251,8 +257,7 @@ class SyncService:
             if panopto_down:
                 errors.append(t("Panopto isn't answering right now: new recordings are checked again next time."))
             elif todo or not panopto_ok:
-                progress(t("Connecting to Panopto…"))
-                self.ensure_login()
+                progress(t("Connecting to Panopto…"))      # (the dashboard just showed the IEULearn sign-in works)
                 launch_ids = todo or [next((c.id for c in known.values() if c.folder_id), None)]
                 launch_ids = [i for i in launch_ids if i]
                 sessions = [clone_session(self._session) for _ in launch_ids]  # cloned here: workers must not take the lock
@@ -297,6 +302,7 @@ class SyncService:
     # ------------------------------------------------------------------ course content
     OVERVIEW_EVERY = dt.timedelta(hours=20)       # outcomes, weekly topics, grading: rarely change
     SYLLABUS_EVERY = dt.timedelta(days=7)
+    HELPER_UNITS_EVERY = dt.timedelta(hours=6)    # the tray helper, when it doesn't tell about new files
 
     @staticmethod
     def _stale(stamp: str, every: dt.timedelta) -> bool:
@@ -305,26 +311,30 @@ class SyncService:
         except (TypeError, ValueError):
             return True
 
-    def _content(self, course: Course, s: requests.Session, info: dict) -> dict:
+    def _content(self, course: Course, s: requests.Session, info: dict, units: bool = True) -> dict:
         from .coursesite import CourseSite
 
         site = CourseSite(s)
         out: dict = {"course": course, "session": s}
-        out["units"] = site.unit_plan(course.id, course.title)
+        if units:
+            out["units"] = site.unit_plan(course.id, course.title)
         out["announcements"] = site.announcements(course.id)
         if self._stale(info.get("overview_at", ""), self.OVERVIEW_EVERY):
             out["overview"] = site.overview(course.id)
         return out
 
-    def sync_content(self, progress: Callable[[str], None] = lambda m: None) -> dict:
+    def sync_content(self, progress: Callable[[str], None] = lambda m: None,
+                     units_every: Optional[dt.timedelta] = None) -> dict:
         """Weekly units, materials and announcements of every course (each sync, ~100 KB per course), the course
-        overview (daily) and the public English syllabus (weekly). Nothing is downloaded: materials are listed."""
+        overview (daily) and the public English syllabus (weekly). Nothing is downloaded: materials are listed.
+        ``units_every``: the weekly units and materials at most this often (a new course's always); None: each time."""
         from .coursesite import cover_file, fetch_cover
         from .syllabus import fetch_syllabus
 
         t0 = time.monotonic()
         courses = [c for c in self.lib.courses() if c.code]
         infos = {c.id: self.lib.course_info(c.id) for c in courses}
+        units = units_every is None or self._stale(self.lib.get_meta("units_at") or "", units_every)
         with self._lock:
             sessions = [clone_session(self._session) for _ in courses]   # cloned here: workers must not take the lock
         new_materials: list[str] = []
@@ -332,10 +342,13 @@ class SyncService:
         errors: list[str] = []
         progress(t("Loading course content…"))
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="content") as pool:
-            futures = [pool.submit(self._content, c, s, infos[c.id]) for c, s in zip(courses, sessions)]
-            plain = requests.Session()
-            syl = {c.id: pool.submit(fetch_syllabus, c.code, session=plain) for c in courses
-                   if self._stale(infos[c.id].get("syllabus_at", ""), self.SYLLABUS_EVERY)}
+            futures = [pool.submit(self._content, c, s, infos[c.id], units or not infos[c.id].get("content_at"))
+                       for c, s in zip(courses, sessions)]
+            plain = plain_session()
+            stale = [c for c in courses if self._stale(infos[c.id].get("syllabus_at", ""), self.SYLLABUS_EVERY)]
+            by_code = {code: pool.submit(fetch_syllabus, code, session=plain)       # sections share one syllabus
+                       for code in dict.fromkeys(c.code for c in stale)}
+            syl = {c.id: by_code[c.code] for c in stale}
             for f in futures:
                 try:
                     res = f.result()
@@ -348,7 +361,8 @@ class SyncService:
                 c = res["course"]
                 now = dt.datetime.now().isoformat(timespec="seconds")
                 first = not infos[c.id].get("content_at")
-                new_materials += self.lib.merge_units(c.id, res["units"], first_sync=first)
+                if "units" in res:
+                    new_materials += self.lib.merge_units(c.id, res["units"], first_sync=first)
                 new_announcements += self.lib.merge_announcements(c.id, res["announcements"], first_sync=first)
                 fields = {"content_at": now}
                 if "overview" in res:
@@ -356,6 +370,8 @@ class SyncService:
                 self.lib.set_course_info(c.id, **fields)
                 with self._lock:
                     merge_cookies(self._session, res["session"])
+            if units and courses and not errors:
+                self.lib.set_meta("units_at", dt.datetime.now().isoformat(timespec="seconds"))
             for cid, f in syl.items():
                 try:
                     s = f.result()

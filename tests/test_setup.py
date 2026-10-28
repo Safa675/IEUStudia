@@ -349,6 +349,33 @@ def test_the_offline_model_keeps_the_task_when_it_condenses(monkeypatch):
     assert "Write a short weekly digest" in sent[-1][0]["content"] and sent[-1][1]["content"].startswith("WEEK: W")
 
 
+def test_the_system_check_asks_nvidia_smi_once(monkeypatch):
+    import subprocess
+    import types
+
+    from studia.api import Api
+    from studia.services import Services
+
+    runs = []
+
+    def run(cmd, **kw):
+        runs.append(cmd)
+        out = "NVIDIA GeForce RTX 4070 Laptop GPU, 8188, 581.57" if "driver_version" in " ".join(cmd) else "x, 1"
+        return types.SimpleNamespace(stdout=out, returncode=0)
+
+    api = Api(Services())
+    pushed = []
+    monkeypatch.setattr(api, "_push", pushed.append)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(ai, "claude_info", lambda: {})
+    monkeypatch.setattr(components, "cuda_ready", lambda: True)
+    api._system_info()
+    assert len([c for c in runs if "nvidia-smi" in str(c[0])]) == 1
+    (info,) = pushed
+    assert {k: info["gpu"][k] for k in ("available", "name", "vram_mb", "used", "fits")} == \
+        {"available": True, "name": "NVIDIA GeForce RTX 4070 Laptop GPU", "vram_mb": 8188, "used": True, "fits": True}
+
+
 def test_setup_api(monkeypatch):
     from studia import agent
     from studia.api import Api
@@ -483,8 +510,6 @@ def test_a_transcription_waits_for_the_speech_model_not_for_the_offline_ai(monke
 def test_a_speech_model_is_downloaded_once_at_a_time(monkeypatch):
     """A lecture's own download of its speech model and the setup's "Download now" would write the same part files:
     the second one waits (and can be cancelled meanwhile), then finds the model there without going online."""
-    import types
-
     from studia.cancel import Cancelled
     from studia.engine import models
 
@@ -504,7 +529,7 @@ def test_a_speech_model_is_downloaded_once_at_a_time(monkeypatch):
         dest.write_bytes(b"data")
         return dest
 
-    monkeypatch.setattr(models, "requests", types.SimpleNamespace(Session=Session))
+    monkeypatch.setattr(models, "plain_session", Session)
     monkeypatch.setattr(models.httpdl, "download", fake_download)
     first = threading.Thread(target=models.download_model, args=("small", lambda done, total: None))
     first.start()

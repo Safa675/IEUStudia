@@ -92,6 +92,12 @@ def _fts_query(words: list[str]) -> str:
     return " AND ".join(_fts_word(w, i == len(words) - 1) for i, w in enumerate(words))
 
 
+def _search_order(words: list[str]) -> str:
+    """Best match first; newest first while every word has at most 2 letters (still being typed: "th" matches most
+    of the index, and ranking every match takes long)."""
+    return "rowid DESC" if all(len(w) <= 2 for w in words) else "rank"
+
+
 class Library:
     def __init__(self, path: Path, app_version: str = "") -> None:
         """``app_version``: the app opening it; when that is a new version, a copy of the library as the previous
@@ -110,8 +116,8 @@ class Library:
             self.fts = self._init_fts()
             self.db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema', ?)", (str(SCHEMA_VERSION),))
             if app_version:
-                self.db.execute("INSERT INTO meta(key, value) VALUES('app_version', ?) "
-                                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (app_version,))
+                self.db.execute("INSERT INTO meta(key, value) VALUES('app_version', ?) ON CONFLICT(key) DO UPDATE "
+                                "SET value=excluded.value WHERE value IS NOT excluded.value", (app_version,))
             self.db.commit()
 
     def _backup_before_upgrade(self, app_version: str, keep: int = 3) -> None:
@@ -222,10 +228,16 @@ class Library:
         q = "SELECT * FROM courses" + ("" if include_inactive else " WHERE active=1") + " ORDER BY position, code"
         with self._lock:
             rows = self.db.execute(q).fetchall()
-        return [Course(**{k: (bool(r[k]) if k == "has_panopto" else r[k]) for k in _COURSE_COLS}) for r in rows]
+        return [self._course(r) for r in rows]
+
+    @staticmethod
+    def _course(row: sqlite3.Row) -> Course:
+        return Course(**{k: (bool(row[k]) if k == "has_panopto" else row[k]) for k in _COURSE_COLS})
 
     def get_course(self, course_id: str) -> Optional[Course]:
-        return next((c for c in self.courses(True) if c.id == course_id), None)
+        with self._lock:
+            row = self.db.execute("SELECT * FROM courses WHERE id=?", (course_id,)).fetchone()
+        return self._course(row) if row else None
 
     def set_course_folder(self, course_id: str, folder_id: Optional[str], has_panopto: bool) -> None:
         with self._lock:
@@ -253,8 +265,11 @@ class Library:
         now = _now()
         new_ids: list[str] = []
         with self._lock:
-            existing = {r["delivery_id"] for r in self.db.execute(
-                "SELECT delivery_id FROM recordings WHERE course_id=?", (course_id,))}
+            # what is stored, to write only what changed (last_seen: when it last changed; nothing reads it)
+            stored = {r[0]: tuple(r[1:]) for r in self.db.execute(
+                "SELECT delivery_id, folder_id, folder_path, name, start, duration_s, viewer_url, session_id, kind, "
+                "section_tag, gone FROM recordings WHERE course_id=?", (course_id,))}
+            existing = set(stored)
             fresh = [r.delivery_id for r in recs if r.delivery_id not in existing]
             elsewhere: dict[str, bool] = {}      # in another course: True if it is gone from there
             for i in range(0, len(fresh), 500):
@@ -274,11 +289,15 @@ class Library:
                              r.session_id, r.kind, r.section_tag, now, r.delivery_id))
                     continue                         # listed by both: it stays where it is, and is not "new"
                 if r.delivery_id in existing:
+                    row = (r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url, r.session_id, r.kind,
+                           r.section_tag, 0)
+                    if stored[r.delivery_id] == row:
+                        continue
+                    stored[r.delivery_id] = row
                     self.db.execute(
                         "UPDATE recordings SET folder_id=?, folder_path=?, name=?, start=?, duration_s=?, viewer_url=?, "
                         "session_id=?, kind=?, section_tag=?, last_seen=?, gone=0 WHERE delivery_id=?",
-                        (r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url, r.session_id, r.kind,
-                         r.section_tag, now, r.delivery_id))
+                        (*row[:-1], now, r.delivery_id))
                 else:
                     is_new = 0 if first_sync and not (new_after and start > new_after) else 1
                     cur = self.db.execute(
@@ -292,7 +311,8 @@ class Library:
             seen = {r.delivery_id for r in recs}
             if recs:  # an empty listing is more likely an auth hiccup than a wiped folder: keep what we know
                 for gone in existing - seen:
-                    self.db.execute("UPDATE recordings SET gone=1 WHERE delivery_id=?", (gone,))
+                    if not stored[gone][-1]:
+                        self.db.execute("UPDATE recordings SET gone=1 WHERE delivery_id=?", (gone,))
             dups = self._mark_duplicates(course_id)
             self.db.commit()
         return [i for i in new_ids if i not in dups]
@@ -325,7 +345,7 @@ class Library:
         dups = {k for k, v in dup_of.items() if v}
         for did, canon in dup_of.items():
             self.db.execute("UPDATE recordings SET duplicate_of=?, is_new=CASE WHEN ? IS NULL THEN is_new ELSE 0 END "
-                            "WHERE delivery_id=?", (canon, canon, did))
+                            "WHERE delivery_id=? AND duplicate_of IS NOT ?", (canon, canon, did, canon))   # (changed)
         return dups
 
     def recordings(self, course_id: Optional[str] = None, include_gone: bool = False) -> list[Recording]:
@@ -340,6 +360,16 @@ class Library:
         with self._lock:
             rows = self.db.execute(q, args).fetchall()
         return [self._rec(r) for r in rows]
+
+    def day_recordings(self, day_key: str) -> list[Recording]:
+        """The recordings of one class day (``Recording.day_key``), as :meth:`recordings` lists them, without loading
+        the rest of the course."""
+        course_id, date_s = (day_key.split("|") + [""])[:2]
+        with self._lock:
+            rows = self.db.execute("SELECT * FROM recordings WHERE course_id=? AND substr(start, 1, 10)=? AND "
+                                   "(gone=0 OR delivery_id IN (SELECT delivery_id FROM transcripts)) ORDER BY start DESC",
+                                   (course_id, date_s)).fetchall()
+        return [r for r in map(self._rec, rows) if r.day_key == day_key]
 
     def get_recording(self, delivery_id: str) -> Optional[Recording]:
         with self._lock:
@@ -476,25 +506,33 @@ class Library:
         now = _now()
         new_ids: list[str] = []
         with self._lock:
-            if units:   # an empty plan is more likely a hiccup than a course without weeks: keep what we know
+            rows = [(u.id, u.position, u.title, u.start.isoformat() if u.start else "", u.end.isoformat() if u.end else "",
+                     u.readings) for u in units]
+            # an empty plan is more likely a hiccup than a course without weeks: keep what we know (and the same plan)
+            if units and set(rows) != {tuple(r) for r in self.db.execute(
+                    "SELECT unit_id, position, title, start_date, end_date, readings FROM units WHERE course_id=?",
+                    (course_id,))}:
                 self.db.execute("DELETE FROM units WHERE course_id=?", (course_id,))
-            existing = {r[0]: r[1] for r in self.db.execute(
-                "SELECT resource_id, url FROM materials WHERE course_id=?", (course_id,))}
+                self.db.executemany("INSERT OR REPLACE INTO units(course_id, unit_id, position, title, start_date, "
+                                    "end_date, readings) VALUES(?,?,?,?,?,?,?)", [(course_id, *r) for r in rows])
+            # what is stored, to write only what changed (last_seen: when it last changed; nothing reads it)
+            stored = {r[0]: tuple(r[1:]) for r in self.db.execute(
+                "SELECT resource_id, unit_id, position, title, file_name, kind, ext, url, download_url, gone "
+                "FROM materials WHERE course_id=?", (course_id,))}
+            existing = set(stored)
             seen: set[str] = set()
             for u in units:
-                self.db.execute("INSERT OR REPLACE INTO units(course_id, unit_id, position, title, start_date, end_date, "
-                                "readings) VALUES(?,?,?,?,?,?,?)",
-                                (course_id, u.id, u.position, u.title, u.start.isoformat() if u.start else "",
-                                 u.end.isoformat() if u.end else "", u.readings))
                 for pos, r in enumerate(u.resources):
                     seen.add(r.id)
                     if r.id in existing:
+                        row = (u.id, pos, r.title, r.file_name, r.kind, r.ext, r.url, r.download_url, 0)
+                        if stored[r.id] == row:
+                            continue
+                        stored[r.id] = row
                         self.db.execute("UPDATE materials SET unit_id=?, position=?, title=?, file_name=?, kind=?, ext=?, "
                                         "url=?, download_url=?, last_seen=?, gone=0, "
                                         "is_new=CASE WHEN url<>? AND downloaded_at<>'' THEN 1 ELSE is_new END "
-                                        "WHERE resource_id=?",
-                                        (u.id, pos, r.title, r.file_name, r.kind, r.ext, r.url, r.download_url, now,
-                                         r.url, r.id))
+                                        "WHERE resource_id=?", (*row[:-1], now, r.url, r.id))
                     else:
                         self.db.execute("INSERT OR IGNORE INTO materials(resource_id, course_id, unit_id, position, title, "
                                         "file_name, kind, ext, url, download_url, first_seen, last_seen, is_new) "
@@ -504,8 +542,9 @@ class Library:
                         if not first_sync:
                             new_ids.append(r.id)
             if units:   # an empty plan is more likely a hiccup than a course without materials: keep what we know
-                for rid in set(existing) - seen:
-                    self.db.execute("UPDATE materials SET gone=1 WHERE resource_id=?", (rid,))
+                for rid in existing - seen:
+                    if not stored[rid][-1]:
+                        self.db.execute("UPDATE materials SET gone=1 WHERE resource_id=?", (rid,))
             self.db.commit()
         return new_ids
 
@@ -530,6 +569,32 @@ class Library:
         with self._lock:
             row = self.db.execute("SELECT * FROM materials WHERE resource_id=?", (resource_id,)).fetchone()
         return dict(row) if row else None
+
+    def get_materials(self, resource_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """:meth:`get_material` for several at once: {resource_id: material} of those that exist."""
+        ids = list(dict.fromkeys(resource_ids))
+        if not ids:
+            return {}
+        with self._lock:
+            rows = self.db.execute(f"SELECT * FROM materials WHERE resource_id IN ({','.join('?' * len(ids))})",
+                                   ids).fetchall()
+        return {r["resource_id"]: dict(r) for r in rows}
+
+    def content_counts(self) -> dict[str, dict[str, int]]:
+        """Per course, for the course list: its course files as :meth:`materials` lists them ("materials", the new
+        ones, the downloaded ones) and the new ones of the latest 500 announcements."""
+        out: dict[str, dict[str, int]] = {}
+        with self._lock:
+            for cid, n, new, got in self.db.execute(
+                    "SELECT course_id, COUNT(*), SUM(CASE WHEN is_new THEN 1 ELSE 0 END), "
+                    "SUM(CASE WHEN COALESCE(local_path, '')<>'' THEN 1 ELSE 0 END) FROM materials "
+                    "WHERE gone=0 OR local_path<>'' GROUP BY course_id"):
+                out[cid] = {"materials": n, "materials_new": new, "downloaded": got, "announcements_new": 0}
+            for cid, new in self.db.execute(
+                    "SELECT course_id, SUM(CASE WHEN is_new THEN 1 ELSE 0 END) FROM (SELECT course_id, is_new FROM "
+                    "announcements ORDER BY posted_at DESC, first_seen DESC LIMIT 500) GROUP BY course_id"):
+                out.setdefault(cid, {"materials": 0, "materials_new": 0, "downloaded": 0})["announcements_new"] = new
+        return out
 
     def set_material_file(self, resource_id: str, local_path: str, size: int, url: str) -> None:
         with self._lock:
@@ -618,7 +683,7 @@ class Library:
                 try:
                     rows = self.db.execute(
                         "SELECT resource_id, page, snippet(material_fts, 2, char(2), char(3), '…', 14) FROM material_fts "
-                        "WHERE material_fts MATCH ? ORDER BY rank LIMIT ?", (q, limit)).fetchall()
+                        f"WHERE material_fts MATCH ? ORDER BY {_search_order(words)} LIMIT ?", (q, limit)).fetchall()
                     return [{"resource_id": r[0], "page": int(r[1]), "snippet": r[2]} for r in rows]
                 except sqlite3.OperationalError:
                     pass
@@ -756,14 +821,21 @@ class Library:
             row = self.db.execute("SELECT * FROM chats WHERE id=?", (chat_id,)).fetchone()
         return self._chat(row) if row else None
 
-    def chats(self) -> list[dict[str, Any]]:
-        """All chats, most recently used first, with their first question and message count."""
+    def chats(self, chat_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """All chats (or the one with ``chat_id``), most recently used first, with their first question and message
+        count."""
         with self._lock:
             rows = self.db.execute(
                 "SELECT c.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id=c.id) AS n_messages, "
                 "(SELECT text FROM chat_messages m WHERE m.chat_id=c.id AND m.role='user' ORDER BY seq LIMIT 1) "
-                "AS first_question FROM chats c ORDER BY c.updated_at DESC, c.created_at DESC").fetchall()
+                "AS first_question FROM chats c" + (" WHERE c.id=?" if chat_id is not None else "")
+                + " ORDER BY c.updated_at DESC, c.created_at DESC", (chat_id,) if chat_id is not None else ()).fetchall()
         return [self._chat(r) for r in rows]
+
+    def chat_and_plan_courses(self) -> set[str]:
+        """The courses that have a chat or a study plan."""
+        with self._lock:
+            return {r[0] for r in self.db.execute("SELECT course_id FROM chats UNION SELECT course_id FROM plans")}
 
     def delete_chat(self, chat_id: str) -> None:
         with self._lock:
@@ -848,7 +920,8 @@ class Library:
                 try:
                     rows = self.db.execute(
                         "SELECT delivery_id, t, snippet(transcript_fts, 2, char(2), char(3), '…', 14) AS snip "
-                        "FROM transcript_fts WHERE transcript_fts MATCH ? ORDER BY rank LIMIT ?", (q, limit)).fetchall()
+                        f"FROM transcript_fts WHERE transcript_fts MATCH ? ORDER BY {_search_order(words)} LIMIT ?",
+                        (q, limit)).fetchall()
                     return [{"delivery_id": r[0], "t": float(r[1]), "snippet": r[2]} for r in rows]
                 except sqlite3.OperationalError:
                     pass

@@ -195,6 +195,15 @@ class UnitDecoder:
                                compression_ratio(text) if text else 0.0, n))
         return out
 
+    def language_prior(self, encoder_output, langs: Sequence[str] = ("en", "tr")) -> list[Optional[dict[str, float]]]:
+        """The language-ID head's probabilities of ``langs`` per passage, scaled to sum 1 (None: none of them)."""
+        out: list[Optional[dict[str, float]]] = []
+        for probs in self.ct2.detect_language(encoder_output):
+            p = {tok.strip("<|>"): float(prob) for tok, prob in probs}
+            total = sum(p.get(lang, 0.0) for lang in langs)
+            out.append({lang: p.get(lang, 0.0) / total for lang in langs} if total > 0 else None)
+        return out
+
 
 # --------------------------------------------------------------------------- language choice
 
@@ -203,7 +212,8 @@ _TR_WORDS = set("""ve bir bu için ne da de çok var yok değil olarak şimdi ev
 gibi daha kadar sonra hani şey arkadaşlar hocam burada şu o ben sen biz siz onlar nasıl neden niye işte
 hadi bakın bakalım bunu şunu onu bunun şunun burda orda diye ile ya veya hem böyle şöyle öyle olan oldu
 olur olması gerekiyor lazım tane kere sonuç zaman aynı her hiç belki sadece iki üç dört beş altı yedi
-sekiz dokuz on sıfır eksi artı çarpı bölü eşittir""".split())
+sekiz dokuz on sıfır eksi artı çarpı bölü eşittir peki mesela aynen tabi tabii bence hepsi gelelim olsun
+oluyor demek zaten yine bile sanki galiba herhalde acaba hemen biraz bazen""".split())
 _EN_WORDS = set("""the and is of to a in that it we you this for on are with be as have so what if can not
 right okay now let's here there then which do does will would should could our your they he she has had
 were was an or but by from at about because just also these those how when where why one two three four
@@ -329,28 +339,44 @@ def choose(cands: Sequence[Decoded], unit_dur: float, dominant: str, prior: Opti
             s -= 0.4
         if d.lang == dominant:
             s += 0.015            # tiny tie-break toward the lecture's main language
-        if prior:
-            s += 0.04 * (prior.get(d.lang, 0.0) - 0.5)
+        if prior:                 # the language-ID head (large-v3-turbo only, see Engine._decode_units)
+            s += 0.2 * (prior.get(d.lang, 0.0) - 0.5)
         return s
 
     best = max(cands, key=score)
     if len(cands) > 1:
         # Same words in both languages (numbers, "Pivot.", English the TR decode kept as English):
-        # the language is the one the text is written in, else the lecture's main language.
+        # the language is the one the text is written in. Unsure: three or more words without a Turkish letter
+        # are English (the main language alone tagged "Vectors, linearly independent." Turkish in a Turkish
+        # lecture); a word or two ("Pivot.", "Peki.") or Turkish letters go to the lecture's main language.
         import difflib
 
         ref = _norm(best.text)
         same = [c for c in cands if difflib.SequenceMatcher(None, _norm(c.text), ref).ratio() >= 0.85]
         if len(same) > 1:
-            guess = text_language(best.text) or dominant
+            guess = text_language(best.text)
+            if not guess:
+                english = len(ref.split()) >= 3 and not any(ch in _TR_CHARS for ch in best.text.lower())
+                guess = "en" if english else dominant
             for c in same:
                 if c.lang == guess:
                     return c
     return best
 
 
+def neutral_text(text: str) -> bool:
+    """Numbers, with single letters and names like C1 between them ("2 1 0 1 0 0", "C1, A1."): the words do not
+    show a language. Words do ("Ne o?", "O." are Turkish), and so does a Turkish ending on a number ("1'i")."""
+    words = _norm(text).split()
+    return (any(ch.isdigit() for ch in text) and not re.search(r"\d['’][a-zçğıöşü]", text.lower())
+            and all(len(w) <= 1 or any(ch.isdigit() for ch in w) for w in words))
+
+
 def segment_language(d: Decoded) -> str:
-    """Language tag for the output. Trust the decode language unless the text clearly disagrees."""
+    """Language tag for the output. Trust the decode language unless the text clearly disagrees; text that shows
+    no language (neutral_text) is English."""
+    if neutral_text(d.text):
+        return "en"
     guess = text_language(d.text)
     if guess and guess != d.lang and len(_WORD.findall(tr_lower(d.text))) >= 4:
         return guess

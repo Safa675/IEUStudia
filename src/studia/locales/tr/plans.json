@@ -90,6 +90,7 @@
   "Based on {files} and {lectures} of these weeks.": "Bu haftalardan {files} ve {lectures} kullanıldı.",
   "{a} and {b} — topics only there may be missing.": "{a} ve {b}; yalnızca orada geçen konular eksik olabilir.",
   "{a} — topics only there may be missing.": "{a}; yalnızca orada geçen konular eksik olabilir.",
+  "{n} lecture did not fit in what the AI read — topics only there may be missing.": "Yapay zekanın okuduğu içeriğe {n} ders sığmadı; yalnızca orada geçen konular eksik olabilir.",
   "The required videos take {time} — {n} min more than the {budget} you planned.": "Zorunlu videolar {time} sürüyor: planladığın süreden ({budget}) {n} dk fazla.",
   "supplement": "ek açıklama",
   "Concept": "Kavram",

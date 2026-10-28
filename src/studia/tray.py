@@ -35,10 +35,20 @@ NIIF_USER, NIIF_LARGE_ICON, NIIF_INFO = 0x4, 0x20, 0x1
 NOTIFYICON_VERSION_4 = 4
 MF_STRING, MF_SEPARATOR, MF_CHECKED, MF_GRAYED, MF_DEFAULT = 0x0, 0x800, 0x8, 0x1, 0x1000
 TPM_RIGHTBUTTON, TPM_RETURNCMD, TPM_NONOTIFY = 0x2, 0x100, 0x80
+WM_POWERBROADCAST, PBT_POWERSETTINGCHANGE, PBT_APMRESUMEAUTOMATIC = 0x218, 0x8013, 0x12
 
 
 class GUID(ctypes.Structure):
     _fields_ = [("Data1", wt.DWORD), ("Data2", wt.WORD), ("Data3", wt.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+
+# the screen: 0 off, 1 on, 2 dimmed (Windows sends the current state as soon as you register, then each change)
+GUID_CONSOLE_DISPLAY_STATE = GUID(0x6FE69556, 0x704A, 0x47A0,
+                                  (ctypes.c_ubyte * 8)(0x8F, 0x24, 0xC2, 0x8D, 0x93, 0x6F, 0xDA, 0x47))
+
+
+class POWERBROADCAST_SETTING(ctypes.Structure):
+    _fields_ = [("PowerSetting", GUID), ("DataLength", wt.DWORD), ("Data", wt.DWORD)]
 
 
 class NOTIFYICONDATAW(ctypes.Structure):
@@ -80,6 +90,10 @@ def _sigs() -> None:
     user32.DestroyWindow.argtypes = [wt.HWND]
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.UnregisterClassW.argtypes = [wt.LPCWSTR, wt.HINSTANCE]
+    user32.DestroyIcon.argtypes = [wt.HICON]
+    user32.RegisterPowerSettingNotification.restype = ctypes.c_void_p
+    user32.RegisterPowerSettingNotification.argtypes = [wt.HANDLE, ctypes.POINTER(GUID), wt.DWORD]
+    user32.UnregisterPowerSettingNotification.argtypes = [ctypes.c_void_p]
     shell32.Shell_NotifyIconW.argtypes = [wt.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
     shell32.Shell_NotifyIconW.restype = wt.BOOL
     kernel32.GetModuleHandleW.restype = wt.HMODULE
@@ -92,9 +106,11 @@ MenuItem = tuple[int, str, bool, bool]          # (id, label, checked, enabled);
 class Tray:
     def __init__(self, tooltip: str, icon: Path, menu: Callable[[], list[MenuItem]],
                  on_command: Callable[[int], None], on_open: Callable[[Optional[Any]], None],
-                 class_name: str = "IEUStudiaTray", title: str = "IEUStudia helper") -> None:
+                 class_name: str = "IEUStudiaTray", title: str = "IEUStudia helper",
+                 on_power: Optional[Callable[[str], None]] = None) -> None:
         """``class_name``: the installer finds the helper by "IEUStudiaTray" to close it before replacing files (see
-        PrepareToInstall in packaging/IEUStudia.iss); other icons need a name of their own."""
+        PrepareToInstall in packaging/IEUStudia.iss); other icons need a name of their own. ``on_power``: told "on"
+        or "off" when the screen comes on or goes off (dimmed counts as on), and "resume" when the PC wakes up."""
         _sigs()
         self.tooltip = tooltip
         self.class_name, self.title = class_name, title
@@ -102,8 +118,10 @@ class Tray:
         self.menu = menu
         self.on_command = on_command
         self.on_open = on_open                   # click on the icon (None) or on a notification (its payload)
+        self.on_power = on_power
         self.hwnd = 0
-        self._proc = WNDPROC(self._wndproc)
+        self._power_note: Optional[int] = None
+        self._proc = WNDPROC(self._wndproc)      # kept: Windows calls it for as long as the window lives
         self._pending: list[tuple[str, str, Any]] = []
         self._payload: Any = None
         self._lock = threading.Lock()
@@ -206,7 +224,15 @@ class Tray:
         if msg == self._taskbar_created and msg:       # Explorer restarted: put the icon back
             self._add()
             return 0
+        if msg == WM_POWERBROADCAST and self.on_power is not None:
+            event = self._power_event(wparam, lparam)
+            if event:
+                self._safe(self.on_power, event)
+            return 1
         if msg == WM_CLOSE:
+            if self._power_note:
+                user32.UnregisterPowerSettingNotification(self._power_note)
+                self._power_note = None
             self._remove()
             user32.DestroyWindow(hwnd)
             return 0
@@ -214,6 +240,17 @@ class Tray:
             user32.PostQuitMessage(0)
             return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    @staticmethod
+    def _power_event(wparam: int, lparam: int) -> str:
+        """WM_POWERBROADCAST → "on", "off", "resume" or "" (something else)."""
+        if wparam == PBT_APMRESUMEAUTOMATIC:
+            return "resume"
+        if wparam == PBT_POWERSETTINGCHANGE and lparam:
+            s = POWERBROADCAST_SETTING.from_address(lparam)
+            if bytes(s.PowerSetting) == bytes(GUID_CONSOLE_DISPLAY_STATE) and s.DataLength >= 4:
+                return "off" if s.Data == 0 else "on"
+        return ""
 
     def run(self) -> None:
         hinst = kernel32.GetModuleHandleW(None)
@@ -229,6 +266,9 @@ class Tray:
         self._icon_small = user32.LoadImageW(None, ico, 1, user32.GetSystemMetrics(49), user32.GetSystemMetrics(50), 0x10)
         self._icon_big = user32.LoadImageW(None, ico, 1, 64, 64, 0x10)
         self._add()
+        if self.on_power is not None:                  # DEVICE_NOTIFY_WINDOW_HANDLE: as WM_POWERBROADCAST
+            self._power_note = user32.RegisterPowerSettingNotification(
+                self.hwnd, ctypes.byref(GUID_CONSOLE_DISPLAY_STATE), 0) or None
         self.ready.set()
         if self._pending:
             self._show_pending()
@@ -238,6 +278,9 @@ class Tray:
             user32.DispatchMessageW(ctypes.byref(msg))
         self.hwnd = 0
         user32.UnregisterClassW(name, hinst)
+        for icon in (self._icon_small, self._icon_big):  # the app makes a new icon for each notification
+            if icon:
+                user32.DestroyIcon(icon)
 
 
 _SERIAL = itertools.count(1)         # each notification icon's window class is new (the last may still be closing)

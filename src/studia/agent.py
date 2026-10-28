@@ -24,6 +24,8 @@ log = logging.getLogger("studia")
 
 CMD_OPEN, CMD_SYNC, CMD_PAUSE, CMD_STARTUP, CMD_QUIT = 1, 2, 3, 4, 9
 FIRST_CHECK_S = 90            # after signing in to Windows, let the PC settle first
+BACK_S = 50                   # after the screen comes on or the PC wakes up: Wi-Fi first
+SCREEN_OFF_EVERY = 4          # while the screen is off: a check only every 4 intervals (in case "off" was wrong)
 KEEP_SEEN = 3000
 REMIND_FROM = dt.time(17)     # a reminder comes the evening before, from 17:00 ...
 REMIND_UNTIL = dt.time(14)    # ... or on the day itself until 14:00, if the PC was off that evening
@@ -236,6 +238,24 @@ def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, li
     return title, "\n".join(lines[:4]), payload
 
 
+def next_check(now: float, last: float, interval_s: float, screen_on: bool = True, back_at: float = 0.0,
+               manual: bool = False, paused: bool = False) -> Optional[float]:
+    """Seconds until the helper checks IEULearn (0: now; None: not while notifications are paused, then the first
+    check after them tells what came in meanwhile). Every ``interval_s`` while the screen is on; while it is off
+    nobody reads a notification, so only every SCREEN_OFF_EVERY intervals. When the screen comes on or the PC wakes
+    up (``back_at``) after a check was due, BACK_S later. ``manual``: "Check IEULearn now". The times are the wall
+    clock's (time.time()): Windows' waits don't count the hours the PC slept."""
+    if manual:
+        return 0.0
+    if paused:
+        return None
+    last = min(last, now)                                      # the clock was set back
+    due = last + interval_s * (1 if screen_on else SCREEN_OFF_EVERY)
+    if back_at > last:
+        due = max(due, back_at + BACK_S)
+    return max(0.0, due - now)
+
+
 # ----------------------------------------------------------------------------- the helper
 class Helper:
     def __init__(self, at_login: bool) -> None:
@@ -247,10 +267,14 @@ class Helper:
         self.wake = threading.Event()
         self.first_delay = FIRST_CHECK_S if at_login else 20
         self.last = ""
+        self.checked_at = 0.0            # when the last check ran (wall clock)
+        self.manual = False              # "Check IEULearn now"
+        self.screen_on = True
+        self.back_at = 0.0               # when the screen last came on or the PC woke up (wall clock)
         self.told_rejected = False       # said once that IEULearn refused the saved password
         from .tray import Tray
 
-        self.tray = Tray("IEUStudia", _icon(), self._menu, self._command, self._open)
+        self.tray = Tray("IEUStudia", _icon(), self._menu, self._command, self._open, on_power=self._power)
 
     # ---- tray
     def _menu(self) -> list[tuple[int, str, bool, bool]]:
@@ -271,9 +295,11 @@ class Helper:
         if cmd == CMD_OPEN:
             self._open(None)
         elif cmd == CMD_SYNC:
+            self.manual = True
             self.wake.set()
         elif cmd == CMD_PAUSE:
             self.paused = not self.paused
+            self.wake.set()              # no checks while paused; afterwards at once if one is due
         elif cmd == CMD_STARTUP:
             on = not launch.startup_enabled()
             launch.set_startup(on)
@@ -291,9 +317,19 @@ class Helper:
         target = payload if isinstance(payload, str) and payload else ""
         launch.spawn(launch.app_command(*(["--open", target] if target else [])))
 
+    def _power(self, event: str) -> None:
+        """From the tray window: the screen went "off" or came "on", or the PC woke up ("resume")."""
+        if event in ("on", "off"):
+            was_on, self.screen_on = self.screen_on, event == "on"
+            if not self.screen_on or was_on:
+                return
+        self.back_at = time.time()
+        self.wake.set()                                  # (a wait doesn't count the time the PC slept)
+
     # ---- work
     def _loop(self) -> None:
         from . import appconfig
+        from .winutil import background_work
 
         self.wake.wait(self.first_delay)
         while not self.stop.is_set():
@@ -303,15 +339,23 @@ class Helper:
                 log.info("Helper: background mode was turned off")
                 self.tray.stop()
                 return
-            if not ui_running():
+            interval = self.cfg.sync_minutes * 60
+            manual, self.manual = self.manual, False
+            wait = next_check(time.time(), self.checked_at, interval, self.screen_on, self.back_at, manual,
+                              self.paused)
+            if wait == 0 and not ui_running():
+                self.checked_at = time.time()
                 told = False
-                try:
-                    told = self._check()
-                except Exception:  # noqa: BLE001
-                    log.exception("Helper: check failed")
-                if not told:            # one notification at a time: a click opens what the last one was about
-                    self._check_update()
-            self.wake.wait(self.cfg.sync_minutes * 60)
+                with background_work():                 # the programs you use come first
+                    try:
+                        told = self._check()
+                    except Exception:  # noqa: BLE001
+                        log.exception("Helper: check failed")
+                    if not told:        # one notification at a time: a click opens what the last one was about
+                        self._check_update()
+                wait = next_check(time.time(), self.checked_at, interval, self.screen_on, self.back_at)
+            # at least once an interval: Settings may have turned the helper off (or the window is open: it checks)
+            self.wake.wait(interval if wait is None or wait == 0 else min(wait, interval))
 
     def _check_update(self) -> None:
         """A new version of IEUStudia: said once, and opening the app shows how to update."""
@@ -345,6 +389,7 @@ class Helper:
             from . import secrets_store
 
             seen = _load_seen()
+            known = {k: set(v) for k, v in seen.items()}
             note = None
             sync = SyncService(lib, lambda: settings, log)
             if not sync.has_credentials():
@@ -363,7 +408,7 @@ class Helper:
                 self.told_rejected = False
                 try:
                     res = sync.sync()
-                    content = sync.sync_content()
+                    content = sync.sync_content(units_every=None if self.cfg.notify_materials else sync.HELPER_UNITS_EVERY)
                     note = summarize(lib, settings, self.cfg, res.new_ids, content["new_announcements"],
                                      content["new_materials"], seen)
                     self.last = time.strftime("%H:%M")
@@ -378,7 +423,8 @@ class Helper:
                 told = _load_seen().get("rem", [])      # the app may have reminded meanwhile (the check takes a while)
                 seen["rem"] = list(dict.fromkeys(told + seen.get("rem", [])))
                 note = reminders(assessment_events(lib, settings), dt.datetime.now(), seen)
-            _save_seen(seen)
+            if any(set(v) - known.get(k, set()) for k, v in seen.items()):     # (nothing new: nothing to write)
+                _save_seen(seen)
             told = bool(note) and not self.paused
             if told:
                 self.tray.notify(*note)

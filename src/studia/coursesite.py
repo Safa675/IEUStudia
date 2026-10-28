@@ -221,7 +221,7 @@ class CourseSite:
         self.s = session
 
     def _get(self, path: str) -> str:
-        r = self.s.get(f"{BASE}{path}", allow_redirects=False, timeout=30)
+        r = self.s.get(f"{BASE}{path}", allow_redirects=False, timeout=(6, 30))
         if r.status_code in (301, 302, 303):
             raise NeedLogin(t("Your IEULearn session has expired."))
         r.raise_for_status()

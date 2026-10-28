@@ -6,7 +6,7 @@ import datetime as dt
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Collection, Iterable, Optional
 
 from . import store
 from .config import Settings
@@ -15,7 +15,6 @@ from .i18n import date_long, t, weekday
 from .outputs.common import format_ts, kind_label, lang_tag, language_shares, time_range
 from .outputs.highlights import LABELS, _tr_lower, excerpt
 from .outputs.markdown import part_views
-from .paths import transcripts_dir
 from .quality import worst_level
 from .sections import available_sections, classify, guess_my_section, parse_section_tag
 from .slides import jpeg_size
@@ -62,7 +61,7 @@ def _cover_uri(url: str) -> str:
 
 
 def course_view(course: Course, recs: list[Recording], settings: Settings, jobs: dict[str, dict[str, Any]],
-                warnings: dict[str, list[dict[str, Any]]], slides_ids: set[str]) -> dict[str, Any]:
+                warnings: dict[str, list[dict[str, Any]]], slides_ids: Collection[str]) -> dict[str, Any]:
     prefs = settings.prefs(course.id)
     my_section = prefs.my_section or guess_my_section(course)
     sections = available_sections(recs)
@@ -116,33 +115,25 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
 def all_course_views(lib: Any, settings: Settings, jobs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     job_map = {j["id"]: j for j in jobs}
     warnings = lib.all_warnings()
-    slides_ids = {p.name.split(".")[0] for p in transcripts_dir().glob("*.slides.json")}
+    slides_ids = store.slide_ids()
     out = []
     all_recs = lib.recordings()
     by_course: dict[str, list[Recording]] = defaultdict(list)
     for r in all_recs:
         by_course[r.course_id].append(r)
-    mats: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for m in lib.materials():
-        mats[m["course_id"]].append(m)
-    new_anns: dict[str, int] = defaultdict(int)
-    for a in lib.announcements(limit=500):
-        new_anns[a["course_id"]] += 1 if a["is_new"] else 0
+    counts = lib.content_counts()
     active = lib.courses()
     # a course that left your IEULearn dashboard (dropped, or a term ago) stays while it holds something of yours
     done = lib.transcribed_ids()
     yours = ({r.course_id for r in all_recs if r.delivery_id in done}
-             | {m["course_id"] for ms in mats.values() for m in ms if m.get("local_path")}
-             | {ch["course_id"] for ch in lib.chats()} | {p["course_id"] for p in lib.plans()})
+             | {cid for cid, n in counts.items() if n["downloaded"]} | lib.chat_and_plan_courses())
     ids = {c.id for c in active}
     earlier = [c for c in lib.courses(True) if c.id not in ids and c.id in yours]
     for c in active + earlier:
         v = course_view(c, by_course.get(c.id, []), settings, job_map, warnings, slides_ids)
         v["inactive"] = c.id not in ids
-        cm = mats.get(c.id, [])
-        v["content"] = {"materials": len(cm), "materials_new": sum(1 for m in cm if m["is_new"]),
-                        "downloaded": sum(1 for m in cm if m.get("local_path")),
-                        "announcements_new": new_anns.get(c.id, 0)}
+        n = counts.get(c.id, {})
+        v["content"] = {k: n.get(k, 0) for k in ("materials", "materials_new", "downloaded", "announcements_new")}
         out.append(v)
     return out
 
@@ -235,8 +226,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
     for m in lib.materials(course_id):
         mats[m["unit_id"]].append(material_view(m))
     recs = lib.recordings(course_id)
-    cv = course_view(course, recs, settings, {j["id"]: j for j in jobs}, lib.all_warnings(),
-                     {p.name.split(".")[0] for p in transcripts_dir().glob("*.slides.json")})
+    cv = course_view(course, recs, settings, {j["id"]: j for j in jobs}, lib.all_warnings(), store.slide_ids())
     first = week_starts(units)
     if first is None and course.term:      # no dates in this plan: the term's calendar from the other courses
         start = lib.term_start(course.term)
@@ -340,7 +330,7 @@ def day_detail(lib: Any, settings: Settings, day_key: str, files: dict[str, str]
     course = lib.get_course(course_id)
     if course is None:
         return None
-    recs = [r for r in lib.recordings(course_id) if r.day_key == day_key]
+    recs = lib.day_recordings(day_key)
     if not recs:
         return None
     ids = [r.delivery_id for r in recs]

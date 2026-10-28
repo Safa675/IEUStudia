@@ -41,7 +41,7 @@
   "{ai} could not write the summary.": "{ai} özeti yazamadı.",
   "Your transcripts were copied to the new folder (the old folder was left as it was).": "Ders metinlerin yeni klasöre kopyalandı (eski klasöre dokunulmadı).",
   "New transcripts will be saved in the new folder.": "Bundan sonraki ders metinleri yeni klasöre kaydedilecek.",
-  "IEULearn didn't accept your saved password (was it changed?). Sign in again.": "IEULearn kayıtlı şifreni kabul etmedi (değiştirdin mi?). Yeniden giriş yap.",
+  "IEULearn didn't accept your saved password (was it changed?). Sign in again.": "IEULearn kayıtlı şifreni kabul etmedi (değişti mi?). Yeniden giriş yap.",
   "Please sign in to IEULearn.": "IEULearn'e giriş yap.",
   "None of your courses has Panopto.": "Derslerinin hiçbirinde Panopto yok.",
   "Could not open Panopto through IEULearn. Try again in a moment.": "Panopto, IEULearn üzerinden açılamadı. Birazdan tekrar dene.",

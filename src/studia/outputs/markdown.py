@@ -25,13 +25,23 @@ class PartView:
     warnings: list[dict[str, Any]]
 
 
+def _paragraphs(t: Transcript) -> list[Paragraph]:
+    """The transcript's paragraphs, built once per Transcript object: the store hands out the same object until it
+    drops it, and a new transcription is a new object. Callers get copies (part_views sets .slide)."""
+    built = t.__dict__.get("_paragraphs")
+    if built is None or built[0] is not t.segments or built[1] != len(t.segments):
+        built = (t.segments, len(t.segments), build_paragraphs(t.segments))
+        t.__dict__["_paragraphs"] = built
+    return [dc.replace(p, tags=list(p.tags)) for p in built[2]]
+
+
 def part_views(recordings: Iterable[Recording], transcripts: Any, slides: Optional[Mapping[str, Sequence[Any]]] = None,
                warnings: Optional[Mapping[str, list[dict[str, Any]]]] = None) -> list[PartView]:
     tmap = as_transcript_map(transcripts)
     out = []
     for i, rec in enumerate(select_parts(recordings, tmap), start=1):
         t = tmap.get(rec.delivery_id)
-        paras = build_paragraphs(t.segments) if t else []
+        paras = _paragraphs(t) if t else []
         sl = list((slides or {}).get(rec.delivery_id) or [])
         if sl and paras:
             k = 0

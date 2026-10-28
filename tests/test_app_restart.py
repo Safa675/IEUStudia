@@ -138,3 +138,55 @@ def test_the_window_fits_the_screen(monkeypatch, area, size):
 
     monkeypatch.setattr(winutil, "work_area", lambda: area)
     assert app._window_size() == size
+
+
+def test_windows_certificates_come_after_the_start_up_window_and_before_anything_connects(isolated_home, monkeypatch):
+    from studia import app, net, winutil
+
+    order = []
+    fake = types.ModuleType("webview")
+
+    def create_window(title, url=None, js_api=None, **kw):
+        order.append("window")                   # the services (the first connections) start after this
+        order.append(FakeWindow(js_api))
+        return order[-1]
+
+    def start(**kw):
+        w = order[-1]
+        assert w.api._ready.wait(30)
+        w.destroy()
+
+    fake.create_window, fake.start = create_window, start
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(winutil, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(app, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(app, "set_app_id", lambda *a, **k: None)
+    monkeypatch.setattr(net, "use_windows_certificates", lambda: order.append("certificates"))
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: order.append(
+        "start-up window" if any(str(x).endswith("splash.py") for x in cmd) else "other"))
+    app._main([])
+    assert [x for x in order if isinstance(x, str)][:3] == ["start-up window", "certificates", "window"]
+
+
+@pytest.mark.parametrize("args", [["--agent"], ["--selftest", "out.json"]])
+def test_the_helper_and_the_selftest_use_windows_certificates_first(monkeypatch, args):
+    from studia import agent, app, net
+
+    order = []
+    monkeypatch.setattr(net, "use_windows_certificates", lambda: order.append("certificates"))
+    monkeypatch.setattr(agent, "main", lambda argv: order.append("helper"))
+    monkeypatch.setattr(app, "_selftest", lambda out: order.append("selftest") or 0)
+    try:
+        app.main(args)
+    except SystemExit:
+        pass
+    assert order == ["certificates", "helper" if args == ["--agent"] else "selftest"]
+
+
+def test_nothing_before_the_start_up_window_loads_the_network_libraries():
+    """What _main imports before it spawns the start-up window: requests and the SSL setup only come after it."""
+    code = ("import sys, studia.app\n"
+            "from studia import accounts, appconfig, config, hardware, i18n, launch, log, paths, winutil\n"
+            "print([m for m in ('requests', 'urllib3', 'ssl', 'truststore') if m in sys.modules])")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert out.stdout.strip() == "[]", out.stderr

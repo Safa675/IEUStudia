@@ -15,11 +15,10 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import requests
-
 from ..cancel import check
 from .. import httpdl
 from ..i18n import N_, t
+from ..net import plain_session
 
 log = logging.getLogger("studia")
 
@@ -136,7 +135,7 @@ def download_model(model: str, progress: Callable[[int, int], None],
             progress(size, size)
             return target
         target.mkdir(parents=True, exist_ok=True)
-        session = requests.Session()
+        session = plain_session()
         session.headers["User-Agent"] = "IEUStudia (+https://github.com/mirzaisi/IEUStudia)"
         info = session.get(f"https://huggingface.co/api/models/{repo}", params={"blobs": "true"}, timeout=30)
         info.raise_for_status()
@@ -211,7 +210,7 @@ def setup_cuda_dlls() -> list[str]:
     return added
 
 
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize=2)             # both forms (quick for the display and the offline AI)
 def detect_gpu(quick: bool = False) -> dict[str, Any]:
     """{"available": bool, "name": str, "vram_mb": int} for the first NVIDIA GPU usable by CTranslate2.
     ``quick``: only ask nvidia-smi (for the display; loading CTranslate2 takes ~1 s and is checked when

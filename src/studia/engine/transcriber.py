@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import dataclasses as dc
 import datetime as dt
 import logging
 import os
+import sys
 import threading
 import time
 from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
@@ -23,7 +26,7 @@ from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, lo
                      model_is_downloaded, resolve_device, setup_cuda_dlls)
 
 __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "model_is_downloaded",
-           "delete_model", "ENGINE_VERSION"]
+           "delete_model", "ENGINE_VERSION", "Speech", "find_speech"]
 
 ENGINE_VERSION = "2.0"
 UNCLEAR = "[unclear]"
@@ -35,6 +38,62 @@ def _work(u: Unit) -> float:
     """A passage's share of the transcription time (see _decode_units)."""
     return 1.0 + u.dur / 12.0
 log = logging.getLogger("studia")
+
+
+def cpu_threads() -> int:
+    """CTranslate2's threads on the processor: all but two logical processors, at most 8. On a 20-thread laptop i7,
+    18 threads were slower than 8 while the PC was in use and took ~45 % more processor time; the transcripts are the
+    same (checked on four lectures). NumPy's own threads are left alone: one thread for the features changed them."""
+    return max(1, min((os.cpu_count() or 4) - 2, 8))
+
+
+def _ai_on_gpu() -> bool:
+    """The offline AI model is loaded on the graphics card (it shares the card's memory with the speech model)."""
+    ai = sys.modules.get(f"{__package__.rpartition('.')[0]}.local_llm")      # never imported: no model loaded either
+    if ai is None:
+        return False
+    from ..components import LLM_PRESETS
+
+    return any(ai.device_of(k) == "cuda" for k in LLM_PRESETS)
+
+
+@dc.dataclass
+class Speech:
+    """Where the speech is in a recording, and what the audio checks found (see find_speech)."""
+    spans: list[tuple[int, int]]
+    units: list[Unit]
+    warnings: list[dict[str, Any]]
+    stats: dict[str, Any]
+    gain: float
+    seconds: float                   # how long finding it took
+
+
+def _units(audio: np.ndarray, cancel: Optional[threading.Event]) -> tuple[list[tuple[int, int]], list[Unit]]:
+    from faster_whisper.vad import VadOptions
+
+    from .vad import get_speech_timestamps
+
+    if len(audio) < SR // 2:
+        return [], []
+    check(cancel)
+    opts = VadOptions(threshold=0.5, min_speech_duration_ms=200, min_silence_duration_ms=300,
+                      speech_pad_ms=200, max_speech_duration_s=14.0)
+    speech = get_speech_timestamps(audio, opts)
+    check(cancel)
+    return [(int(s["start"]), int(s["end"])) for s in speech], speech_units(speech)
+
+
+def find_speech(audio: np.ndarray, cancel: Optional[threading.Event] = None, expected_duration: float = 0.0) -> Speech:
+    """Find the speech (Silero VAD, on one processor thread) and check the audio. It needs no model: the download
+    threads run it while the lecture before is transcribed. Raises quality.NoSpeech for a recording without speech."""
+    t0 = time.monotonic()
+    spans, units = _units(audio, cancel)
+    took = time.monotonic() - t0
+    log.info("%d speech units, %.0fs of speech in %.0fs of audio", len(units), sum(u.dur for u in units),
+             len(audio) / SR)
+    # safeguards: raises quality.NoSpeech for silent recordings, boosts quiet ones
+    warnings, stats, gain = analyze_audio(audio, spans, expected_duration)
+    return Speech(spans, units, warnings, stats, gain, took)
 
 
 class Engine:
@@ -90,7 +149,7 @@ class Engine:
             from faster_whisper import WhisperModel
 
             device, compute = resolve_device(self.device_pref)
-            threads = max(1, (os.cpu_count() or 4) - 2)
+            threads = 1 if device == "cuda" else cpu_threads()   # on the card, more threads only spin while waiting
             t0 = time.monotonic()
             try:
                 wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=threads)
@@ -102,8 +161,9 @@ class Engine:
                 self.log.warning("GPU initialisation failed, falling back to CPU: %s", exc)
                 self._warning = t("The GPU could not be used, so transcription runs on the CPU (slower).")
                 device, compute = "cpu", "int8"
-                wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=threads)
+                wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=cpu_threads())
             self._wm, self._device, self._compute = wm, device, compute
+            self._oom_batch = 0              # a batch that ran out of GPU memory stays smaller until the model unloads
             self._decoder = UnitDecoder(wm)
             supported = set(getattr(wm, "supported_languages", []) or [])
             if supported:
@@ -122,10 +182,14 @@ class Engine:
                     pass
             self._wm = None
             self._decoder = None
+            self._oom_batch = 0
+
+    find_speech = staticmethod(find_speech)
 
     # ------------------------------------------------------------------ transcription
     def transcribe(self, audio: np.ndarray, progress: Progress, cancel: Optional[threading.Event],
-                   meta: Optional[dict[str, Any]] = None) -> Transcript:
+                   meta: Optional[dict[str, Any]] = None, speech: Optional[Speech] = None) -> Transcript:
+        """``speech``: find_speech's result for this audio, when a download thread found it already."""
         if self._wm is None or self._decoder is None:
             self.ensure_model(progress, cancel)
         assert self._wm is not None and self._decoder is not None
@@ -133,17 +197,14 @@ class Engine:
         timings: dict[str, float] = {}
         duration = len(audio) / SR
 
-        t0 = time.monotonic()
-        progress("vad", 0.02, t("Finding speech"))
-        spans, units = self._units(audio, cancel)
-        timings["vad"] = time.monotonic() - t0
+        if speech is None:
+            progress("vad", 0.02, t("Finding speech"))
+            speech = find_speech(audio, cancel, float(meta.get("expected_duration") or 0.0))
+        timings["vad"] = speech.seconds
+        units, warnings, stats = speech.units, speech.warnings, speech.stats
         speech_s = sum(u.dur for u in units)
-        self.log.info("%d speech units, %.0fs of speech in %.0fs of audio", len(units), speech_s, duration)
-
-        # safeguards: raises quality.NoSpeech for silent recordings, boosts quiet ones
-        warnings, stats, gain = analyze_audio(audio, spans, float(meta.get("expected_duration") or 0.0))
-        if gain != 1.0:
-            audio = np.clip(audio * gain, -1.0, 1.0)
+        if speech.gain != 1.0:
+            audio = np.clip(audio * speech.gain, -1.0, 1.0)
 
         t0 = time.monotonic()
         decoded, best_conf = self._decode_units(audio, units, progress, cancel)
@@ -200,43 +261,41 @@ class Engine:
         )
 
     # ------------------------------------------------------------------ internals
-    def _units(self, audio: np.ndarray, cancel: Optional[threading.Event]) -> tuple[list[tuple[int, int]], list[Unit]]:
-        from faster_whisper.vad import VadOptions, get_speech_timestamps
-
-        if len(audio) < SR // 2:
-            return [], []
-        check(cancel)
-        opts = VadOptions(threshold=0.5, min_speech_duration_ms=200, min_silence_duration_ms=300,
-                          speech_pad_ms=200, max_speech_duration_s=14.0)
-        speech = get_speech_timestamps(audio, opts)
-        check(cancel)
-        return [(int(s["start"]), int(s["end"])) for s in speech], speech_units(speech)
-
     def _batch_size(self) -> int:
         if self._device != "cuda":
             return 4
-        big_decoder = self.model_name in ("large-v3", "medium")
         vram = detect_gpu().get("vram_mb") or 8000
-        base = 4 if big_decoder else 16
-        return max(1, base if vram >= 7500 else base // 2)
+        if self.model_name in ("large-v3", "medium"):
+            # 8 spreads the cost of each decoding step (large-v3 then needs ~6.2 GB): not next to the offline AI
+            return (4 if _ai_on_gpu() else 8) if vram >= 7500 else 2
+        if self.model_name == "large-v3-turbo" and vram < 5000:
+            return 4                     # batch 8 needs ~3.4 GB: more than a 4 GB card has to spare
+        return 16 if vram >= 7500 else 8
 
     def _encode_generate(self, audio: np.ndarray, batch: list[Unit], langs_per_pass: list[list[str]],
-                         opts: DecodeOptions) -> list[list[Decoded]]:
-        """Encode once, generate once per language pass. Halves the batch on CUDA out-of-memory."""
+                         opts: DecodeOptions, feats: Optional[np.ndarray] = None,
+                         priors: Optional[list] = None) -> list[list[Decoded]]:
+        """Encode once, generate once per language pass. Halves the batch on CUDA out-of-memory. ``feats``: the
+        batch's features, when they were computed ahead. ``priors``: gets the language-ID head's prior of each
+        passage (UnitDecoder.language_prior) appended."""
         dec = self._decoder
         assert dec is not None
         try:
-            enc = dec.encode(dec.features(audio, batch))
-            return [dec.generate(enc, batch, langs, opts) for langs in langs_per_pass]
+            enc = dec.encode(dec.features(audio, batch) if feats is None else feats)
+            lid = dec.language_prior(enc, self.languages) if priors is not None else []
+            passes = [dec.generate(enc, batch, langs, opts) for langs in langs_per_pass]
         except RuntimeError as exc:
             if "out of memory" not in str(exc).lower() or len(batch) == 1:
                 raise
             half = len(batch) // 2
             self.log.warning("GPU out of memory with %d passages per batch; retrying with %d", len(batch), half)
             self._oom_batch = half
-            a = self._encode_generate(audio, batch[:half], [l[:half] for l in langs_per_pass], opts)
-            b = self._encode_generate(audio, batch[half:], [l[half:] for l in langs_per_pass], opts)
+            a = self._encode_generate(audio, batch[:half], [l[:half] for l in langs_per_pass], opts, priors=priors)
+            b = self._encode_generate(audio, batch[half:], [l[half:] for l in langs_per_pass], opts, priors=priors)
             return [x + y for x, y in zip(a, b)]
+        if priors is not None:
+            priors.extend(lid)
+        return passes
 
     def _make_way_for_ai(self, frac: float, progress: Progress, cancel: Optional[threading.Event]) -> float:
         """Before a batch: while the offline AI writes on the processor, it goes first. The seconds waited."""
@@ -252,8 +311,13 @@ class Engine:
             return [], []
         langs = list(self.languages)
         opts = DecodeOptions(batch_size=self._batch_size(), beam_size=5 if self._device == "cuda" else 2)
-        self._oom_batch = 0
         cands: list[list[Decoded]] = [[] for _ in range(n)]
+        # large-v3-turbo's language-ID head, read off the encoder pass it already made (~0.3 s per 15 minutes on the
+        # graphics card), helps choose the language: on 4 real lecture windows, English passages tagged Turkish fell
+        # from 9 to 5 and the word error rate from 13.3 to 12.8 %. The other models' language-ID hears Turkish in a
+        # Turkish lecturer's English: any weight made them worse.
+        lid = self.model_name == "large-v3-turbo" and len(langs) > 1
+        priors: list[Optional[dict[str, float]]] = [None] * n
         order = sort_by_duration(units, range(n))
         done = 0
         started = time.monotonic()
@@ -262,30 +326,48 @@ class Engine:
         work_total = sum(_work(u) for u in units) or 1.0
         work_done = 0.0
         i = 0
-        while i < n:
-            check(cancel)
-            # the offline AI writing on the processor goes first (the time left leaves the wait out)
-            started += self._make_way_for_ai(0.05 + 0.88 * work_done / work_total, progress, cancel)
-            size = min(opts.batch_size, self._oom_batch or opts.batch_size)
-            idx = order[i:i + size]
-            batch = [units[j] for j in idx]
-            passes = self._encode_generate(audio, batch, [[lang] * len(batch) for lang in langs], opts)
-            for results in passes:
-                for j, d in zip(idx, results):
-                    cands[j].append(d)
-            i += len(idx)
-            done += len(idx)
-            work_done += sum(_work(u) for u in batch)
-            frac = work_done / work_total
-            elapsed = time.monotonic() - started
-            eta = elapsed / frac * (1 - frac) if frac > 0.05 else None
-            # the time left is an untranslated marker that jobs.py takes off (the page says it in its language)
-            progress("transcribe", 0.05 + 0.88 * frac,
-                     t("Transcribing passage {done} of {n}", done=done, n=n) + (f" · ~{int(eta)}s left" if eta else ""))
+        # on the graphics card the processor computes the next batch's features while this batch runs (on the
+        # processor itself that would only compete with CTranslate2's threads)
+        ahead = ThreadPoolExecutor(1, thread_name_prefix="features") if self._device == "cuda" else None
+        nxt: Optional[tuple[list[int], Future]] = None
+        try:
+            while i < n:
+                check(cancel)
+                # the offline AI writing on the processor goes first (the time left leaves the wait out)
+                started += self._make_way_for_ai(0.05 + 0.88 * work_done / work_total, progress, cancel)
+                size = min(opts.batch_size, self._oom_batch or opts.batch_size)
+                idx = order[i:i + size]
+                batch = [units[j] for j in idx]
+                # computed ahead for this very batch? (an out-of-memory split changes the batches after it)
+                feats = nxt[1].result() if nxt is not None and nxt[0] == idx else None
+                nxt = None
+                if ahead is not None and i + size < n:
+                    nidx = order[i + size:i + 2 * size]
+                    nxt = (nidx, ahead.submit(self._decoder.features, audio, [units[j] for j in nidx]))
+                got: Optional[list] = [] if lid else None
+                passes = self._encode_generate(audio, batch, [[lang] * len(batch) for lang in langs], opts, feats,
+                                               priors=got)
+                for results in passes:
+                    for j, d in zip(idx, results):
+                        cands[j].append(d)
+                for j, p in zip(idx, got or []):
+                    priors[j] = p
+                i += len(idx)
+                done += len(idx)
+                work_done += sum(_work(u) for u in batch)
+                frac = work_done / work_total
+                elapsed = time.monotonic() - started
+                eta = elapsed / frac * (1 - frac) if frac > 0.05 else None
+                # the time left is an untranslated marker that jobs.py takes off (the page says it in its language)
+                progress("transcribe", 0.05 + 0.88 * frac, t("Transcribing passage {done} of {n}", done=done, n=n)
+                         + (f" · ~{int(eta)}s left" if eta else ""))
+        finally:
+            if ahead is not None:
+                ahead.shutdown(wait=True, cancel_futures=True)
 
         dominant = self._dominant(cands, units)
         self._last_dominant = dominant
-        chosen: list[Optional[Decoded]] = [choose(c, units[k].dur, dominant) if c else None
+        chosen: list[Optional[Decoded]] = [choose(c, units[k].dur, dominant, priors[k]) if c else None
                                            for k, c in enumerate(cands)]
         best_conf = [max((d.conf for d in c if hallucination_score(d, units[k].dur) < 0.75), default=0.0)
                      for k, c in enumerate(cands)]

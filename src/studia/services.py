@@ -7,6 +7,7 @@ import os
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit
 
 import requests
 
@@ -24,6 +25,79 @@ log = logging.getLogger("studia")
 RENAME_KEY = "output_renamed"          # library meta: an output folder rename that is not finished yet
 # AI notes: the end of the file name (English), and the label shown (t() it there)
 NOTE_KINDS = {"notes": N_("Study notes"), "exam": N_("Exam focus"), "flashcards": N_("Flashcards")}
+
+
+def _course_transcripts(lib: Library, course_recs: list[Recording]) -> dict[str, Any]:
+    done = lib.transcribed_ids()
+    return store.load_transcripts([r.delivery_id for r in course_recs if r.delivery_id in done])
+
+
+def _slides_key(screens: list[tuple[Any, float]]) -> str:
+    """What the slides of a recording were made from: its screen streams (the file in each URL, without the
+    per-request query) and their start offsets. Panopto processing the recording again gives new files."""
+    return "\n".join(f"{urlsplit(src.url).path}@{offset:.1f}" for src, offset in screens)
+
+
+def _slides_done(delivery_id: str, key: str, streams: int) -> bool:
+    """The recording's slides exist (index and every image) and were made from these screen streams. An index from
+    before the key was kept counts if the recording has one screen stream (older versions read only the first); it
+    gets the key, so a change is noticed from then on."""
+    from .slides import load_index
+
+    index = store.slides_path(delivery_id)
+    if not index.is_file() or not all(os.path.isfile(s.path) for s in load_index(index) if s.path):
+        return False
+    key_file = index.with_suffix(".key")
+    try:
+        return key_file.read_text(encoding="utf-8") == key
+    except FileNotFoundError:
+        if streams != 1:
+            return False
+        try:
+            key_file.write_text(key, encoding="utf-8")
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def sweep_audio_cache(lib: Library, keep_audio: bool, days: float = 7.0) -> int:
+    """Delete downloaded audio (and parts of unfinished downloads) older than ``days`` whose lecture is not waiting
+    in the queue saved across restarts. With "Keep downloaded audio" on, transcribed lectures keep theirs. Only this
+    profile's lectures: the folder is shared, and another profile's queue and setting aren't known here. Returns
+    how many files were deleted."""
+    import json
+    import time
+
+    from .jobs import QUEUE_KEY
+    from .paths import audio_cache_dir
+
+    try:
+        queued = set(json.loads(lib.get_meta(QUEUE_KEY) or "[]"))
+    except (ValueError, TypeError):
+        return 0                                   # the queue can't be read: never delete a queued lecture's audio
+    cutoff, n = time.time() - days * 86400, 0
+    for f in audio_cache_dir().iterdir():
+        did = f.name.split(".")[0]
+        try:
+            if not f.is_file() or did in queued or f.stat().st_mtime > cutoff:
+                continue
+            rec = lib.get_recording(did)
+            if rec is None or (keep_audio and rec.status == "done"):
+                continue
+            f.unlink()
+            n += 1
+        except OSError:
+            continue
+    return n
+
+
+def _file_warnings(lib: Library, course_recs: list[Recording]) -> dict[str, list[dict[str, Any]]]:
+    """The recordings' warnings as the files show them: "could not be written" never goes into the files themselves."""
+    every = lib.all_warnings()
+    return {r.delivery_id: [w for w in every.get(r.delivery_id, []) if w.get("code") != "not_written"]
+            for r in course_recs}
 
 
 class Services:
@@ -51,6 +125,12 @@ class Services:
 
         self.plans = PlanRunner(self)
         self._write_unwritten()
+        try:
+            n = sweep_audio_cache(self.lib, self.settings.keep_audio)
+            if n:
+                self.log.info("Deleted %d old downloaded audio files", n)
+        except OSError:
+            self.log.debug("Audio cache sweep failed", exc_info=True)
 
     def _write_unwritten(self) -> None:
         """Write the files of transcripts whose files could not be written before (a file was open in another
@@ -194,7 +274,7 @@ class Services:
         course = self.lib.get_course(course_id)
         if course is None:
             raise KeyError(t("Unknown course"))
-        recs = sorted((r for r in self.lib.recordings(course_id) if r.day_key == day_key), key=lambda r: r.start)
+        recs = sorted(self.lib.day_recordings(day_key), key=lambda r: r.start)
         if not recs:
             raise KeyError(t("Unknown class day"))
         return course, recs
@@ -229,7 +309,8 @@ class Services:
         return folder / "AI notes" / safe_name(f"{stem} - {NOTE_KINDS.get(kind, NOTE_KINDS['notes'])}.md")
 
     # ------------------------------------------------------------------ outputs
-    def write_outputs(self, delivery_id: str) -> dict[str, Any]:
+    def write_outputs(self, delivery_id: str, pack: bool = True) -> dict[str, Any]:
+        """Write the files of a transcript's class day and (``pack``) its course's study pack."""
         if delivery_id.startswith("local-"):
             transcript = store.load_transcript(delivery_id)
             if transcript is None:
@@ -242,14 +323,21 @@ class Services:
         course, day_recs = self.day(rec.day_key)
         all_courses = self.lib.courses(True)
         course_recs = self.lib.recordings(course.id)
-        done_ids = self.lib.transcribed_ids()
-        trans_all = store.load_transcripts([r.delivery_id for r in course_recs if r.delivery_id in done_ids])
+        trans_all = _course_transcripts(self.lib, course_recs)
         ids = [r.delivery_id for r in day_recs]
         slides = {i: store.load_slides(i) for i in ids}
-        warnings = {r.delivery_id: [w for w in self.lib.warnings(r.delivery_id) if w.get("code") != "not_written"]
-                    for r in course_recs}           # "could not be written" never goes into the files themselves
         return write_day(self.output_root, course, all_courses, day_recs, {i: trans_all[i] for i in ids if i in trans_all},
-                         course_recs, trans_all, self.settings.write_srt, slides, warnings)
+                         course_recs, trans_all, self.settings.write_srt, slides, _file_warnings(self.lib, course_recs),
+                         pack=pack)
+
+    def write_course_pack(self, course_id: str) -> Optional[Path]:
+        """Write a course's study pack (after its days were written with ``pack=False``)."""
+        course = self.lib.get_course(course_id)
+        if course is None:
+            return None
+        course_recs = self.lib.recordings(course_id)
+        return write_pack(self.output_root, course, self.lib.courses(True), course_recs,
+                          _course_transcripts(self.lib, course_recs), _file_warnings(self.lib, course_recs))
 
     def relocate_outputs(self, old_root: Path, new_root: Path) -> int:
         """Copy the app's folders (course folders with transcripts, slides, materials, packs and notes; weekly
@@ -278,20 +366,47 @@ class Services:
         for r in self.lib.recordings(course_id):
             if r.delivery_id in done and r.day_key not in seen:
                 seen.add(r.day_key)
-                self.write_outputs(r.delivery_id)
+                self.write_outputs(r.delivery_id, pack=False)
+        if seen:                        # the pack holds every day: once, not once per day
+            self.write_course_pack(course_id)
 
-    def slides_task(self, job: Any, src: Any, offset: float, session: requests.Session) -> list[Any]:
+    def slides_task(self, job: Any, screens: list[tuple[Any, float]], session: requests.Session) -> list[Any]:
+        """The slides of a recording from all its screen streams (one per stretch of screen sharing), numbered
+        through, a slide shown again in a later stream kept once. Slides made before from the same streams are
+        kept as they are."""
+        from .cancel import Cancelled
         from .slides import extract_slides
 
         rec = self.lib.get_recording(job.id)
         course = self.lib.get_course(rec.course_id) if rec else None
         if rec is None or course is None:
             return []
+        key = _slides_key(screens)
+        if _slides_done(job.id, key, len(screens)):
+            self.log.info("Slides for %s are there already", job.id)
+            return store.load_slides(job.id)
         stem = day_stem(course, rec.start.date(), rec.kind)
         folder = course_dir(self.output_root, course, self.lib.courses(True)) / "slides" / stem
-        slides = extract_slides(session, src.url, folder, f"slides/{stem}", rec.start.strftime("%H%M"), offset,
-                                cancel=job.cancel)
+        key_file = store.slides_path(job.id).with_suffix(".key")
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        key_file.write_text("", encoding="utf-8")   # being made (images are written over): not done until the end
+        slides: list[Any] = []
+        seen: list[Any] = []                      # the slides kept so far, shared by the streams
+        failed: Optional[Exception] = None
+        for src, offset in screens:
+            try:
+                slides += extract_slides(session, src.url, folder, f"slides/{stem}", rec.start.strftime("%H%M"), offset,
+                                         cancel=job.cancel, seen=seen)
+            except Cancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the other streams' slides are still worth having
+                self.log.info("A screen stream of %s failed: %s", job.id, exc)
+                failed = exc
+        if failed is not None and not slides:
+            raise failed
         store.save_slides(job.id, slides)
+        if failed is None:                        # a stream failed: made again next time
+            key_file.write_text(key, encoding="utf-8")
         self.log.info("%d slides for %s", len({s.index for s in slides}), job.id)
         return slides
 

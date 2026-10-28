@@ -196,6 +196,15 @@ def test_limit_messages_are_explained():
     assert ai.friendly_error("Claude AI usage limit reached|1792568400").startswith("You have reached your Claude usage limit — it resets at ")
     assert ai.friendly_error("Invalid API key · Please run /login").startswith("Claude Code is not signed in")
     assert ai.friendly_error("something else") == "Claude: something else"
+    from studia import i18n
+
+    i18n.set_language("tr")
+    try:                                  # Claude Code's English time, in the Turkish way
+        assert ai.friendly_error("You've hit your session limit · resets 10:40am (Europe/Istanbul)").endswith(": 10:40.")
+        assert ai.friendly_error("You've hit your weekly limit · resets Nov 1, 9pm (Europe/Istanbul)").endswith(": 1 Kas 21:00.")
+        assert ai.friendly_error("You've hit your limit · resets soon").endswith(": soon.")          # unknown: as said
+    finally:
+        i18n.set_language("en")
 
 
 def test_a_limit_that_resets_another_day_says_the_day():

@@ -83,7 +83,8 @@ def read_instance(name: str) -> dict:
 
 
 def request_open(name: str, target: str) -> None:
-    """Ask the running app window to show a page ("course:<id>", "home")."""
+    """Ask the running app window to show a page ("course:<id>", "home"): the page goes in a file, then the event
+    tells the window to look (see open_request_event)."""
     import json
     import time
 
@@ -91,7 +92,31 @@ def request_open(name: str, target: str) -> None:
         _instance_file(name).with_name(name.split("\\")[-1] + "-open.json").write_text(
             json.dumps({"target": target, "at": time.time()}), encoding="utf-8")
     except OSError:
-        pass
+        return
+    event = open_request_event(name)
+    if event:
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.SetEvent.argtypes = kernel32.CloseHandle.argtypes = [wt.HANDLE]
+        kernel32.SetEvent(event)
+        kernel32.CloseHandle(event)
+
+
+def open_request_event(name: str) -> int:
+    """The named auto-reset event the app window's thread waits on for open requests (0 if Windows says no). When
+    no window waits, this makes a new one that goes away with its handle: the request stays in its file."""
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.CreateEventW.restype = wt.HANDLE
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.BOOL, wt.LPCWSTR]
+    return kernel32.CreateEventW(None, False, False, name.replace("SingleInstance", "Open")) or 0
+
+
+def wait_event(event: int, timeout_s: float | None = None) -> bool:
+    """Wait for an event to be set (without a timeout: as long as it takes); False if it wasn't or the wait failed."""
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel32.WaitForSingleObject.restype = wt.DWORD
+    ms = 0xFFFFFFFF if timeout_s is None else int(timeout_s * 1000)              # INFINITE
+    return kernel32.WaitForSingleObject(event, ms) == 0                          # WAIT_OBJECT_0
 
 
 def take_open_request(name: str) -> str:
@@ -321,6 +346,7 @@ def set_app_id(app_id: str = "Studia.App") -> None:
 _BELOW_NORMAL, _NORMAL = 0x4000, 0x20
 _prio_lock = threading.Lock()
 _low = False
+_eco = False                                        # Windows' efficiency mode (see background_work)
 _starting = 0                                       # programs being started right now (see normal_priority)
 
 
@@ -332,6 +358,43 @@ def _priority_class(value: int) -> bool:
         return bool(k32.SetPriorityClass(k32.GetCurrentProcess(), value))
     except (AttributeError, OSError):
         return False
+
+
+class _PowerThrottling(ctypes.Structure):
+    _fields_ = [("Version", wt.ULONG), ("ControlMask", wt.ULONG), ("StateMask", wt.ULONG)]
+
+
+def _efficiency(on: bool) -> bool:
+    """EcoQoS for this process (Windows runs it on the efficient cores at a lower clock), or Windows' own choice."""
+    try:
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentProcess.restype = wt.HANDLE
+        k32.SetProcessInformation.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+        state = _PowerThrottling(1, int(on), int(on))         # PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+        return bool(k32.SetProcessInformation(k32.GetCurrentProcess(), 4, ctypes.byref(state),   # ProcessPowerThrottling
+                                              ctypes.sizeof(state)))
+    except (AttributeError, OSError):
+        return False
+
+
+@contextlib.contextmanager
+def background_work() -> Iterator[None]:
+    """For the tray helper's checks: below-normal priority and EcoQoS, so the programs you use come first and the
+    checks use less power. A program started meanwhile (the app) still starts as usual (see normal_priority)."""
+    global _eco
+    set_low_priority(True)
+    with _prio_lock:
+        _eco = True
+        if not _starting:
+            _efficiency(True)
+    try:
+        yield
+    finally:
+        with _prio_lock:
+            _eco = False
+            if not _starting:
+                _efficiency(False)
+        set_low_priority(False)
 
 
 def set_low_priority(on: bool) -> None:
@@ -352,6 +415,8 @@ def normal_priority() -> Iterator[None]:
         _starting += 1
         if _low:
             _priority_class(_NORMAL)
+        if _eco:
+            _efficiency(False)
     try:
         yield
     finally:
@@ -359,6 +424,8 @@ def normal_priority() -> Iterator[None]:
             _starting -= 1
             if _low and not _starting:
                 _priority_class(_BELOW_NORMAL)
+            if _eco and not _starting:
+                _efficiency(True)
 
 
 def open_in_browser(url: str) -> None:

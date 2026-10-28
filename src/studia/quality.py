@@ -24,11 +24,14 @@ class NoSpeech(Exception):
 SILENT_DBFS = -50.0
 
 
+def peak(audio: np.ndarray) -> float:
+    """The loudest sample's level (0..1), without an absolute-value copy of the whole lecture."""
+    return max(float(audio.max()), -float(audio.min())) if audio.size else 0.0
+
+
 def is_silent(audio: np.ndarray) -> bool:
     """Digital silence / microphone off (the loudest sample stays below -50 dBFS)."""
-    import numpy as np
-
-    return audio.size == 0 or float(np.max(np.abs(audio))) < 10 ** (SILENT_DBFS / 20)
+    return audio.size == 0 or peak(audio) < 10 ** (SILENT_DBFS / 20)
 
 
 def _db(x: float) -> float:
@@ -56,19 +59,19 @@ def analyze_audio(audio: np.ndarray, speech: Sequence[tuple[int, int]], expected
     duration = n / SR
     if n == 0:
         raise NoSpeech(t("The recording has no audio."))
-    peak = float(np.max(np.abs(audio)))
+    loudest = peak(audio)
     speech_samples = sum(e - s for s, e in speech)
     speech_s = speech_samples / SR
     stats: dict[str, Any] = {"duration_s": round(duration, 1), "speech_s": round(speech_s, 1),
                              "speech_ratio": round(speech_s / duration, 3) if duration else 0.0,
-                             "peak_dbfs": round(_db(peak), 1)}
+                             "peak_dbfs": round(_db(loudest), 1)}
 
     if expected_duration and duration < expected_duration * 0.9 - 20:
         warnings.append({"code": "truncated", "level": "warning",
                          "message": t("The downloaded audio is shorter than the recording ({got} of {total}). The end "
                                       "may be missing.", got=_mmss(duration), total=_mmss(expected_duration))})
 
-    if peak < 10 ** (SILENT_DBFS / 20):
+    if loudest < 10 ** (SILENT_DBFS / 20):
         raise NoSpeech(t("This recording has no sound on Panopto (the microphone was probably off). "
                          "All available audio streams are silent — check it on Panopto or ask the lecturer."))
     if speech_s < 8:
@@ -91,7 +94,7 @@ def analyze_audio(audio: np.ndarray, speech: Sequence[tuple[int, int]], expected
 
     gain = 1.0
     if _db(speech_rms) < -38:
-        gain = min(20.0, 10 ** ((-24 - _db(speech_rms)) / 20), 0.97 / max(peak, 1e-6))
+        gain = min(20.0, 10 ** ((-24 - _db(speech_rms)) / 20), 0.97 / max(loudest, 1e-6))
         warnings.append({"code": "quiet", "level": "info",
                          "message": t("The recording is very quiet ({db} dBFS); the volume was boosted ×{gain} before "
                                       "transcription.", db=num(stats["speech_rms_dbfs"], 1), gain=num(gain, 1))})

@@ -57,9 +57,9 @@ _jwks: dict[str, Any] = {}
 
 
 def _session() -> Any:
-    import requests
+    from .net import plain_session
 
-    s = requests.Session()
+    s = plain_session()
     s.headers["User-Agent"] = "IEUStudia (+https://github.com/mirzaisi/IEUStudia)"
     return s
 

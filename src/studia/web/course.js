@@ -19,6 +19,7 @@
 
   S.cd = {};                 // course details by id (from course_detail)
   const loadedAt = {};       // when each course's details arrived
+  const loadedFor = {};      // the course's summary (S.courses) they were asked for
   S.mat = {};                // download state by material id: {state, done, total, error, open}
   S.loLang = "en";
   S.ann = new Set();         // expanded announcements
@@ -31,19 +32,34 @@
   async function loadCourse(cid, quiet) {
     if (loading[cid]) return loading[cid];
     loading[cid] = (async () => {
+      const asked = summaryKey(cid);
       const r = await call("course_detail", cid);
       delete loading[cid];
       if (!r.ok) { if (!quiet) toast(r.error, "error"); return; }
       S.cd[cid] = r.course;
       loadedAt[cid] = Date.now();
+      loadedFor[cid] = asked;
       if (R.cid === cid && $(".modal.rd")) drawReady();         // the "get ready" checklist is open: keep it current
       const v = S.view;
-      if ((v.name === "course" && v.courseId === cid) || v.name === "home") renderView();
+      if (v.name === "course" && v.courseId === cid) renderView();
+      else if (v.name === "home") redrawHome();
     })();
     return loading[cid];
   }
   const reloadTimers = {};
   function reloadSoon(cid) { clearTimeout(reloadTimers[cid]); reloadTimers[cid] = setTimeout(() => loadCourse(cid, true), 250); }
+  // A course's summary without a running job's progress: when it is the same, so are its details (announcements and
+  // materials come with the "content" event, which reloads them anyway)
+  function summaryKey(cid) {
+    const c = S.courses.find((x) => x.id === cid);
+    return c ? JSON.stringify(c, (k, v) => (k === "progress" || k === "detail" ? undefined : v)) : "";
+  }
+  const STALE_MS = 10 * 60000;
+  let homeFrame = 0;
+  function redrawHome() {       // Home shows every course's details: one redraw per frame, however many arrive
+    if (homeFrame) return;
+    homeFrame = requestAnimationFrame(() => { homeFrame = 0; if (S.view.name === "home") renderView(); });
+  }
   function allMaterials(d) { return d ? [...d.general.flatMap((u) => u.materials), ...d.weeks.flatMap((w) => w.units.flatMap((u) => u.materials))] : []; }
   function findMaterial(id) {
     for (const cid in S.cd) { const m = allMaterials(S.cd[cid]).find((x) => x.id === id); if (m) return { cid, m }; }
@@ -636,7 +652,12 @@
   St.onEvents.courses = () => {
     const v = S.view;
     if (v.name === "course") reloadSoon(v.courseId);
-    else if (v.name === "home") { S.courses.forEach((c) => reloadSoon(c.id)); renderView(); }
+    else if (v.name === "home") {               // only the courses that changed (or whose details are old)
+      S.courses.forEach((c) => {
+        if (!S.cd[c.id] || summaryKey(c.id) !== loadedFor[c.id] || Date.now() - (loadedAt[c.id] || 0) > STALE_MS) reloadSoon(c.id);
+      });
+      redrawHome();
+    }
     else if (v.name === "new") renderView();
   };
   St.onEvents.content = (e) => {

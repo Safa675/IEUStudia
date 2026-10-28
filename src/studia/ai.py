@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from .cancel import Cancelled
-from .i18n import N_, date_short, language, t
+from .i18n import N_, date_short, day_month, language, t
 
 log = logging.getLogger("studia")
 
@@ -56,7 +56,8 @@ SYSTEM_PROMPT = (
     "speech-recognition error or are unsure, say so briefly. Do not ask questions; deliver the complete result."
 )
 IMAGE_TOKENS = 800          # ~1024x576 image
-CHARS_PER_TOKEN = 3.1       # measured on compact transcripts (timestamps and Turkish make tokens shorter)
+CHARS_PER_TOKEN = 3.1       # Claude, measured on compact transcripts (timestamps and Turkish make tokens shorter)
+CHARS_PER_TOKEN_BY = {"chatgpt": 3.9, "codex": 3.9}    # ChatGPT's tokens are longer: 3.87–3.89 billed on a lecture chat
 PROMPT_OVERHEAD = 600       # what Claude Code adds to every request
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -132,8 +133,14 @@ def _command(model: str, effort: str, system_prompt_file: Path, partial: bool = 
     return cmd
 
 
-def text_tokens(text: str) -> int:
-    return int(len(text) / CHARS_PER_TOKEN)
+def chars_per_token(p: str = "") -> float:
+    """Characters per token for the AI ``p`` (default: the chosen one)."""
+    return CHARS_PER_TOKEN_BY.get(p or provider(), CHARS_PER_TOKEN)
+
+
+def text_tokens(text: str, per: float = 0.0) -> int:
+    """``per``: characters per token when already known (see :func:`chars_per_token`)."""
+    return int(len(text) / (per or chars_per_token()))
 
 
 def estimate_tokens(text: str, n_images: int) -> dict[str, int]:
@@ -141,18 +148,49 @@ def estimate_tokens(text: str, n_images: int) -> dict[str, int]:
     return {"input": inp, "output": min(8000, 1500 + inp // 6), "images": n_images}
 
 
+SLIDE_COPIES = 2000           # small slide copies kept (about 60 KB each); beyond that the oldest go
+
+
+def _prune_copies(folder: Path, keep: int = SLIDE_COPIES) -> None:
+    try:
+        files = sorted(folder.glob("*.jpg"), key=lambda f: f.stat().st_mtime)
+        for f in files[:max(0, len(files) - keep)]:
+            f.unlink(missing_ok=True)
+    except OSError:
+        log.debug("Could not prune %s", folder, exc_info=True)
+
+
 def _small_jpeg(path: Path, width: int = 1024) -> bytes:
-    """Re-encode a slide for Claude at ~1024 px (≈800 tokens instead of ≈1900)."""
+    """A slide re-encoded for the AI at ~1024 px (≈800 tokens instead of ≈1900). The copy is kept in the cache,
+    keyed by the slide's path, size and time, so chats and notes don't re-encode the same slides every time."""
     import av
 
+    from .paths import app_dir
     from .slides import save_jpeg
 
+    st = path.stat()
+    key = hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime_ns}|{width}".encode("utf-8")).hexdigest()
+    kept = app_dir() / "cache" / "slides" / f"{key[:20]}.jpg"
+    try:
+        return kept.read_bytes()
+    except OSError:
+        pass
     with av.open(str(path)) as c:
         frame = next(c.decode(video=0))
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "s.jpg"
         save_jpeg(frame, out, max_width=width)
-        return out.read_bytes()
+        data = out.read_bytes()
+    try:
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        part = kept.with_name(f"{kept.stem}.{uuid.uuid4().hex[:8]}.tmp")
+        part.write_bytes(data)
+        part.replace(kept)
+        if sum(1 for _ in os.scandir(kept.parent)) > SLIDE_COPIES + 100:       # now and then, not for every copy
+            _prune_copies(kept.parent)
+    except OSError:
+        log.debug("Could not keep the small copy of %s", path, exc_info=True)
+    return data
 
 
 def image_block(path: Path) -> dict[str, Any]:
@@ -216,6 +254,28 @@ def _reset_text(resets_at: int) -> str:
     return f"{day}, {clock}"
 
 
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
+
+def _said_when(said: str) -> str:
+    """Claude Code's own reset time ("10:40am (Europe/Istanbul)", "Nov 1, 9pm (Europe/Istanbul)"), as it is in English
+    and in the interface's way otherwise ("10:40", "1 Kas 21:00"); left as it is if it reads differently."""
+    if language() == "en":
+        return said
+    m = re.match(r"(?:(?P<mon>[A-Za-z]{3})[a-z]*\.?\s+(?P<day>\d{1,2}),?\s+)?(?:at\s+)?(?P<h>\d{1,2})(?::(?P<min>\d{2}))?\s*"
+                 r"(?P<ap>am|pm)\b", said.strip(), flags=re.I)
+    if not m or int(m["h"]) > 12 or (m["mon"] and m["mon"].lower() not in _MONTHS):
+        return said
+    clock = f"{int(m['h']) % 12 + (12 if m['ap'].lower() == 'pm' else 0):02d}:{m['min'] or '00'}"
+    if not m["mon"]:
+        return clock
+    try:
+        day = dt.date(dt.date.today().year, _MONTHS.index(m["mon"].lower()) + 1, int(m["day"]))
+    except ValueError:
+        return said
+    return f"{day_month(day)} {clock}"
+
+
 # friendly_error's own messages: given to it again (the set-up's test does), they are left as they are, in English
 # or in the language shown
 _OWN = (N_("You have reached your Claude usage limit — it resets {when}."),
@@ -243,7 +303,7 @@ def friendly_error(message: str) -> str:
     if re.search(r"hit your [\w -]{0,20}limit|limit reached|usage limit|rate.?limit", low):
         said = re.search(r"\bresets\s+(.+?)[.\s]*$", m, flags=re.I)   # "You've hit your session limit · resets 10:40am (…)"
         if said:
-            return t("You have reached your Claude usage limit — it resets {when}.", when=said.group(1))
+            return t("You have reached your Claude usage limit — it resets {when}.", when=_said_when(said.group(1)))
         stamp = re.search(r"\|(\d{9,11})\b", m)          # "Claude AI usage limit reached|<epoch>"
         full = [w for w in usage_limits().values() if isinstance(w, dict) and w.get("used", 0) >= 0.99]
         reset = _reset_text(int(stamp.group(1)) if stamp else max((w.get("resets_at", 0) for w in full), default=0))

@@ -27,9 +27,10 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
     """Decode the first audio track of any media file to 16 kHz mono float32 in [-1, 1].
 
     Corrupt packets are skipped instead of aborting the whole decode, so a lecture with a
-    damaged second or two still transcribes.
+    damaged second or two still transcribes. The samples go straight into one array sized from
+    the track's length, and frames are resampled in groups of ~0.5 M samples (as faster-whisper
+    does): the same samples as frame by frame, with less work and no second copy of the lecture.
     """
-    chunks: list[np.ndarray] = []
     skipped = 0
     with av.open(str(path), mode="r") as container:
         streams = [s for s in container.streams if s.type == "audio"]
@@ -37,7 +38,24 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
             raise NoAudioTrack(t("This file has no audio track."))
         stream = streams[0]
         stream.thread_type = "AUTO"
+        seconds = (float(stream.duration * stream.time_base) if stream.duration and stream.time_base else
+                   float(container.duration) / av.time_base if container.duration else 0.0)
+        out = np.empty(int(seconds * SAMPLE_RATE) + SAMPLE_RATE, dtype=np.float32)
+        n = 0
+
+        def put(frames: list[av.AudioFrame]) -> None:
+            nonlocal out, n
+            for frame in frames:
+                pcm = frame.to_ndarray().reshape(-1)
+                if n + pcm.size > out.size:          # longer than its header said: a quarter more room
+                    bigger = np.empty(max(n + pcm.size, out.size + out.size // 4), dtype=np.float32)
+                    bigger[:n] = out[:n]
+                    out = bigger
+                out[n:n + pcm.size] = pcm
+                n += pcm.size
+
         resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+        fifo: Optional[av.AudioFifo] = av.AudioFifo()
         packets = 0
         for packet in container.demux(stream):
             packets += 1
@@ -50,20 +68,30 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
                 continue
             for frame in frames:
                 frame.pts = None
-                for out in resampler.resample(frame):
-                    chunks.append(out.to_ndarray().reshape(-1).copy())
-        for out in resampler.resample(None):
-            chunks.append(out.to_ndarray().reshape(-1).copy())
+                if fifo is not None:
+                    try:
+                        fifo.write(frame)
+                    except ValueError:               # the format changed mid-file: frame by frame from here on
+                        if fifo.samples:
+                            put(resampler.resample(fifo.read()))
+                        fifo = None
+                    else:
+                        if fifo.samples >= 500_000:
+                            put(resampler.resample(fifo.read()))
+                        continue
+                put(resampler.resample(frame))
+        if fifo is not None and fifo.samples:
+            put(resampler.resample(fifo.read()))
+        put(resampler.resample(None))
     if skipped:
         log.warning("Skipped %d of %d corrupt audio packets in %s", skipped, packets, Path(path).name)
-    if not chunks:
+    if not n:
         if skipped:
             raise ValueError(t("The audio could not be decoded (the file seems to be damaged)."))
         return np.zeros(0, dtype=np.float32)
-    pcm = np.concatenate(chunks)
-    audio = pcm.astype(np.float32)
-    audio *= 1.0 / 32768.0
-    return audio
+    out.resize(n, refcheck=False)                    # gives back the unused end (no copy)
+    out *= 1.0 / 32768.0
+    return out
 
 
 def media_duration(path: Union[str, Path]) -> float:

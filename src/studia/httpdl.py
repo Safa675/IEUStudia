@@ -20,6 +20,7 @@ import requests
 
 from .cancel import Cancelled, check
 from .i18n import t
+from .net import plain_session
 
 log = logging.getLogger("studia")
 ProgressFn = Callable[[int, int], None]  # (bytes_done, bytes_total)
@@ -132,7 +133,7 @@ def download(url: str, dest: Path, *, session: Optional[requests.Session] = None
              progress: Optional[ProgressFn] = None, cancel: Optional[threading.Event] = None,
              parts: int = 6) -> Path:
     """Download ``url`` to ``dest`` atomically (``.partN`` files make it resumable)."""
-    session = session or requests.Session()
+    session = session or plain_session()
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     final_url, total, ranges_ok, version = _probe(session, url, cancel=cancel)

@@ -13,6 +13,7 @@
   "Not synced yet": "Henüz eşitlenmedi",
   "Opening your library…": "Kitaplığın açılıyor…",
   "Still starting… the first start after Windows boots can take a little longer.": "Hâlâ açılıyor… Windows açıldıktan sonra ilk seferde biraz daha uzun sürebilir.",
+  "IEUStudia's window could not connect to the app. Try again; if it keeps happening, close IEUStudia and open it again.": "IEUStudia'nın penceresi uygulamaya bağlanamadı. Tekrar dene; yine olursa IEUStudia'yı kapatıp yeniden aç.",
   "Language": "Dil",
   "IEUStudia starts in the language Windows uses. Pick one here to keep it.": "IEUStudia, Windows hangi dildeyse o dilde açılır. Hep aynı dilde kalsın istersen buradan seç.",
   "As Windows ({name})": "Windows dili ({name})",

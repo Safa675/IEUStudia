@@ -14,6 +14,9 @@
   const ROLE = () => ({ required: t("Required"), prerequisite: t("Prerequisite"), optional: t("Optional"), alternative: t("Alternative") });
   const STATE = () => ({ verified: t("Verified"), partial: t("Partly on video"), supplement: t("Written supplement"), unverified: t("Not checked"), missing: t("Missing"), skipped: t("Not in this plan") });
   const HOW = () => ({ video: ["check", t("Taught in a checked video part")], optional: ["check", t("Only in an optional video")], supplement: ["book", t("Explained in the written supplement")], missing: ["x", t("Not covered")] });
+  // lectures of these weeks that the material sent to the AI had no room for (a long scope with many files)
+  const leftOut = (n) => t.n(n, "{n} lecture did not fit in what the AI read — topics only there may be missing.",
+    "{n} lectures did not fit in what the AI read — topics only there may be missing.");
   const ytAt = (vid, sec) => `https://www.youtube.com/watch?v=${encodeURIComponent(vid)}${sec > 0 ? `&t=${Math.floor(sec)}s` : ""}`;
   // captions with "[m:ss]" marks: each mark opens the video at that moment
   const stamped = (vid, text) => esc(text || "").replace(/\[(\d+(?::\d{2}){1,2})\]/g, (m, st) =>
@@ -110,6 +113,7 @@
     const r = p.result || {};
     const miss = (r.materials_missing || []).length;
     return `${miss ? `<div class="note-sm">${I("info", "sm")}<span>${t.n(miss, "{n} file of these weeks were not downloaded, so the pack could not use them.", "{n} files of these weeks were not downloaded, so the pack could not use them.")}</span></div>` : ""}
+      ${r.days_left_out ? `<div class="note-sm">${I("info", "sm")}<span>${leftOut(r.days_left_out)}</span></div>` : ""}
       <div class="card pl-prep md">${St.mdToHtml(r.markdown || "")}</div>`;
   }
   function progressHTML(p) {
@@ -195,6 +199,7 @@
       const based = t("Based on {files} and {lectures} of these weeks.", { files: t.n(r.materials_used || 0, "{n} file", "{n} files"), lectures: t.n(r.days_used || 0, "{n} lecture", "{n} lectures") });
       rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>${based} ${lost.length > 1 ? t("{a} and {b} — topics only there may be missing.", { a: lost[0], b: lost[1] }) : t("{a} — topics only there may be missing.", { a: lost[0] })}</span></div>`);
     }
+    if (r.days_left_out) rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>${leftOut(r.days_left_out)}</span></div>`);
     if (cp.over_budget) rows.push(`<div class="pl-cp-row over">${I("clock", "xs")}<span>${t("The required videos take {time} — {n} min more than the {budget} you planned.", { time: fmtMin(cp.required_minutes), n: cp.over_budget, budget: fmtMin(cp.budget) })}</span></div>`);
     const good = cp.level ? ["full", "mostly"].includes(cp.level) : cp.complete;
     return `<div class="pl-complete ${good ? "ok" : "no"}"><div class="pl-cp-head">${I(good ? "check-circle" : "alert", "sm")}<b>${esc(cp.headline)}</b></div>${rows.join("")}</div>`;

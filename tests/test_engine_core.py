@@ -1,5 +1,5 @@
 from studia.engine.core import (SR, Decoded, choose, clean_text, foreign_script, hallucination_score,
-                                       speech_units, text_language)
+                                       neutral_text, segment_language, speech_units, text_language)
 
 
 def d(lang, text, lp=-0.1, cr=1.2):
@@ -39,6 +39,44 @@ def test_choose_prefers_likelihood_and_handles_identical_text():
     assert choose([en2, tr2], 3.0, "en").lang == "tr"
     same_en, same_tr = d("en", "Pivot.", lp=-0.25), d("tr", "Pivot.", lp=-0.23)
     assert choose([same_en, same_tr], 2.0, "en").lang == "en"
+
+
+def test_same_words_in_both_languages_are_english_unless_turkish_letters_show():
+    vec_en, vec_tr = d("en", "Vectors, linearly independent.", lp=-0.25), d("tr", "Vectors, linearly independent.", lp=-0.2)
+    assert choose([vec_en, vec_tr], 2.0, "tr").lang == "en"              # even in a Turkish lecture
+    digits_en, digits_tr = d("en", "2, 1, 0.", lp=-0.2), d("tr", "2, 1, 0.", lp=-0.3)
+    assert choose([digits_en, digits_tr], 2.0, "tr").lang == "en"
+    # a word or two: the lecture's main language ("Peki." and "Mesela." are known Turkish words)
+    pivot_en, pivot_tr = d("en", "Pivot.", lp=-0.25), d("tr", "Pivot.", lp=-0.23)
+    assert choose([pivot_en, pivot_tr], 2.0, "tr").lang == "tr" and choose([pivot_en, pivot_tr], 2.0, "en").lang == "en"
+    for word in ("Peki.", "Mesela.", "Aynen."):
+        assert choose([d("en", word, lp=-0.2), d("tr", word, lp=-0.3)], 1.5, "en").lang == "tr"
+    # Turkish letters, but the classifier is unsure: the lecture's main language
+    godel_en, godel_tr = d("en", "Gödel and a proof.", lp=-0.2), d("tr", "Gödel and a proof.", lp=-0.3)
+    assert text_language(godel_en.text) is None
+    assert choose([godel_en, godel_tr], 2.0, "tr").lang == "tr"
+    assert choose([godel_en, godel_tr], 2.0, "en").lang == "en"
+    # the classifier is sure: its language, whatever the lecture's
+    sure_en, sure_tr = d("en", "Bu konu sınavda.", lp=-0.2), d("tr", "Bu konu sınavda.", lp=-0.3)
+    assert choose([sure_en, sure_tr], 2.0, "en").lang == "tr"
+
+
+def test_the_language_id_prior_weighs_0_2():
+    en, tr = d("en", "So we take the derivative.", lp=-0.30), d("tr", "Şimdi türevini alıyoruz.", lp=-0.38)
+    assert choose([en, tr], 3.0, "en").lang == "en"                       # ahead by 0.08 + 0.015
+    assert choose([en, tr], 3.0, "en", {"en": 0.2, "tr": 0.8}).lang == "tr"   # 0.2 x (0.8 - 0.2) = 0.12 more
+    assert choose([en, tr], 3.0, "en", {"en": 0.3, "tr": 0.7}).lang == "en"   # 0.08: not enough
+
+
+def test_a_passage_of_digits_and_short_letters_is_tagged_english():
+    assert segment_language(d("tr", "2 1 0 1 0 0.")) == "en"
+    assert segment_language(d("tr", "C1, A1.")) == "en"
+    assert segment_language(d("tr", "Bir, iki.")) == "tr"
+    assert segment_language(d("en", "Tamam arkadaşlar, şimdi bir örnek yapalım.")) == "tr"
+    assert neutral_text("x 2, y 3") and not neutral_text("") and not neutral_text("x eşittir 2")
+    assert not neutral_text("Ne o?") and segment_language(d("tr", "Ne o?")) == "tr"      # short words show a language
+    assert not neutral_text("O.") and not neutral_text("A-b.") and not neutral_text("1'i")   # letters alone, a suffix
+    assert not neutral_text("[unclear]") and not neutral_text("...")
 
 
 def test_clean_text_collapses_loops():

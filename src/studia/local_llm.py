@@ -2,20 +2,25 @@
 the speech model, so nothing else is installed. Good enough for short study notes, a weekly summary and simple
 questions about a lecture; study plans and prep packs need ChatGPT or Claude.
 
-Long transcripts are summarised in parts first (the small model keeps a few thousand tokens in view); a chat gets, for
-each question, the lecture passages that match it. On an NVIDIA GPU it writes ~40 words/s; on the processor a few words
-per second, so notes for a lecture take minutes there.
+Long transcripts are summarised in parts first (the small model keeps a few thousand tokens in view); the summary is
+kept for the other kinds of notes of the same lecture. A chat gets, for each question, the lecture passages that match
+it. On an NVIDIA GPU it writes ~40 words/s; on the processor a few words per second, so notes for a lecture take minutes
+there.
 """
 
 from __future__ import annotations
 
+import collections
 import contextlib
+import hashlib
 import itertools
+import json
 import logging
 import os
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .cancel import Cancelled
@@ -24,7 +29,18 @@ from .i18n import t
 log = logging.getLogger("studia")
 IDLE_UNLOAD_S = 600
 _lock = threading.Lock()
-_loaded: dict[str, Any] = {}          # key -> {"gen", "tok", "used", "device"}
+_loaded: dict[str, Any] = {}          # key -> {"gen", "tok", "used", "device", "room", "answer"}
+# On the graphics card every token of the prompt and of the answer takes memory. Measured on an RTX 4070 Laptop (8 GB):
+# the model loaded (MiB) and what each token adds (MiB). The 4B model at the old 6,000-token prompt filled the card and
+# wrote ~1 token/s; with 1,840 + 1,500 tokens it slowed to 11 tokens/s (Windows lends the processor's memory), with
+# 1,420 + 1,500 it wrote 25/s; at 3,600 + 200 it ran out of memory.
+GPU_MEMORY = {"qwen3-1.7b": (2200, 0.55), "qwen3-4b": (5200, 0.85)}
+GPU_SPARE_MB = 600                    # the screen, the app's window and other programs use the card too
+MAX_GPU_BUDGET, MAX_GPU_ANSWER = 6000, 3000
+MIN_GPU_BUDGET = 1000                 # out of graphics memory with less: the processor
+CPU_BUDGET, CPU_ANSWER = 2500, 1200   # the processor is slow with long prompts and writes a few words per second
+# frees the graphics card before the model loads there: True if it freed something (jobs.py: an idle speech model)
+make_room: Optional[Callable[[], bool]] = None
 
 
 def _preset(key: str) -> dict[str, Any]:
@@ -33,13 +49,26 @@ def _preset(key: str) -> dict[str, Any]:
     return LLM_PRESETS[key]
 
 
-def _load(key: str) -> dict[str, Any]:
+def _make_room() -> bool:
+    try:
+        return bool(make_room and make_room())
+    except Exception:  # noqa: BLE001 - only a chance to free memory
+        log.warning("Freeing the graphics card failed", exc_info=True)
+        return False
+
+
+def _out_of_memory(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _load(key: str, cpu: bool = False) -> dict[str, Any]:
+    """The model, loaded once. ``cpu``: (again) on the processor, after the graphics card ran out of memory."""
     from .components import llm_dir, llm_ready
     from .engine.models import cuda_compute_type, resolve_device, setup_cuda_dlls
 
     with _lock:
         hit = _loaded.get(key)
-        if hit:
+        if hit and not (cpu and hit["device"] == "cuda"):
             hit["used"] = time.monotonic()
             return hit
         if not llm_ready(key):
@@ -48,26 +77,67 @@ def _load(key: str) -> dict[str, Any]:
         import ctranslate2
         from tokenizers import Tokenizer
 
-        device, _ = resolve_device("auto")
-        ctype = cuda_compute_type(("int8_float16", "int8_float32", "int8")) if device == "cuda" else "int8"
+        _loaded.clear()                      # one model at a time (also frees the one on the graphics card)
+        device = "cpu" if cpu else resolve_device("auto")[0]
         threads = max(1, (os.cpu_count() or 4) // 2)
         started = time.monotonic()
-        gen = ctranslate2.Generator(str(llm_dir(key)), device=device, compute_type=ctype,
-                                    intra_threads=0 if device == "cuda" else threads)
+
+        def generator(device: str) -> Any:
+            ctype = cuda_compute_type(("int8_float16", "int8_float32", "int8")) if device == "cuda" else "int8"
+            return ctranslate2.Generator(str(llm_dir(key)), device=device, compute_type=ctype,
+                                         intra_threads=0 if device == "cuda" else threads)
+
+        if device == "cuda":
+            _make_room()
+        try:
+            gen = generator(device)
+        except RuntimeError as exc:
+            if device != "cuda" or not _out_of_memory(exc):
+                raise
+            log.warning("The offline AI model does not fit on the graphics card; it runs on the processor (%s)", exc)
+            device = "cpu"
+            gen = generator(device)
         tok = Tokenizer.from_file(str(llm_dir(key) / "tokenizer.json"))
         log.info("Offline AI model %s loaded on %s in %.1fs", key, device, time.monotonic() - started)
-        _loaded.clear()                      # one model at a time
-        _loaded[key] = {"gen": gen, "tok": tok, "used": time.monotonic(), "device": device}
-        threading.Thread(target=_idle_unloader, args=(key,), daemon=True).start()
-        return _loaded[key]
+        hit = {"gen": gen, "tok": tok, "used": time.monotonic(), "device": device}
+        hit["room"], hit["answer"] = _gpu_room(key) if device == "cuda" else (CPU_BUDGET, CPU_ANSWER)
+        _loaded[key] = hit
+        threading.Thread(target=_idle_unloader, args=(key, hit), daemon=True).start()
+        return hit
 
 
-def _idle_unloader(key: str) -> None:
+def _less_memory(key: str) -> bool:
+    """After the graphics card ran out of memory: free the idle speech model, else halve the prompt, else move to the
+    processor (the transcriber halves its batches the same way). False if nothing is left to try."""
+    if _make_room():
+        return True
+    with _lock:
+        hit = _loaded.get(key)
+        if hit is None or hit["device"] != "cuda":
+            return False
+        if hit["room"] // 2 >= MIN_GPU_BUDGET:
+            hit["room"] //= 2
+            return True
+    _load(key, cpu=True)
+    return True
+
+
+def _with_less_memory(key: str, run: Callable[[], Any]) -> Any:
+    """run(); when the graphics card runs out of memory, again with less (see _less_memory)."""
+    while True:
+        try:
+            return run()
+        except RuntimeError as exc:
+            if not _out_of_memory(exc) or not _less_memory(key):
+                raise
+            log.warning("The offline AI ran out of graphics memory; trying again with less (%s)", exc)
+
+
+def _idle_unloader(key: str, hit: dict[str, Any]) -> None:
     while True:
         time.sleep(60)
         with _lock:
-            hit = _loaded.get(key)
-            if hit is None:
+            if _loaded.get(key) is not hit:      # unloaded, or loaded again (e.g. on the processor)
                 return
             if time.monotonic() - hit["used"] > IDLE_UNLOAD_S:
                 _loaded.pop(key, None)
@@ -134,9 +204,34 @@ def _device(key: str) -> str:
     return device_of(key) or resolve_device("auto")[0]
 
 
+def _sizes(key: str) -> tuple[int, int]:
+    with _lock:
+        hit = _loaded.get(key)
+    if hit:
+        return hit["room"], hit["answer"]
+    return _gpu_room(key) if _device(key) == "cuda" else (CPU_BUDGET, CPU_ANSWER)
+
+
 def budget(key: str) -> int:
-    """How many input tokens one request may carry (the processor is slow with long prompts)."""
-    return 6000 if _device(key) == "cuda" else 2500
+    """How many input tokens one request may carry (less after the graphics card ran out of memory)."""
+    return _sizes(key)[0]
+
+
+def answer_tokens(key: str) -> int:
+    """How long an answer may get (study notes are asked to end well before it)."""
+    return _sizes(key)[1]
+
+
+def _gpu_room(key: str) -> tuple[int, int]:
+    """(prompt, answer) tokens that fit on this graphics card next to the model: half for the answer, up to 3,000 (an
+    8 GB card: 6,000 + 3,000 for 1.7B, 1,400 + 1,400 for 4B)."""
+    from .engine.models import detect_gpu
+
+    loaded_mb, per_token = GPU_MEMORY.get(key, GPU_MEMORY["qwen3-4b"])
+    vram = detect_gpu(quick=True).get("vram_mb") or 8192
+    fits = int((vram - loaded_mb - GPU_SPARE_MB) / per_token)
+    answer = max(MIN_GPU_BUDGET, min(MAX_GPU_ANSWER, fits // 2)) // 100 * 100
+    return max(MIN_GPU_BUDGET, min(MAX_GPU_BUDGET, fits - answer)) // 100 * 100, answer
 
 
 def _chunks(text: str, key: str, size: int) -> list[str]:
@@ -156,32 +251,142 @@ def _chunks(text: str, key: str, size: int) -> list[str]:
 ENGLISH = "Write in English (keep technical terms as they are)."
 
 
+CONDENSE = ("You condense lecture transcripts into dense, factual bullet notes: every definition, formula, example and "
+            "announcement (quizzes, exams, homework). At most about {words} words. " + ENGLISH)
+CONDENSE_V = 2                # the condensing above: notes condensed before it changed are not reused
+TASK_ROOM = 600               # tokens kept for the task next to the condensed notes (the study notes' takes ~500)
+PASS_TOKENS, PASS_MIN = 450, 150                  # what one part is condensed to: at most, at least
+TOKENS_PER_WORD = 1.8         # the model's notes (Markdown, LaTeX): 1,200 tokens were 659 words
+# answer tokens per word asked for, so that the answer ends well before its cap: the 1.7B model writes study notes about
+# twice as long as asked (asked 300 words: cut off at 1,200 tokens; 250: 488 words, complete); the 4B one keeps to it
+ASKED_WORD_TOKENS = {"qwen3-1.7b": 4.8, "qwen3-4b": 3.3}
+LENGTH = ("Keep the whole answer under about {words} words, with short sections, so that it ends complete. Don't "
+          "mention the word count.")
+CACHE_FILES = 200             # condensed lectures kept in the cache folder (a few KB each)
+_cache_lock = threading.Lock()
+_condensed: "collections.OrderedDict[str, dict[str, Any]]" = collections.OrderedDict()   # cache file -> entry
+
+
+def _words(tokens: float) -> int:
+    return max(50, int(tokens / TOKENS_PER_WORD) // 10 * 10)
+
+
+def _cache_file(text: str, key: str, limit: int) -> Path:
+    from .paths import app_dir
+
+    digest = hashlib.sha256(f"{CONDENSE_V}\n{key}\n{limit}\n{text}".encode("utf-8")).hexdigest()[:32]
+    return app_dir() / "cache" / "llm" / f"{digest}.json"
+
+
+def _cached(path: Path) -> Optional[dict[str, Any]]:
+    """{"text": the condensed text, "tasks": the kinds of notes written from it} or None."""
+    with _cache_lock:
+        entry = _condensed.get(str(path))
+    if entry is not None:
+        return entry
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not (isinstance(entry, dict) and isinstance(entry.get("text"), str) and isinstance(entry.get("tasks"), list)):
+        return None
+    _remember(path, entry, save=False)
+    return entry
+
+
+def _remember(path: Path, entry: dict[str, Any], save: bool = True) -> None:
+    with _cache_lock:
+        _condensed[str(path)] = entry
+        _condensed.move_to_end(str(path))
+        while len(_condensed) > 8:
+            _condensed.popitem(last=False)
+    if not save:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+        kept = sorted(path.parent.glob("*.json"), key=lambda p: p.stat().st_mtime)
+        for old in kept[:-CACHE_FILES]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        log.warning("The condensed lecture could not be kept", exc_info=True)
+
+
+def _condense(text: str, key: str, limit: int, cancel: Optional[threading.Event],
+              on_text: Optional[Callable[[str], None]], usage: dict[str, int]) -> str:
+    """The text condensed part by part until it fits next to the task (each part asked for a length that leaves room
+    for all of them; a very long day goes round twice)."""
+    room = max(limit // 2, limit - TASK_ROOM)
+    size = count_tokens(text, key)
+    while size > room:
+        parts = _chunks(text, key, limit - 400)
+        per = max(PASS_MIN, min(PASS_TOKENS, room // len(parts) - 10))
+        cap = per * 5 // 4
+        notes = []
+        for i, part in enumerate(parts, 1):
+            if on_text:
+                on_text(t("*Reading part {i} of {n}…*", i=i, n=len(parts)))
+            r = generate([{"role": "system", "content": CONDENSE.format(words=_words(per))},
+                          {"role": "user", "content": part}], key, cap, None, cancel)
+            note = r["text"]
+            if r["usage"]["output_tokens"] >= cap and "\n" in note:
+                note = note.rsplit("\n", 1)[0]               # cut off: without its unfinished line
+            notes.append(note)
+            for k in usage:
+                usage[k] += r["usage"][k]
+        shorter = "Condensed notes of the lecture, in order:\n\n" + "\n\n".join(notes)
+        n = count_tokens(shorter, key)
+        if n >= size:
+            break
+        text, size = shorter, n
+    return text
+
+
 def one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threading.Event] = None,
-             on_text: Optional[Callable[[str], None]] = None, max_tokens: int = 1200) -> dict[str, Any]:
-    """One request; a text longer than the model's comfortable size is condensed part by part first."""
+             on_text: Optional[Callable[[str], None]] = None, max_tokens: Optional[int] = None) -> dict[str, Any]:
+    """One request; a text longer than the model's comfortable size is condensed part by part first. The condensed text
+    is kept (in memory and the cache folder) for the other kinds of notes of the same lecture; the same kind asked for
+    again ("Generate again") condenses afresh. The answer is asked to end well before its cap and says when it was cut
+    off anyway."""
+    return _with_less_memory(key, lambda: _one_shot(system_prompt, text, key, cancel, on_text, max_tokens))
+
+
+def _one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threading.Event],
+              on_text: Optional[Callable[[str], None]], max_tokens: Optional[int]) -> dict[str, Any]:
     from .engine.core import processor_for_ai
 
+    with contextlib.suppress(Exception):     # loaded first: on a full card it loads on the processor, with its sizes
+        _load(key)                           # (an error shows when it writes, as before)
+    gpu = _device(key) == "cuda"
+    cap = max_tokens or answer_tokens(key)
+    words = max(50, int(cap / ASKED_WORD_TOKENS.get(key, 4.8)) // 10 * 10)
+    system = f"{system_prompt}\n{ENGLISH}\n{LENGTH.format(words=words)}"
+    task = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()[:16]
+    kept: Optional[tuple[Path, dict[str, Any]]] = None       # the cache file and its condensed text
     # on the processor, held from the first part to the answer: generate() lets go after each part, and a waiting
     # transcription would start a batch in between (generate() holds it as well: the count nests)
-    with processor_for_ai() if _device(key) != "cuda" else contextlib.nullcontext():
+    with processor_for_ai() if not gpu else contextlib.nullcontext():
         limit = budget(key)
         usage = {"input_tokens": 0, "output_tokens": 0}
-        if count_tokens(text, key) > limit:
-            notes = []
-            parts = _chunks(text, key, limit - 400)
-            for i, part in enumerate(parts, 1):
-                if on_text:
-                    on_text(t("*Reading part {i} of {n}…*", i=i, n=len(parts)))
-                r = generate([{"role": "system", "content": "You condense lecture transcripts into dense, factual "
-                                                            "bullet notes: every definition, formula, example and "
-                                                            "announcement (quizzes, exams, homework). " + ENGLISH},
-                              {"role": "user", "content": part}], key, 500, None, cancel)
-                notes.append(r["text"])
-                for k in usage:
-                    usage[k] += r["usage"][k]
-            text = "Condensed notes of the lecture, in order:\n\n" + "\n\n".join(notes)
-        r = generate([{"role": "system", "content": f"{system_prompt}\n{ENGLISH}"},
-                      {"role": "user", "content": text}], key, max_tokens, on_text, cancel)
+        if count_tokens(system, key) + count_tokens(text, key) > limit:
+            path = _cache_file(text, key, limit)
+            entry = _cached(path)
+            if entry is None or task in entry["tasks"]:      # the first time, or this kind again: condensed afresh
+                entry = {"text": _condense(text, key, limit, cancel, on_text, usage), "tasks": []}
+                _remember(path, entry)
+            kept = path, entry
+            text = entry["text"]
+        r = generate([{"role": "system", "content": system}, {"role": "user", "content": text}],
+                     key, cap, on_text, cancel)
+    if r["usage"]["output_tokens"] >= cap:
+        r["text"] += "\n\n" + t("*(Cut off here: the offline model reached its length limit.)*")
+        if on_text:
+            on_text(r["text"])
+    if kept:
+        path, entry = kept
+        _remember(path, {"text": entry["text"], "tasks": [x for x in entry["tasks"] if x != task][-19:] + [task]})
     for k in usage:
         r["usage"][k] += usage[k]
     return r
@@ -302,7 +507,9 @@ class LocalSession:
         used = count_tokens(fixed, k) + sum(count_tokens(m["content"], k) for m in self._recent())
         room = max(300, budget(k) - used - count_tokens(question, k) - 50)
         recent = " ".join(m["content"] for m in self.history[-2:] if m["role"] == "user")    # follow-up questions
-        lectures = lecture_excerpts(self._lectures, f"{question} {recent}", k, int(room * (0.75 if extra else 1.0)))
+        # the other passages are usually short: the lectures give up only what they need, at most a quarter
+        share = room - min(count_tokens(extra, k), room // 4) if extra else room
+        lectures = lecture_excerpts(self._lectures, f"{question} {recent}", k, share)
         more = _fit(extra, k, room - count_tokens(lectures, k)) if extra else ""
         return (fixed + (f"\n\n=== LECTURE PASSAGES ===\n{lectures}" if lectures else "")
                 + (f"\n\n=== OTHER MATCHING PASSAGES ===\n{more}" if more.strip() else ""))
@@ -312,12 +519,15 @@ class LocalSession:
         texts = [b["text"] for b in content if b.get("type") == "text" and (b.get("text") or "").strip()]
         question = texts[-1].strip() if texts else ""
         extra = "\n\n".join(texts[:-1])           # matching passages of course files and of other lectures
-        with self._turn:
+        def turn() -> dict[str, Any]:
             msgs = [{"role": "system", "content": self._system(question, extra)}]
             msgs += self._recent()
             msgs.append({"role": "user", "content": question})
+            return generate(msgs, self.key_name, 700, on_text, stop)
+
+        with self._turn:
             try:
-                r = generate(msgs, self.key_name, 700, on_text, stop)
+                r = _with_less_memory(self.key_name, turn)
                 stopped = False
             except Cancelled:
                 return {"text": "", "usage": {}, "stopped": True}

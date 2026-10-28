@@ -17,14 +17,56 @@ from . import views
 from .config import Settings
 
 
+def _course(lib: Any, settings: Settings, course: Any) -> dict[str, Any]:
+    """The part of views.course_detail that assessment_events reads (the same weeks, dates and class days), without
+    the heads-ups from the lectures: those read every transcript, and the plan comes from the announcements alone."""
+    from .alerts import assessment_plan
+    from .materials import unit_week, week_starts
+
+    info = lib.course_info(course.id)
+    ov, syl = info.get("overview") or {}, info.get("syllabus") or {}
+    plan = assessment_plan(lib.announcements(course.id))
+    units = lib.units(course.id)
+    first = week_starts(units)
+    if first is None and course.term:      # no dates in this plan: the term's calendar from the other courses
+        start = lib.term_start(course.term)
+        if start:
+            first = dt.date.fromisoformat(start)
+            first -= dt.timedelta(days=first.weekday())
+
+    def week(n: int) -> tuple[str, str]:
+        start = first + dt.timedelta(days=7 * (n - 1)) if first else None
+        return (start.isoformat(), (start + dt.timedelta(days=6)).isoformat()) if start else ("", "")
+
+    tr_topics = {w["no"]: w["topic"] for w in ov.get("weeks", [])}
+    en_weeks = {w["no"]: w for w in syl.get("weeks", [])}
+    dates = {n: week(n) for n in [*tr_topics, *en_weeks, *(e["week"] for e in plan if e.get("week") and first)]}
+    for u in units:                        # a dated unit gives its week's dates
+        n = unit_week(u, first)
+        if n is not None:
+            dates.setdefault(n, week(n))
+            if u.get("start_date"):
+                dates[n] = (u["start_date"], u.get("end_date") or dates[n][1])
+    times: dict[int, str] = {}
+    if first and any(e["kind"] == "quiz" for e in plan):
+        cv = views.course_view(course, lib.recordings(course.id), settings, {}, {}, set())
+        times = views.class_times(cv["days"], dt.date.today())
+    weeks = []
+    for n in sorted(dates):
+        topic_en, topic_tr = (en_weeks.get(n) or {}).get("subject", ""), tr_topics.get(n, "")
+        exam = next((x for x in (topic_en, topic_tr) if views.exam_topic(x)), "")
+        start, end = dates[n]
+        weeks.append({"no": n, "start": start, "end": end, "topic_en": topic_en, "topic_tr": topic_tr,
+                      "exam": bool(exam), "exam_label": exam, "classes": views.week_classes(start, end, times)})
+    return {"code": course.code, "outcomes_en": syl.get("outcomes", []), "weeks": weeks, "alerts": {"plan": plan}}
+
+
 def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None) -> list[dict[str, Any]]:
     """The assessments still ahead (this week included), soonest first."""
     since = (today or dt.date.today()).isoformat()
     out: list[dict[str, Any]] = []
     for c in lib.courses():
-        d = views.course_detail(lib, settings, c.id)
-        if d is None:
-            continue
+        d = _course(lib, settings, c)
         weeks = {w["no"]: w for w in d["weeks"]}
         covered: set[int] = set()
         for e in (d.get("alerts") or {}).get("plan") or []:

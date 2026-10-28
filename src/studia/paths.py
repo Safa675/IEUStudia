@@ -31,6 +31,19 @@ def _ensure_dir(path: Path) -> Path:
     return path
 
 
+_made: set[Path] = set()      # data folders made (or found) already
+
+
+def _data_dir(path: Path) -> Path:
+    """:func:`_ensure_dir`, once per folder: the data folders are looked up all the time (a transcript's path for
+    each lecture of a course), and a mkdir costs a failing CreateDirectory plus a stat each time. Whatever writes a
+    file still makes its own parent folder."""
+    if path not in _made:
+        _ensure_dir(path)
+        _made.add(path)
+    return path
+
+
 def _home_override() -> Path | None:
     value = os.environ.get(HOME_ENV, "").strip()
     return Path(value).expanduser() if value else None
@@ -87,6 +100,8 @@ def migrate_legacy_data() -> str:
         return "moved"
     except OSError as exc:            # e.g. the old app is still running: keep using its folder for now
         return f"failed: {exc}"
+    finally:
+        _made.clear()                 # folders were moved or removed: make them again where needed
 
 
 @functools.lru_cache(maxsize=1)
@@ -99,8 +114,8 @@ def app_dir() -> Path:
     """``%LOCALAPPDATA%\\IEUStudia`` (or ``$STUDIA_HOME``; the folder of an earlier name until it is moved)."""
     override = _home_override()
     if override is not None:
-        return _ensure_dir(override)
-    return _ensure_dir(_legacy_in_use() or _local_root() / APP_NAME)
+        return _data_dir(override)
+    return _data_dir(_legacy_in_use() or _local_root() / APP_NAME)
 
 
 # Each IEULearn account ("profile") has its own library, transcripts, settings and stored password. The first one
@@ -116,7 +131,7 @@ def set_profile_dir(rel: str = "") -> None:
 
 def profile_dir() -> Path:
     """The active account's data folder."""
-    return _ensure_dir(app_dir() / _profile_rel) if _profile_rel else app_dir()
+    return _data_dir(app_dir() / _profile_rel) if _profile_rel else app_dir()
 
 
 def settings_path() -> Path:
@@ -133,7 +148,7 @@ def db_path() -> Path:
 
 def transcripts_dir() -> Path:
     """Canonical ``<delivery_id>.json`` transcript per recording."""
-    return _ensure_dir(profile_dir() / "transcripts")
+    return _data_dir(profile_dir() / "transcripts")
 
 
 def audio_cache_dir() -> Path:

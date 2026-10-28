@@ -6,7 +6,7 @@ from studia import store
 from studia.config import Settings
 from studia.coursesite import Announcement, Resource, Unit
 from studia.domain import Course, Recording, Segment, Transcript
-from studia.knowledge import course_brief, retrieve
+from studia.knowledge import _search_words, course_brief, retrieve
 from studia.library import Library
 
 
@@ -50,6 +50,41 @@ def test_retrieve_finds_files_and_other_lectures(tmp_path):
     text, sources = retrieve(lib, "c", "How does Bayes theorem work?", skip_days=[recs[1].day_key])   # already in the chat
     assert all(s["kind"] == "file" for s in sources)
     assert retrieve(lib, "c", "what is the the of") == ("", [])
+
+
+def _lecture(lib, delivery_id, day, segs):
+    r = Recording(delivery_id=delivery_id, course_id="c", folder_id="f", folder_path="", name="n",
+                  start=dt.datetime(2026, 10, day, 9, 0), duration_s=3000, viewer_url="v")
+    lib.merge_recordings("c", [r], first_sync=False)
+    t = Transcript(delivery_id=r.delivery_id, segments=[Segment(a, b, text, lang, 0.9) for a, b, text, lang in segs],
+                   duration_s=3000, speech_s=60, language_seconds={"en": 60}, model="m", device="cpu",
+                   engine_version="t", created_at="x")
+    lib.save_transcript(t, store.save_transcript(t))
+    return r
+
+
+def test_retrieve_sends_paragraphs_with_the_most_words_of_the_question(tmp_path):
+    lib, _ = _lib(tmp_path)
+    _lecture(lib, "m1", 7, [(0, 2, "This matrix is M.", "en"), (2.2, 4, "Matrix products.", "en"),
+                            (60, 64, "So how do we find the inverse?", "en"),
+                            (64.5, 70, "Write the matrix next to the identity", "en"),
+                            (70.5, 75, "and row reduce both of them.", "en")])
+    text, sources = retrieve(lib, "c", "How do we find the inverse of a matrix?")
+    first = text.split("\n\n")[1]
+    assert first == ("[lecture Wed 07 Oct 09:00 recording, 01:00] So how do we find the inverse? Write the matrix next "
+                     "to the identity and row reduce both of them.")          # the whole paragraph, not a segment
+    assert sources[0] == {"kind": "lecture", "day_key": sources[0]["day_key"], "delivery_id": "m1", "t": 60.0}
+    assert "This matrix is M. Matrix products." in text                         # the second passage of that day
+
+
+def test_retrieve_finds_turkish_words_with_other_endings(tmp_path):
+    lib, _ = _lib(tmp_path)
+    _lecture(lib, "t1", 8, [(0, 5, "Sınava girmeden önce determinant konusunu tekrar edin.", "tr")])
+    text, sources = retrieve(lib, "c", "Sınavda ne çıkar?")                  # "sınavda" finds "sınava"
+    assert "Sınava girmeden önce determinant" in text and sources[0]["delivery_id"] == "t1"
+    assert _search_words(lib, "Determinantın özellikleri nelerdir?") == ["deter", "özell"]
+    assert _search_words(lib, "Nasil hesaplanir?") == ["hesap"]                 # also typed without Turkish letters
+    assert _search_words(lib, "What are the properties of determinants?") == ["properties", "determinants"]
 
 
 def test_weekly_digest(tmp_path):

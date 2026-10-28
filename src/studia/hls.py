@@ -85,6 +85,18 @@ def media_playlist(session: requests.Session, master_url: str, prefer: str = "au
     return r
 
 
+def has_audio_track(header: bytes) -> Optional[bool]:
+    """Whether an MP4 header (``ftyp`` + ``moov``, or an fMP4 init segment) lists a sound track; None if it can't be
+    read. PyAV reads the track list from the header alone, without any media data."""
+    import av
+
+    try:
+        with av.open(io.BytesIO(header), mode="r") as c:
+            return bool(c.streams.audio)
+    except av.error.FFmpegError:
+        return None
+
+
 def audio_peak_dbfs(session: requests.Session, master_url: str, n_segments: int = 12) -> Optional[float]:
     """Loudest sample (dBFS) in ~2 minutes from the middle of an HLS stream; None if it has no audio."""
     import av

@@ -203,7 +203,7 @@ class ChatService:
             raise RuntimeError(t("Unknown course."))
         done = self.lib.transcribed_ids()
         keys = list(dict.fromkeys(r.day_key for r in self.lib.recordings(course_id) if r.delivery_id in done))
-        days = []
+        days, per = [], ai.chars_per_token()
         for d in self._load_days(course_id, keys):
             if d is None:
                 continue
@@ -221,7 +221,7 @@ class ChatService:
                 "stars": sum(1 for p in parts for para in p.paragraphs if para.star),
                 "slides": sum(len({s.index for s in store.load_slides(r.delivery_id)}) for r in recs
                               if r.delivery_id in trans),
-                "tokens": ai.text_tokens(full), "hl_tokens": ai.text_tokens(hl),
+                "tokens": ai.text_tokens(full, per), "hl_tokens": ai.text_tokens(hl, per),
                 "start": start.isoformat(),
             })
         days.sort(key=lambda x: x["start"], reverse=True)
@@ -300,12 +300,15 @@ class ChatService:
                 self.lib.delete_chat(c["id"])          # started but never used
         return out
 
-    def view(self, chat_id: str) -> dict[str, Any]:
-        chat = next((c for c in self.lib.chats() if c["id"] == chat_id), None)
+    def view(self, chat_id: str, ctx: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """The chat as the page shows it. ``ctx``: its context, when the caller just built it."""
+        chat = next(iter(self.lib.chats(chat_id)), None)
         if chat is None:
             raise RuntimeError(t("This chat no longer exists."))
         scope = chat.get("scope") or {}
-        ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"), bool(scope.get("slides")))
+        if ctx is None:
+            ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"),
+                               bool(scope.get("slides")))
         course = self.lib.get_course(chat["course_id"])
         messages = [{"seq": m["seq"], "role": m["role"], "text": m["text"], "status": m["status"],
                      "usage": m.get("usage") or {}, "created_at": m["created_at"]} for m in self.lib.chat_messages(chat_id)]
@@ -328,7 +331,8 @@ class ChatService:
         chat_id = uuid.uuid4().hex[:12]
         self.lib.create_chat(chat_id, course_id, {"days": days, "focus": focus, "slides": bool(slides and ctx["images"])},
                              model)
-        return self.view(chat_id)
+        # the same material as saved; slides asked for but none found: saved without them, so the view builds it again
+        return self.view(chat_id, ctx if not slides or ctx["images"] else None)
 
     def update(self, chat_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         if self.lib.get_chat(chat_id) is None:

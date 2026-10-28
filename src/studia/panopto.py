@@ -6,6 +6,7 @@ import dataclasses as dc
 import datetime as dt
 import logging
 import re
+import struct
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -78,6 +79,36 @@ def _query(folder_id: str, page: int) -> dict[str, Any]:
         "startDate": None, "endDate": None, "folderID": folder_id, "bookmarked": False, "getFolderData": True,
         "isSharedWithMe": False, "isSubscriptionsPage": False, "includeArchived": True,
         "includeArchivedStateCount": False, "sessionListOnlyArchived": False, "includePlaylists": True}}
+
+
+def _mp4_header(session: requests.Session, url: str, limit: int = 64 << 20) -> Optional[bytes]:
+    """The ``ftyp`` and ``moov`` boxes of an MP4 file on the server, through range reads. Panopto's podcasts keep
+    the ``moov`` (the track list) at the end, after the media data, so the top-level boxes are walked to find it."""
+    final, total, ranges_ok, _ = httpdl._probe(session, url)
+    if not ranges_ok or total <= 0:
+        return None
+    head = hls.get_range(session, final, 0, min(total, 65536) - 1)
+    ftyp, pos = b"", 0
+    for _ in range(32):
+        if pos + 16 > total:
+            return None
+        box = head[pos:pos + 16] if pos + 16 <= len(head) else hls.get_range(session, final, pos, pos + 15)
+        size, typ = struct.unpack(">I4s", box[:8])
+        if size == 1:
+            size = struct.unpack(">Q", box[8:16])[0]
+        elif size == 0:
+            size = total - pos
+        if size < 8:
+            return None
+        if typ == b"ftyp":
+            ftyp = head[pos:pos + size] if pos + size <= len(head) else hls.get_range(session, final, pos, pos + size - 1)
+        elif typ == b"moov":
+            if size > limit:
+                return None
+            moov = head[pos:pos + size] if pos + size <= len(head) else hls.get_range(session, final, pos, pos + size - 1)
+            return ftyp + moov
+        pos += size
+    return None
 
 
 class Panopto:
@@ -161,12 +192,31 @@ class Panopto:
             raise NotReady(t("Panopto is still processing this recording. Try again later."))
         return out
 
-    def screen_source(self, info: dict[str, Any]) -> Optional[tuple[MediaSource, float]]:
-        """The screen/slides video (HLS) and its start offset in seconds, if the recording has one."""
-        for st in info["Delivery"].get("Streams") or []:
-            if (st.get("Tag") or "").upper() == "SCREEN" and st.get("StreamUrl"):
-                return MediaSource("hls", st["StreamUrl"]), float(st.get("RelativeStart") or 0.0)
-        return None
+    def screen_sources(self, info: dict[str, Any]) -> list[tuple[MediaSource, float]]:
+        """The screen/slides videos (HLS) and their start offsets in seconds, in time order. Panopto makes one per
+        stretch of screen sharing: a lecturer who stops and starts sharing again gives several."""
+        out = [(MediaSource("hls", st["StreamUrl"]), float(st.get("RelativeStart") or 0.0))
+               for st in info["Delivery"].get("Streams") or []
+               if (st.get("Tag") or "").upper() == "SCREEN" and st.get("StreamUrl")]
+        return sorted(out, key=lambda x: x[1])
+
+    def has_sound(self, src: MediaSource) -> Optional[bool]:
+        """Whether a stream has a sound track, from its header alone (a few small reads instead of the whole
+        video): the init segment of an HLS stream, the ``moov`` box of an MP4 file. None if it can't be told."""
+        try:
+            if src.kind == "hls":
+                r = hls.media_playlist(self.s, src.url, "audio")       # the variant a download would fetch
+                init, _ = hls.parse_playlist(r.text, r.url)
+                if init is None:
+                    return None
+                url, length, offset = init
+                header = hls.get_range(self.s, url, offset, offset + length - 1) if length else self.s.get(url).content
+            else:
+                header = _mp4_header(self.s, src.url)
+            return hls.has_audio_track(header) if header else None
+        except Exception as exc:  # noqa: BLE001 - when in doubt, download it
+            log.info("Could not read the header of %s: %s", src.kind, exc)
+            return None
 
     # ------------------------------------------------------------------ download
     def download(self, src: MediaSource, dest: Path, progress: Callable[[int, int], None],

@@ -377,6 +377,45 @@ def test_alert_cache_is_per_course(tmp_path):
     assert set(alerts._cache) == {"c"}
 
 
+def test_the_heads_up_is_kept_between_starts_until_something_it_is_found_from_changes(tmp_path, monkeypatch):
+    import dataclasses
+    import os
+
+    lib, rec = _course_with_lecture(tmp_path)
+    reads = []
+    load = store.load_transcripts
+    monkeypatch.setattr(store, "load_transcripts", lambda ids: reads.append(list(ids)) or load(ids))
+
+    def start():                                # a new start: nothing in memory, the library opened again
+        alerts._cache.clear()
+        return course_alerts(Library(tmp_path / "lib.db"), "c")
+
+    alerts._cache.clear()
+    first = course_alerts(lib, "c")
+    assert reads == [["r1"]] and first["items"]
+    assert start() == first and reads == [["r1"]]                 # the same items, no transcript read
+    moved = course_alerts(lib, "c", [dataclasses.replace(rec, viewer_url="https://v/other")])
+    assert {i.get("viewer_url") for i in moved["items"]} == {None, "https://v/other"} and len(reads) == 2   # shown
+    assert start() == first and len(reads) == 3
+
+    t = store.load_transcript("r1")                                # transcribed again: a new transcript
+    t.segments.append(Segment(1200, 1206, "The midterm is next week.", "en", 0.9))
+    store.save_transcript(t)
+    path = store.transcript_path("r1")
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 10**9))
+    again = start()
+    assert len(reads) == 4 and "midterm" in again["counts"] and again != first
+    assert start() == again and len(reads) == 4
+
+    lib.merge_announcements("c", [Announcement("a2", "Homework 1", "Dr X", dt.datetime(2026, 10, 20, 9, 0),
+                                               "Homework 1 is due next Monday.")], first_sync=False)
+    news = start()
+    assert len(reads) == 5 and news["items"][0]["category"] == "homework"
+    monkeypatch.setattr(alerts, "ALERTS_VERSION", alerts.ALERTS_VERSION + 1)     # the matching changed
+    assert start() == news and len(reads) == 6
+    alerts._cache.clear()
+
+
 def test_course_files_keep_their_extension_and_two_of_one_name_keep_both(tmp_path):
     import types
 

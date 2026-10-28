@@ -101,9 +101,9 @@ def due() -> bool:
 
 # ----------------------------------------------------------------------------- looking
 def _session() -> Any:
-    import requests
+    from .net import plain_session
 
-    s = requests.Session()
+    s = plain_session()
     s.headers["User-Agent"] = f"IEUStudia/{__version__} (+https://github.com/{REPO})"
     return s
 

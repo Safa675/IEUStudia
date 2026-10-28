@@ -7,13 +7,16 @@ links back to the exact moment in the transcript.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
+import logging
 import re
 import threading
 from collections import defaultdict
 from typing import Any, Iterable, Optional
 
-from . import store
-from .outputs.common import format_ts
+from . import __version__, store
+from .outputs.common import format_ts, is_too_short
 from .outputs.highlights import _tr_lower
 from .outputs.markdown import part_views
 
@@ -54,7 +57,11 @@ _ANY_TR = re.compile("|".join(f"(?:{tr})" for _, _, _, tr in CATEGORIES))
 LABELS = {k: label for k, label, _, _ in CATEGORIES}
 MAX_ITEMS = 120
 SAME_POINT_S = 120      # the same category again within two minutes of a lecture = the same point, keep the first
+# Each course's heads-up is kept in the library (meta "alerts:<course id>"), so a start doesn't read and scan every
+# transcript again. Bump this when the matching or the items change (a new release finds them again anyway).
+ALERTS_VERSION = 1
 
+log = logging.getLogger("studia")
 _cache: dict[str, tuple[Any, dict[str, Any]]] = {}
 _cache_lock = threading.Lock()
 
@@ -125,6 +132,8 @@ def _item(cats: dict[str, tuple[int, int]], text: str, limit: int, **extra: Any)
 
 
 def _signature(lib: Any, course_id: str, recs: list[Any], done: set[str]) -> tuple[Any, list[dict[str, Any]]]:
+    """Everything the heads-up is found from: the transcripts (by their file's time), what of each recording the
+    parts and the items use, and the announcements."""
     files = []
     for r in recs:
         if r.delivery_id in done:
@@ -132,15 +141,34 @@ def _signature(lib: Any, course_id: str, recs: list[Any], done: set[str]) -> tup
                 files.append((r.delivery_id, store.transcript_path(r.delivery_id).stat().st_mtime_ns))
             except OSError:
                 files.append((r.delivery_id, 0))
-    flags = tuple(sorted((r.delivery_id, bool(r.hidden), bool(r.duplicate_of)) for r in recs))
+    flags = tuple(sorted((r.delivery_id, r.start.isoformat(), r.kind, r.viewer_url, bool(r.hidden),
+                          r.duplicate_of or "", is_too_short(r)) for r in recs))
     anns = lib.announcements(course_id)
     return (tuple(sorted(files)), flags,
-            tuple((a["id"], a["posted_at"], bool(a["is_new"]), a["title"], a["body"]) for a in anns)), anns
+            tuple((a["id"], a["posted_at"], a["first_seen"], bool(a["is_new"]), a["title"], a["body"])
+                  for a in anns)), anns
+
+
+def _kept(lib: Any, course_id: str, key: str) -> Optional[dict[str, Any]]:
+    """The heads-up kept in the library at an earlier start, if it was found from the same signature."""
+    try:
+        saved = json.loads(lib.get_meta(f"alerts:{course_id}") or "null")
+    except Exception:  # noqa: BLE001 - only a shortcut: find it again
+        log.debug("kept heads-up unreadable", exc_info=True)
+        return None
+    return saved["result"] if isinstance(saved, dict) and saved.get("key") == key else None
+
+
+def _keep(lib: Any, course_id: str, key: str, result: dict[str, Any]) -> None:
+    try:
+        lib.set_meta(f"alerts:{course_id}", json.dumps({"key": key, "result": result}, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 - found again at the next start
+        log.debug("heads-up not kept", exc_info=True)
 
 
 def course_alerts(lib: Any, course_id: str, recordings: Optional[Iterable[Any]] = None) -> dict[str, Any]:
-    """{"items": [...newest first], "counts": {category: n}, "total": n} for one course (cached until a transcript
-    or an announcement changes)."""
+    """{"items": [...newest first], "counts": {category: n}, "total": n} for one course (cached, also between
+    starts, until a transcript, a recording or an announcement changes)."""
     recs = list(recordings if recordings is not None else lib.recordings(course_id))
     done = lib.transcribed_ids()
     sig, anns = _signature(lib, course_id, recs, done)
@@ -148,6 +176,18 @@ def course_alerts(lib: Any, course_id: str, recordings: Optional[Iterable[Any]] 
         hit = _cache.get(course_id)
         if hit and hit[0] == sig:
             return hit[1]
+    key = hashlib.sha256(repr((ALERTS_VERSION, __version__, sig)).encode("utf-8")).hexdigest()
+    result = _kept(lib, course_id, key)
+    if result is None:
+        result = _find(recs, done, anns)
+        _keep(lib, course_id, key, result)
+    with _cache_lock:
+        _cache[course_id] = (sig, result)
+    return result
+
+
+def _find(recs: list[Any], done: set[str], anns: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read the course's transcripts and announcements for the heads-up (course_alerts keeps what this finds)."""
     by_day: dict[str, list[Any]] = defaultdict(list)
     for r in recs:
         by_day[r.day_key].append(r)
@@ -190,10 +230,7 @@ def course_alerts(lib: Any, course_id: str, recordings: Optional[Iterable[Any]] 
     counts: dict[str, int] = defaultdict(int)
     for it in items:
         counts[it["category"]] += 1
-    result = {"items": items[:MAX_ITEMS], "counts": dict(counts), "total": len(items), "plan": assessment_plan(anns)}
-    with _cache_lock:
-        _cache[course_id] = (sig, result)
-    return result
+    return {"items": items[:MAX_ITEMS], "counts": dict(counts), "total": len(items), "plan": assessment_plan(anns)}
 
 
 # ------------------------------------------------------------------ the assessment plan: which week, which LOs

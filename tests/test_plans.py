@@ -2,6 +2,7 @@
 
 import dataclasses as dc
 import datetime as dt
+import re
 import sys
 import threading
 import time
@@ -270,6 +271,104 @@ def test_a_failed_plan_resumes_without_redoing_finished_stages(env):
     assert [m for m, _ in asked] == ["sonnet", "haiku", "haiku", "sonnet"]
 
 
+def test_finished_verify_requests_are_kept_when_a_plan_stops(env, monkeypatch):
+    monkeypatch.setattr(plans, "VERIFY_BATCH", 1)                    # one request per concept
+    monkeypatch.setattr(plans, "VERIFY_PARALLEL", 1)
+    asked, failed = [], []
+
+    def ask(system, prompt, model="sonnet", cancel=None):
+        if prompt.startswith("TASK: For each concept, judge"):
+            cid = re.search(r"^CONCEPT (c\d)", prompt, re.M).group(1)
+            asked.append(cid)
+            if cid == "c2" and not failed:
+                failed.append(cid)
+                raise RuntimeError("usage limit")
+        return fake_ask([])(system, prompt, model)
+
+    runner = PlanRunner(env.svc, ask=ask)
+    pid = runner.create("c", {"weeks": [1]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "error"
+    data = env.lib.plan(pid)["data"]
+    assert "verify" not in data and "c1" in data["verify_parts"] and "c2" not in data["verify_parts"]
+    del asked[:]
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    assert "c1" not in asked and "c2" in asked                       # c1's answer was not asked for again
+    full = env.lib.plan(pid)
+    assert "verify_parts" not in full["data"] and full["data"]["verify"]["c1"]["v1"]["coverage"] == "partial"
+    assert full["result"]["items"][1]["state"] == "verified"
+    runner.start(pid, from_stage="verify")                            # redoing the stage asks everything again
+    assert wait_done(env.lib, pid)["status"] == "done" and asked.count("c1") == 1
+
+
+def test_an_update_of_only_the_time_reuses_the_concepts_and_the_checked_videos(env):
+    asked = []
+    runner = PlanRunner(env.svc, ask=fake_ask(asked))
+    pid = runner.create("c", {"weeks": [1], "minutes": 120})
+    runner.start(pid)
+    wait_done(env.lib, pid)
+    del asked[:]
+    pid2 = runner.create("c", {"weeks": [1], "minutes": 60, "deadline": "2026-10-10"}, parent_id=pid)
+    runner.start(pid2)
+    assert wait_done(env.lib, pid2)["status"] == "done"
+    assert len(asked) == 1 and asked[0][1].startswith("TASK: Build the final video study plan")
+    assert (env.calls["search"], env.calls["inspect"]) == (1, 1)
+    old, new = env.lib.plan(pid)["data"], env.lib.plan(pid2)["data"]
+    assert new["concepts"] == old["concepts"] and new["verify"] == old["verify"]
+    del asked[:]
+    pid3 = runner.create("c", {"weeks": [1], "minutes": 60, "difficulties": "trees"}, parent_id=pid2)
+    runner.start(pid3)                                                # another question: everything again
+    assert wait_done(env.lib, pid3)["status"] == "done" and [m for m, _ in asked] == ["sonnet", "haiku", "sonnet"]
+
+
+def test_lectures_share_the_pack_and_keep_their_emphasised_moments(env, monkeypatch):
+    monday = dt.date(2026, 9, 21)
+    env.lib.merge_units("c", [Unit(f"u{w}", w - 1, f"Hafta {w}", monday + dt.timedelta(7 * w - 7),
+                                   monday + dt.timedelta(7 * w - 1), "", []) for w in (1, 2, 3)], first_sync=False)
+    for w in (1, 2, 3):
+        rec = Recording(delivery_id=f"w{w}", course_id="c", folder_id="f", folder_path="", name="n",
+                        start=dt.datetime.combine(monday + dt.timedelta(7 * w - 3), dt.time(9)), duration_s=3000,
+                        viewer_url="v")
+        env.lib.merge_recordings("c", [rec], first_sync=False)
+        segs = [Segment(i * 10, i * 10 + 4, f"Week {w} point {i} about trees.", "en", 0.9) for i in range(120)]
+        segs[100] = Segment(1000, 1004, f"Week {w}: this will be on the exam.", "en", 0.9)
+        t = Transcript(delivery_id=rec.delivery_id, segments=segs, duration_s=3000, speech_s=500,
+                       language_seconds={"en": 500}, model="m", device="cpu", engine_version="t", created_at="x")
+        env.lib.save_transcript(t, store.save_transcript(t))
+        env.lib.set_status(rec.delivery_id, "done")
+    pack = plans.gather(env.lib, env.svc.settings, "c", Scope(weeks=[1, 2, 3]))["pack"]
+    head = pack.index("\n=== LECTURE")                                # the outcomes, weeks and files before them
+    monkeypatch.setattr(plans, "PACK_CHARS", head + 7_000)            # room for about a third of each lecture
+    facts = plans.gather(env.lib, env.svc.settings, "c", Scope(weeks=[1, 2, 3]))
+    assert [d["week"] for d in facts["days_used"]] == [1, 1, 2, 3] and facts["days_left_out"] == []
+    pack = facts["pack"]
+    for w in (2, 3):                                                  # every week, not only the first ones
+        assert f"⭐ Week {w}: this will be on the exam." in pack
+        assert f"Week {w} point 3 about" in pack or f"Week {w} point 4 about" in pack     # the start …
+        assert f"Week {w} point 115 about" in pack or f"Week {w} point 116 about" in pack  # … and the end
+        assert f"Week {w} point 60 about" in pack or f"Week {w} point 61 about" in pack   # … and the middle
+    assert pack.count("(Excerpts: the moments the lecturer emphasised") == 3 and len(pack) <= plans.PACK_CHARS
+    monkeypatch.setattr(plans, "PACK_CHARS", head + 4_000)            # not enough for all: the short one and two long
+    facts = plans.gather(env.lib, env.svc.settings, "c", Scope(weeks=[1, 2, 3]))   # ones, the first and the last
+    assert [d["week"] for d in facts["days_used"]] == [1, 1, 3] and [d["week"] for d in facts["days_left_out"]] == [2]
+
+
+def test_lecture_days_are_split_evenly():
+    keep, rooms = plans._fit_days([500, 8_000, 8_000], [0, 0, 0], 10_000)
+    assert keep == [0, 1, 2] and rooms == {0: 500, 1: 4_750, 2: 4_750}      # a short day leaves its share to the others
+    keep, rooms = plans._fit_days([5_000] * 10, [30] * 10, 9_000)
+    assert len(keep) == 5 and keep[0] == 0 and keep[-1] == 9 and min(rooms.values()) >= plans.DAY_MIN
+    keep, rooms = plans._fit_days([5_000, 200, 5_000, 5_000], [30] * 4, 3_500)
+    assert keep == [0, 1, 3] and rooms[1] == 200                         # a short day costs little: it stays
+    assert plans._fit_days([], [], 9_000) == ([], {})
+    day = "# MATH 240\n\n## Part 1 (09:00–09:50)\n" + "\n".join(f"[0{i}:00] Line {i}." for i in range(10))
+    assert plans._excerpt(day, 10_000) == day
+    cut = plans._excerpt(day + "\n[10:00] ⭐ The key idea.", 200)
+    assert cut.startswith("# MATH 240\n(Excerpts:") and "## Part 1" in cut and "⭐ The key idea." in cut
+    assert [n for n in range(10) if f"Line {n}." in cut] == [2, 7] and len(cut) <= 200      # spread over the lecture
+
+
 def test_an_update_tells_claude_about_the_previous_plan(env):
     asked = []
     runner = PlanRunner(env.svc, ask=fake_ask(asked))
@@ -414,3 +513,17 @@ def test_exam_prep_pack(env):
     assert env.calls == {"search": 0, "inspect": 0}
     text = next((env.tmp / "out").rglob("*prep pack.md")).read_text(encoding="utf-8")
     assert text.startswith("# Quiz 2 prep pack") and "**Solution.** 42" in text
+
+
+def test_skills_only_in_optional_videos_are_not_called_written():
+    from studia.plans import Scope, completeness
+
+    def cov(*how):
+        return [{"name": "Bayes", "in_scope": True, "state": "verified", "items": [],
+                 "skills": [{"text": f"skill {i}", "how": h} for i, h in enumerate(how)]}]
+
+    cp = completeness(cov("video", "optional", "optional"), Scope(focus="Quiz 2"), "Quiz 2", 30)
+    assert cp["level"] == "optional" and cp["complete"]
+    assert cp["headline"] == ("Covered for Quiz 2, but partly only in optional videos: of the 3 skills found in your "
+                              "material, 1 in checked video parts, 2 only in optional videos.")
+    assert completeness(cov("video", "supplement", "optional"), Scope(focus="Quiz 2"), "Quiz 2", 30)["level"] == "written"

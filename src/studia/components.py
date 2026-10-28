@@ -27,6 +27,7 @@ import requests
 from . import httpdl
 from .cancel import check
 from .i18n import N_, t
+from .net import plain_session
 
 log = logging.getLogger("studia")
 MB = 1024 * 1024
@@ -53,7 +54,7 @@ CUDA_SIZE_MB = 560                # download (the cuBLAS wheel); about 780 MB on
 
 
 def _session() -> requests.Session:
-    s = requests.Session()
+    s = plain_session()
     s.headers["User-Agent"] = "IEUStudia (+https://github.com/mirzaisi/IEUStudia)"
     return s
 

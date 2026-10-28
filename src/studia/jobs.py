@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import requests
 
-from . import hls, store
+from . import hls, local_llm, store
 from .cancel import Cancelled
 from .config import Settings
 from .i18n import date_short, t
@@ -70,6 +70,34 @@ def _no_sound(exc: BaseException) -> bool:
     return audio is not None and isinstance(exc, audio.NoAudioTrack)
 
 
+def _no_sound_error() -> Exception:
+    from .audio import NoAudioTrack
+
+    return NoAudioTrack(t("Panopto has no sound for this recording (only a picture), so there's nothing to transcribe."))
+
+
+def _to_int16(audio: np.ndarray) -> np.ndarray:
+    """A decoded lecture waiting for its turn, in half the memory. The decoder's samples are whole numbers / 32768,
+    so _to_float32 gives back the very same values. Scales ``audio`` in place: it is dropped right after."""
+    import numpy as np
+
+    if audio.dtype != np.float32:
+        return audio
+    audio *= 32768.0
+    return audio.astype(np.int16)
+
+
+def _to_float32(audio: np.ndarray) -> np.ndarray:
+    """The lecture's samples for transcribing it, as the decoder made them (see _to_int16)."""
+    import numpy as np
+
+    if audio.dtype != np.int16:
+        return audio
+    out = audio.astype(np.float32)
+    out *= 1.0 / 32768.0
+    return out
+
+
 def _memory_gb() -> float:
     from .hardware import memory_gb
 
@@ -91,7 +119,8 @@ class Job:
     detail: str = ""
     error: str = ""
     cancel: threading.Event = dc.field(default_factory=threading.Event)
-    audio: Optional[np.ndarray] = None
+    audio: Optional[np.ndarray] = None   # decoded; as int16 while it waits for its turn (see _to_int16)
+    speech: Any = None                   # where its speech is (the engine's find_speech), found by the download thread
     audio_path: Optional[Path] = None
     info: Optional[dict] = None
     slides: Optional[Future] = None
@@ -165,6 +194,7 @@ class JobManager:
         self._slides_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="slides")
         self._last_emit: dict[str, float] = {}
         self._idle_gen = 0
+        self._preloading = False
         self.setup_busy: Callable[[], bool] = lambda: False      # the setup still downloads models (the app sets it)
 
     # ------------------------------------------------------------------ public
@@ -172,6 +202,8 @@ class JobManager:
         if self._started:
             return
         self._started = True
+        # the offline AI frees an idle speech model before it loads on the graphics card (8 GB holds only one of them)
+        local_llm.make_room = self.unload_engine
         self._lanes = self.settings().parallel_downloads
         for i in range(self._lanes):
             threading.Thread(target=self._dl_loop, name=f"download-{i + 1}", daemon=True).start()
@@ -211,6 +243,7 @@ class JobManager:
                 n += 1
             if self._jobs:
                 self._working(True)
+                self._preload()
             self._remember()
         self._emit_queue()
         return n
@@ -227,6 +260,7 @@ class JobManager:
                 self._put_dl(job)
                 self._update(job, "queued", 0.0, t("Waiting"), force=True)
             self._working(True)
+            self._preload()
         self._emit_queue()
         return did
 
@@ -468,13 +502,16 @@ class JobManager:
     def engine_loaded(self) -> bool:
         return self._engine is not None and getattr(self._engine, "loaded", False)
 
-    def unload_engine(self) -> None:
+    def unload_engine(self) -> bool:
+        """Free the speech model unless a lecture is transcribing or waiting. True if it was loaded."""
         with self._lock:
-            if self._engine is not None and not self._jobs:
-                self._engine.unload()
-                self._engine = None
-                self._engine_key = None
-                self.log.info("Speech model unloaded (idle) to free GPU memory")
+            if self._engine is None or self._jobs:
+                return False
+            was = self.engine_loaded()
+            engine, self._engine, self._engine_key = self._engine, None, None
+        engine.unload()          # (not under the lock: a model loading ahead finishes first, and the page must not wait)
+        self.log.info("Speech model unloaded (idle) to free GPU memory")
+        return was
 
     def _schedule_idle_unload(self) -> None:
         with self._lock:
@@ -547,7 +584,7 @@ class JobManager:
             return False
 
     def _drop_audio(self, job: Job) -> None:
-        job.audio = None
+        job.audio = job.speech = None
         with self._q:
             held, job.holds_audio = job.holds_audio, False
             if held:
@@ -563,6 +600,13 @@ class JobManager:
         job.error = error
         self._drop_audio(job)
         self._let_go(job)
+        if (current and job.local_path is None and (job.no_sound or stage == "cancelled" and not self._closing)
+                and not self.settings().keep_audio):
+            # no sound, or the student cancelled it: its downloaded audio would stay in the cache for good. A lecture
+            # still queued when IEUStudia closes keeps it (the next start goes on), as does one that failed to
+            # download (it is tried again).
+            for f in audio_cache_dir().glob(f"{job.id}.*"):
+                self._unlink(f)
         with self._lock:
             b = getattr(self, "_batch", None)
             if b is not None and current:
@@ -607,6 +651,13 @@ class JobManager:
         if idle and self._engine is not None:
             self._schedule_idle_unload()
 
+    @staticmethod
+    def _unlink(path: Path) -> None:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:                   # e.g. still open in an antivirus scan: the start-up sweep takes it later
+            pass
+
     # ------------------------------------------------------------------ download side
     def _dl_loop(self, overtake: bool = False) -> None:
         """A download thread. ``overtake``: the extra one, for lectures that come before the ones the other
@@ -620,6 +671,7 @@ class JobManager:
             try:
                 self._hold(job)                   # paused: no new download starts
                 self._prepare(job)
+                self._find_speech(job)
                 if job.cancel.is_set():
                     raise Cancelled()
                 self._update(job, "queued", 0.0, t("Waiting for its turn") if job.local_path else
@@ -634,6 +686,8 @@ class JobManager:
                 self._finish(job, "cancelled")
             elif isinstance(error, NotReady):
                 self._finish(job, "processing", str(error))
+            elif isinstance(error, NoSpeech):             # found while finding its speech (see _find_speech)
+                self._no_speech(job, error)
             elif isinstance(error, (requests.RequestException, OSError)):
                 # a full disk, or a file of this PC that can't be read, won't be fixed by trying again (a file in
                 # the app's own cache held for a moment by an antivirus may be)
@@ -682,11 +736,12 @@ class JobManager:
         sources = p.media_sources(job.id, info)
         settings = self.settings()
         if settings.capture_slides and job.slides is None:
-            screen = p.screen_source(info)
-            if screen:
-                job.slides = self._slides_pool.submit(self.slides_task, job, screen[0], screen[1], self.sync.worker_session())
+            screens = p.screen_sources(info)          # every stretch of screen sharing, in time order
+            if screens:
+                job.slides = self._slides_pool.submit(self.slides_task, job, screens, self.sync.worker_session())
         last_exc: Optional[BaseException] = None
         silent: Optional[np.ndarray] = None
+        silent_path: Optional[Path] = None
         for i, src in enumerate(sources):
             if src.url in job.no_audio:
                 continue
@@ -702,6 +757,14 @@ class JobManager:
                     continue
                 if peak is None or peak < SILENT_DBFS:
                     continue
+            elif src.kind != "audio_podcast" and p.has_sound(src) is False:
+                # its header says it has no sound track (a video-only podcast or camera stream): not downloaded (some
+                # hundred MB) only to find that out. If the header can't be read, it is downloaded as before.
+                self.log.info("%s: %s has no audio track; trying another stream", job.id, src.kind)
+                job.no_audio.add(src.url)
+                if last_exc is None or _no_sound(last_exc):     # a failed download says more
+                    last_exc = _no_sound_error()
+                continue
             dest = audio_cache_dir() / f"{job.id}.{'m4a' if src.kind == 'audio_podcast' else 'mp4'}"
 
             def prog(done: int, total: int) -> None:
@@ -720,7 +783,7 @@ class JobManager:
                 continue
             job.audio_path = dest
             self._take_audio_place(job)
-            self._update(job, "downloading", 1.0, t("Decoding audio"))
+            self._update(job, "downloading", 1.0, t("Decoding audio"), force=True)    # right after the last MB
             try:
                 audio = decode_audio(dest, job.cancel)
             except ValueError as exc:
@@ -732,8 +795,7 @@ class JobManager:
                 self.log.info("%s: %s has no audio track; trying another stream", job.id, src.kind)
                 job.no_audio.add(src.url)
                 if last_exc is None or isinstance(last_exc, NoAudioTrack):     # a failed download says more
-                    last_exc = NoAudioTrack(t("Panopto has no sound for this recording (only a picture), so there's "
-                                              "nothing to transcribe."))
+                    last_exc = _no_sound_error()
                 job.audio_path = None
                 try:
                     dest.unlink()
@@ -742,26 +804,121 @@ class JobManager:
                 continue
             if is_silent(audio) and i + 1 < len(sources):
                 self.log.info("%s: %s audio is silent; looking for another stream", job.id, src.kind)
-                silent = audio
+                if silent_path is not None and silent_path != dest:
+                    self._unlink(silent_path)
+                silent, silent_path = audio, dest
                 continue
             job.audio = audio
             break
         if job.audio is None:
             if silent is not None:
-                job.audio = silent    # the engine reports "no sound" with a clear message
+                job.audio, job.audio_path = silent, silent_path    # the engine reports "no sound" with a clear message
             else:
                 raise last_exc or RuntimeError(t("No downloadable audio for this recording."))
+        elif silent_path is not None and silent_path != job.audio_path:
+            self._unlink(silent_path)          # the silent stream's file: another stream had the sound
         self.sync.absorb(s)
 
+    def _find_speech(self, job: Job) -> None:
+        """Find the lecture's speech and check its audio here, in the download thread, so the graphics card doesn't
+        wait for it (~10 s an hour of audio); a recording without speech fails here (quality.NoSpeech). The lecture
+        then waits for its turn as int16."""
+        find = self._speech_finder(self.settings())
+        if find is not None:
+            self._update(job, "downloading", 1.0, t("Finding speech"), force=True)
+            job.speech = find(job.audio, job.cancel, self._meta(job).get("expected_duration", 0.0))
+        job.audio = _to_int16(job.audio)
+
+    def _speech_finder(self, settings: Settings) -> Optional[Callable[..., Any]]:
+        """The engine's find_speech (no model needed): of the engine in use, or of one made for these settings that
+        is never loaded. None for an engine without it."""
+        with self._lock:
+            engine = self._engine if self._engine_key == self._key(settings) else None
+        if engine is None:
+            try:
+                engine = self.engine_factory(settings)
+            except Exception:  # noqa: BLE001 - e.g. an unknown model: transcribing the lecture says so
+                return None
+        return getattr(engine, "find_speech", None)
+
+    @staticmethod
+    def _meta(job: Job) -> dict[str, Any]:
+        meta: dict[str, Any] = {"delivery_id": job.id}
+        if job.info:
+            d = job.info.get("Delivery") or {}
+            meta.update(expected_duration=float(d.get("Duration") or 0.0), recording_name=d.get("SessionName", ""))
+        if job.local_path is not None:
+            meta["source_path"] = str(job.local_path)
+        return meta
+
+    def _no_speech(self, job: Job, exc: NoSpeech) -> None:
+        if job.local_path is None:
+            self.lib.set_warnings(job.id, [{"code": "no_speech", "level": "error", "message": str(exc)}])
+            job.no_sound = True
+        self._finish(job, "failed", str(exc))
+
     # ------------------------------------------------------------------ GPU side
+    @staticmethod
+    def _key(settings: Settings) -> tuple:
+        return (settings.model, settings.device, tuple(settings.languages))
+
     def _get_engine(self, settings: Settings) -> Any:
-        key = (settings.model, settings.device, tuple(settings.languages))
-        if self._engine is None or self._engine_key != key:
-            if self._engine is not None:
-                self._engine.unload()
-            self._engine = self.engine_factory(settings)
-            self._engine_key = key
-        return self._engine
+        key = self._key(settings)
+        with self._lock:
+            if self._engine is not None and self._engine_key == key:
+                return self._engine
+        made = self.engine_factory(settings)          # (outside the lock: the first one imports the engine's code)
+        with self._lock:
+            if self._engine is not None and self._engine_key == key:     # the other thread was quicker
+                return self._engine
+            old, self._engine, self._engine_key = self._engine, made, key
+        if old is not None:
+            old.unload()
+        return made
+
+    def _preload(self) -> None:
+        """Lectures are queued: load the speech model while the first one downloads, not after it (6-25 s for
+        large-v3). Not while the setup still downloads it (call with the lock held)."""
+        if self._preloading or self.engine_loaded() or self.setup_busy():
+            return
+        self._preloading = True
+        threading.Thread(target=self._load_ahead, name="model-preload", daemon=True).start()
+
+    def _load_ahead(self) -> None:
+        """Only a model on disk (the first lecture downloads one, and Cancel stops that). A load that fails here is
+        tried again, and reported, by the first lecture."""
+        from .engine.models import model_is_downloaded
+
+        ok = False
+        try:
+            settings = self.settings()
+            if not model_is_downloaded(settings.model):
+                return
+            with self._lock:
+                busy = any(j.where == "run" for j in self._jobs.values())       # the transcribe thread loads it
+                other = self._engine is not None and self._engine_key != self._key(settings)
+                if busy or other or not self._jobs:
+                    return
+            engine = self._get_engine(settings)
+            with self._lock:
+                gone = not self._jobs                          # cancelled meanwhile: nothing to load it for
+            if gone or getattr(engine, "loaded", True):
+                return
+
+            def progress(stage: str, frac: float, detail: str) -> None:
+                phase = {"model-download": "download"}.get(stage, "load")
+                self.emit({"type": "engine", "phase": phase, "progress": round(frac, 3), "message": detail})
+
+            engine.ensure_model(progress, None)
+            ok = True
+        except Exception:  # noqa: BLE001
+            self.log.info("Loading the speech model ahead failed", exc_info=True)
+            self.emit({"type": "engine", "phase": "failed", "progress": 0.0, "message": ""})   # the page hides it
+        finally:
+            with self._lock:
+                self._preloading = False
+        if ok:
+            self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
 
     def _gpu_loop(self) -> None:
         while True:
@@ -787,10 +944,7 @@ class JobManager:
             except Cancelled:
                 self._finish(job, "cancelled")
             except NoSpeech as exc:
-                if job.local_path is None:
-                    self.lib.set_warnings(job.id, [{"code": "no_speech", "level": "error", "message": str(exc)}])
-                    job.no_sound = True
-                self._finish(job, "failed", str(exc))
+                self._no_speech(job, exc)
             except Exception as exc:  # noqa: BLE001
                 self.log.exception("Transcribing %s failed", job.id)
                 self._finish(job, "failed", plain_error(exc))
@@ -825,13 +979,10 @@ class JobManager:
         self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True)
         engine.ensure_model(lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel)
         self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
-        meta: dict[str, Any] = {"delivery_id": job.id}
-        if job.info:
-            d = job.info.get("Delivery") or {}
-            meta.update(expected_duration=float(d.get("Duration") or 0.0), recording_name=d.get("SessionName", ""))
-        if job.local_path is not None:
-            meta["source_path"] = str(job.local_path)
-        transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel, meta)
+        job.audio = _to_float32(job.audio)                # its turn: the samples as decoded
+        found = {"speech": job.speech} if job.speech is not None else {}
+        transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel,
+                                       self._meta(job), **found)
         self._drop_audio(job)
         transcript.delivery_id = job.id
         path = store.save_transcript(transcript)

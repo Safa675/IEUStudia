@@ -13,6 +13,8 @@ from typing import Any, Optional, Sequence
 
 import requests
 
+from .net import plain_session
+
 log = logging.getLogger("studia")
 
 DEPARTMENTS = ("ce", "se", "eee", "ie", "me", "ae", "fe", "math")    # first site that has the course wins
@@ -108,11 +110,11 @@ def syllabus_url(dept: str, code: str) -> str:
 def fetch_syllabus(code: str, departments: Sequence[str] = DEPARTMENTS,
                    session: Optional[requests.Session] = None) -> Optional[Syllabus]:
     """The first department site with a syllabus for ``code`` (e.g. "MATH 240"), or None."""
-    s = session or requests.Session()
+    s = session or plain_session()
     for dept in departments:
         url = syllabus_url(dept, code)
         try:
-            r = s.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (IEUStudia)"})
+            r = s.get(url, timeout=(6, 20), headers={"User-Agent": "Mozilla/5.0 (IEUStudia)"})
         except requests.RequestException:
             continue                       # this department has no site
         if r.status_code != 200:

@@ -189,3 +189,96 @@ def test_a_syllabus_that_cant_be_fetched_is_kept_and_looked_for_again_tomorrow(s
     left = sync.SYLLABUS_EVERY - (dt.datetime.now() - dt.datetime.fromisoformat(a["syllabus_at"]))
     assert dt.timedelta(hours=23) < left <= dt.timedelta(days=1)
     assert b["syllabus"] == {} and b["syllabus_at"]                 # none stored: "no syllabus" is kept for a week
+
+
+def _course_pages(monkeypatch):
+    """IEULearn's course pages, counting what is asked of them."""
+    from studia import coursesite, syllabus
+
+    asked = []
+
+    class Site:
+        def __init__(self, s):
+            pass
+
+        def unit_plan(self, cid, title):
+            asked.append(("units", cid))
+            return []
+
+        def announcements(self, cid):
+            asked.append(("announcements", cid))
+            return []
+
+        def overview(self, cid):
+            return types.SimpleNamespace(to_json=lambda: {})
+
+    monkeypatch.setattr(coursesite, "CourseSite", Site)
+    monkeypatch.setattr(syllabus, "fetch_syllabus", lambda code, session=None: None)
+    return asked
+
+
+def test_connecting_to_panopto_doesnt_load_the_dashboard_again(site, tmp_path, monkeypatch):
+    lib, sync = _service(tmp_path)
+    looked = []
+
+    def launch(self, cid):
+        site.launches.append(cid)
+        site.panopto = True
+        return site.folders.get(cid)
+
+    monkeypatch.setattr(sync_mod.IEULearn, "is_logged_in", lambda self: looked.append(1) or site.logged_in)
+    monkeypatch.setattr(sync_mod.IEULearn, "launch_panopto", launch)
+    site.panopto = False
+    assert sync.sync().errors == [] and sorted(site.launches) == ["a", "b"] and looked == []   # the dashboard answered
+    secrets_store.set_credentials("ali", "right")
+    site.logged_in, site.panopto = False, False         # both sign-ins expired overnight
+    assert sync.sync().errors == [] and len(site.launches) == 3
+    assert site.logins == ["right"] and looked == [1]   # once, to sign in again
+
+
+def test_cookies_that_didnt_change_are_not_written_again(site, tmp_path, monkeypatch):
+    lib, sync = _service(tmp_path)
+    saved = []
+    save = secrets_store.save_cookies
+    monkeypatch.setattr(secrets_store, "save_cookies", lambda c, folder=None: saved.append(c) or save(c, folder))
+    sync.sync()
+    assert saved == []
+    sync.http().cookies.set("PHPSESSID", "fresh", domain="learn.ieu.edu.tr")
+    sync.sync()
+    sync.sync()
+    assert [[c["value"] for c in s] for s in saved] == [["fresh"]]
+    assert sync_mod.SyncService(lib, Settings).http().cookies.get("PHPSESSID") == "fresh"
+
+
+def test_the_helper_reads_unit_plans_every_few_hours_and_announcements_every_time(site, tmp_path, monkeypatch):
+    asked = _course_pages(monkeypatch)
+    lib, sync = _service(tmp_path)
+    lib.upsert_courses(list(COURSES))
+    every = sync.HELPER_UNITS_EVERY
+    sync.sync_content(units_every=every)                 # new courses: everything
+    assert sorted(asked) == [("announcements", "a"), ("announcements", "b"), ("units", "a"), ("units", "b")]
+    asked.clear()
+    lib.upsert_courses(list(COURSES) + [Course(id="c", title="2026-1 PHYS 100 P 1", code="PHYS 100", name="Physics")])
+    sync.sync_content(units_every=every)                 # half an hour later: a new course's plan, no others
+    assert sorted(asked) == [("announcements", "a"), ("announcements", "b"), ("announcements", "c"), ("units", "c")]
+    asked.clear()
+    lib.set_meta("units_at", (dt.datetime.now() - every - dt.timedelta(minutes=1)).isoformat(timespec="seconds"))
+    sync.sync_content(units_every=every)
+    assert {cid for kind, cid in asked if kind == "units"} == {"a", "b", "c"}
+    asked.clear()
+    sync.sync_content()                                  # the app (and the helper telling about new files): each time
+    assert {cid for kind, cid in asked if kind == "units"} == {"a", "b", "c"}
+
+
+def test_sections_of_one_course_fetch_its_syllabus_once(site, tmp_path, monkeypatch):
+    from studia import syllabus
+
+    _course_pages(monkeypatch)
+    lib, sync = _service(tmp_path)
+    lib.upsert_courses(list(COURSES) + [Course(id="c", title="2026-1 MATH 240 P 2", code="MATH 240", name="Probability")])
+    codes = []
+    monkeypatch.setattr(syllabus, "fetch_syllabus",
+                        lambda code, session=None: codes.append(code) or syllabus.Syllabus(code=code, outcomes=["Bayes"]))
+    sync.sync_content()
+    assert sorted(codes) == ["EEE 215", "MATH 240"]
+    assert lib.course_info("a")["syllabus"]["outcomes"] == lib.course_info("c")["syllabus"]["outcomes"] == ["Bayes"]

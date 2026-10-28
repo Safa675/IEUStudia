@@ -169,7 +169,10 @@ select.input { padding-right: 28px; }
 .pill.tr { background: var(--teal-soft); color: var(--teal); }
 .pill.lab { background: transparent; color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .bar { height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
-.bar > i { display: block; height: 100%; width: 0; background: var(--blue); border-radius: 2px; transition: width .25s ease; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--blue); border-radius: 2px; }
+/* the queue's bars move with every job event: they glide as a transform (the compositor's work), not by their width
+   (a new layout of the whole page on every frame) */
+.bar > i.glide { width: 100%; transform-origin: 0 50%; transition: transform .25s ease; }
 .bar.indet > i { width: 35% !important; animation: indet 1.2s ease-in-out infinite; }
 @keyframes indet { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
 

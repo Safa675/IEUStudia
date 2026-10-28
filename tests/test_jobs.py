@@ -42,6 +42,7 @@ class FakePanopto:
     downloads: list = []
     gate = None                    # threading.Event to hold downloads
     not_ready = False
+    no_sound_header: set = set()   # streams whose header lists no sound track
 
     def __init__(self, session):
         pass
@@ -54,8 +55,11 @@ class FakePanopto:
             raise NotReady("Panopto is still processing this recording.")
         return list(FakePanopto.sources)
 
-    def screen_source(self, info):
-        return None
+    def screen_sources(self, info):
+        return []
+
+    def has_sound(self, src):
+        return False if src.url in FakePanopto.no_sound_header else None    # None: can't tell, downloaded as before
 
     def download(self, src, dest, progress, cancel=None, prefer="audio"):
         if FakePanopto.gate is not None:
@@ -102,6 +106,7 @@ def env(tmp_path, monkeypatch):
     FakePanopto.downloads = []
     FakePanopto.gate = None
     FakePanopto.not_ready = False
+    FakePanopto.no_sound_header = set()
     monkeypatch.setattr(jobs_mod, "Panopto", FakePanopto)
     monkeypatch.setattr(jobs_mod, "decode_audio", lambda p, cancel=None: np.full(
         16000, 0.0 if open(p).read() == "silent" else 0.5, dtype=np.float32))
@@ -152,6 +157,7 @@ def test_silent_podcast_falls_back_to_loud_camera_stream(env):
     assert wait_for(lambda: finals(env["events"], "r1"))
     assert FakePanopto.downloads == ["audio_podcast", "hls"]   # the video podcast is never fetched
     assert env["state"]["engine"].audio_seen == [0.5]
+    assert not list(audio_cache_dir().glob("r1.*"))           # nor is the silent podcast's file left behind
 
 
 def test_a_stream_without_any_sound_track_falls_back_to_the_next_one(env):
@@ -217,6 +223,48 @@ def test_no_speech_is_reported_with_a_warning(env):
     assert env["lib"].get_recording("r1").status == "failed"
     assert env["lib"].warnings("r1")[0]["code"] == "no_speech"
     assert finals(env["events"], "r1")[-1]["no_sound"] is True        # the page shows it in any language at once
+    assert not list(audio_cache_dir().glob("r1.*"))                    # trying again finds the same: not kept
+
+
+def test_a_stream_whose_header_lists_no_sound_is_not_downloaded(env):
+    FakePanopto.sources = [MediaSource("video_podcast", "https://x/video"), MediaSource("hls", "https://x/dv.m3u8"),
+                           MediaSource("hls", "https://x/object.m3u8")]
+    FakePanopto.no_sound_header = {s.url for s in FakePanopto.sources}
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    rec = env["lib"].get_recording("r1")
+    assert FakePanopto.downloads == []                         # the same answer, without hundreds of MB
+    assert rec.status == "failed" and "no sound for this recording" in rec.error
+    assert env["lib"].warnings("r1")[0]["code"] == "no_speech" and finals(env["events"], "r1")[-1]["no_sound"]
+    FakePanopto.no_sound_header = {"https://x/video"}          # the camera stream has sound: only it is fetched
+    jm.enqueue(["r2"])
+    assert wait_for(lambda: finals(env["events"], "r2"))
+    assert finals(env["events"], "r2")[-1]["stage"] == "done" and FakePanopto.downloads == ["hls"]
+
+
+def test_cancelled_lectures_leave_no_audio_behind_but_closing_and_keep_audio_keep_it(env):
+    env["state"]["engine"] = BlockingEngine()
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: jm.job("r1") is not None and jm.job("r1").stage == "transcribing")
+    assert list(audio_cache_dir().glob("r1.*"))
+    jm.cancel("r1")
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    assert not list(audio_cache_dir().glob("r1.*"))
+    closing = env["make"]()
+    closing.enqueue(["r2"])
+    assert wait_for(lambda: closing.job("r2") is not None and closing.job("r2").stage == "transcribing")
+    closing.shutdown()                                             # the next start goes on with it
+    assert wait_for(lambda: not closing.busy())
+    assert list(audio_cache_dir().glob("r2.*"))
+    (audio_cache_dir() / "r2.m4a").unlink()
+    keep = env["make"](keep_audio=True)                            # "Keep downloaded audio": kept
+    env["state"]["engine"] = BlockingEngine()
+    keep.enqueue(["r2"])
+    assert wait_for(lambda: keep.job("r2") is not None and keep.job("r2").stage == "transcribing")
+    keep.cancel("r2")
+    assert wait_for(lambda: not keep.busy()) and list(audio_cache_dir().glob("r2.*"))
 
 
 def test_model_is_unloaded_when_idle(env):
@@ -226,6 +274,23 @@ def test_model_is_unloaded_when_idle(env):
     assert wait_for(lambda: finals(env["events"], "r1"))
     assert wait_for(lambda: env["state"]["engine"].unloaded, timeout=5)
     assert not jm.engine_loaded()
+
+
+def test_the_offline_ai_frees_the_speech_model_only_when_no_lecture_waits(env):
+    from studia import local_llm
+
+    env["mp"].setattr(local_llm, "make_room", None)
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    assert local_llm.make_room == jm.unload_engine and jm.engine_loaded()
+    FakePanopto.gate = threading.Event()          # r2 waits to download
+    jm.enqueue(["r2"])
+    assert not local_llm.make_room() and not env["state"]["engine"].unloaded
+    FakePanopto.gate.set()
+    assert wait_for(lambda: finals(env["events"], "r2"))
+    assert local_llm.make_room() and env["state"]["engine"].unloaded and not jm.engine_loaded()
+    assert not local_llm.make_room()              # nothing left to free
 
 
 def test_cancel_queued_then_requeue_keeps_tracking_new_job(env):
@@ -599,7 +664,7 @@ def test_a_transcript_saved_before_its_files_are_written_is_written_at_the_next_
         gate.wait(10)
         return []
 
-    env["mp"].setattr(FakePanopto, "screen_source", lambda self, info: ("https://x/screen", 0.0))
+    env["mp"].setattr(FakePanopto, "screen_sources", lambda self, info: [("https://x/screen", 0.0)])
     lib = env["lib"]
     jm = jobs_mod.JobManager(lib, FakeSync(), lambda: Settings(parallel_downloads=1, capture_slides=True),
                              lambda s: env["state"]["engine"], env["events"].append, lambda did: {}, slides)

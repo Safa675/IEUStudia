@@ -105,6 +105,13 @@ def test_the_start_up_window_has_its_turkish():
     assert splash_keys() and splash_keys() == set(splash.TEXT_TR)
 
 
+def test_the_page_says_it_could_not_connect_in_the_catalogs_turkish():
+    """Before Python's table arrives the page carries its own few Turkish lines (the window that never got the API)."""
+    m = re.search(r't\.load\(\{ lang: "tr", table: (\{.*?\}) \}\);', (WEB / "app.js").read_text(encoding="utf-8"))
+    inline, have = json.loads(m.group(1)), catalog()
+    assert inline and all({tr for tr, _ in have.get(en, [])} == {tr} for en, tr in inline.items())
+
+
 LOCAL_T = re.compile(r"\b(?:const|let|var) t\b|\(t\)\s*=>|\(t,|, t\)\s*=>|\bt =>|,\s*t\s*=[^=>]")
 LOCAL_T_LEFT: dict[str, int] = {}     # every page is converted: none left
 

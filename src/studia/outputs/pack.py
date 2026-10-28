@@ -14,9 +14,8 @@ DayData = tuple[dt.date, str, Sequence[Recording], Any]   # (date, kind, recordi
 
 
 def render_study_pack(course: Course, days: Sequence[DayData], warnings: Any = None) -> str:
-    days = [d for d in sorted(days, key=lambda d: (d[0], d[1])) if part_views(d[2], d[3])]
     built = []
-    for date, kind, recs, trans in days:
+    for date, kind, recs, trans in sorted(days, key=lambda d: (d[0], d[1])):
         parts = [p for p in part_views(recs, trans, warnings=warnings) if p.transcript]
         if parts:
             built.append((date, kind, parts))

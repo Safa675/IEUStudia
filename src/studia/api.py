@@ -352,18 +352,19 @@ class Api:
     def _system_info(self) -> None:
         try:
             from .ai import claude_info
-            from .engine.models import MODEL_PRESETS, detect_gpu, model_is_downloaded
+            from .engine.models import MODEL_PRESETS, model_is_downloaded
+            from .hardware import MIN_CUDA_DRIVER, _driver_number, nvidia_gpu
 
-            gpu = detect_gpu(quick=True)
+            nv = nvidia_gpu()                        # one nvidia-smi run: the card for the display and its driver
+            gpu = {"available": nv["present"], "name": nv["name"], "vram_mb": nv["vram_mb"]}
             presets = [{"id": k, "label": t(v["label"]), "description": t(v["description"]), "size_mb": v["size_mb"],
                         "downloaded": model_is_downloaded(k)} for k, v in MODEL_PRESETS.items()]
             from .components import cuda_ready
-            from .hardware import MIN_CUDA_DRIVER, _driver_number, nvidia_gpu
 
             used = bool(gpu.get("available")) and cuda_ready() and self._s.settings.device != "cpu"
             # a card the setup would set up: enough graphics memory and a recent driver (as hardware.assess)
             fits = (bool(gpu.get("available")) and int(gpu.get("vram_mb") or 0) >= 3500
-                    and _driver_number(nvidia_gpu().get("driver", "")) >= MIN_CUDA_DRIVER)
+                    and _driver_number(nv.get("driver", "")) >= MIN_CUDA_DRIVER)
             info = {"gpu": {**gpu, "libraries": cuda_ready(), "used": used, "fits": fits}, "presets": presets,
                     "ai": claude_info(),
                     "engine": {"model": self._s.settings.model, "loaded": self._s.jobs.engine_loaded()}}
@@ -670,15 +671,18 @@ class Api:
         return self.storage()
 
     def _watch_open_requests(self) -> None:
-        """Another start of the app (e.g. a notification was clicked) asks this window to show a page."""
-        from .winutil import instance_name, take_open_request
+        """Another start of the app (e.g. a notification was clicked) asks this window to show a page: it writes the
+        page to a file and sets an event this thread waits for."""
+        from .winutil import instance_name, open_request_event, take_open_request, wait_event
 
         name = instance_name()
+        event = open_request_event(name)
         while True:
-            time.sleep(1.0)
-            target = take_open_request(name)
+            target = take_open_request(name)            # (first: one made before the event existed)
             if target:
                 self._push({"type": "open", "target": target})
+            if not (event and wait_event(event)):
+                time.sleep(1.0)
 
     # ------------------------------------------------------------------ account / sync
     @safe
@@ -903,12 +907,14 @@ class Api:
 
     @safe
     def transcribe_day(self, day_key: str) -> dict[str, Any]:
+        from .catchup import no_sound
         from .sections import available_sections, classify, guess_my_section
 
         course, recs = self._s.day(day_key)
         s = self._s.settings
+        lib = self._s.lib
         ids = [r.delivery_id for r in recs if not r.duplicate_of and not r.hidden and r.status != "done"
-               and not (0 < r.duration_s < s.min_duration_s)]
+               and not (0 < r.duration_s < s.min_duration_s) and not no_sound(r, lib.warnings(r.delivery_id))]
         prefs = s.prefs(course.id)
         every = self._s.lib.recordings(course.id)
         if prefs.show_mode != "all" and len(available_sections(every)) > 1:
@@ -1018,23 +1024,26 @@ class Api:
         hits = self._s.lib.search(query, limit=60)
         out = []
         cache: dict[str, Any] = {}
+        courses = {c.id: c for c in self._s.lib.courses(True)}
         for h in hits:
             rec = cache.get(h["delivery_id"]) or self._s.lib.get_recording(h["delivery_id"])
             if rec is None:
                 continue
             cache[h["delivery_id"]] = rec
-            course = self._s.lib.get_course(rec.course_id)
+            course = courses.get(rec.course_id)
             at = float(h["t"])
             out.append({"day_key": rec.day_key, "delivery_id": rec.delivery_id, "t": at,
                         "ts": f"{int(at // 60):02d}:{int(at % 60):02d}", "snippet": h["snippet"],
                         "course_code": course.code if course else "", "date": rec.start.date().isoformat(),
                         "time": f"{rec.start:%H:%M}", "viewer_url": rec.viewer_url})
         mats = []
-        for h in self._s.lib.search_materials(query, limit=30):
-            m = self._s.lib.get_material(h["resource_id"])
+        found = self._s.lib.search_materials(query, limit=30)
+        known = self._s.lib.get_materials(h["resource_id"] for h in found)
+        for h in found:
+            m = known.get(h["resource_id"])
             if not m:
                 continue
-            course = self._s.lib.get_course(m["course_id"])
+            course = courses.get(m["course_id"])
             mats.append({"resource_id": m["resource_id"], "title": m["title"], "page": h["page"], "snippet": h["snippet"],
                          "course_id": m["course_id"], "course_code": course.code if course else ""})
         return {"ok": True, "results": out, "materials": mats}

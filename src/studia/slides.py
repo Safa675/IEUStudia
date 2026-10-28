@@ -182,10 +182,12 @@ def _fetch_keyframe(session: requests.Session, seg: _Segment, avcc: bytes) -> Op
 def extract_slides(session: requests.Session, master_url: str, out_dir: Path, rel_prefix: str, prefix: str,
                    offset: float = 0.0, progress: Callable[[int, int], None] = lambda a, b: None,
                    cancel: Optional[threading.Event] = None, change_threshold: float = 0.06,
-                   min_slide_s: float = 12.0) -> list[Slide]:
+                   min_slide_s: float = 12.0, seen: Optional[list[tuple[np.ndarray, Slide]]] = None) -> list[Slide]:
     """Sample the screen stream, detect slide changes, write ``<out_dir>/<prefix>-NN.jpg``.
 
-    ``rel_prefix`` is the folder of the images relative to the Markdown file (e.g. "slides/<day>").
+    ``rel_prefix`` is the folder of the images relative to the Markdown file (e.g. "slides/<day>"). ``seen``: the
+    slides kept so far as (thumbnail, slide), shared by the calls for one recording's screen streams: a slide shown
+    again in a later stream is not saved twice, and the numbering goes on.
     """
     r = media_playlist(session, master_url, prefer="video")
     init, segs = parse_playlist(r.text, r.url)
@@ -197,7 +199,7 @@ def extract_slides(session: requests.Session, master_url: str, out_dir: Path, re
         raise RuntimeError("The screen recording is not H.264.")
 
     slides: list[Slide] = []
-    saved_thumbs: list[tuple[np.ndarray, int]] = []     # (thumb, slide index) for de-duplication
+    saved = seen if seen is not None else []            # (thumb, slide) for de-duplication
     cur_start, cur_thumb, cur_frame, cur_last_t = None, None, None, 0.0
     total = len(segs)
 
@@ -207,17 +209,17 @@ def extract_slides(session: requests.Session, master_url: str, out_dir: Path, re
         th = thumb(cur_frame)
         if is_blank(th):
             return
-        dup = next((idx for t_, idx in saved_thumbs if changed_fraction(t_, th) < 0.015), None)
+        dup = next((s for t_, s in saved if changed_fraction(t_, th) < 0.015), None)
         if dup is not None:
-            src = next(s for s in slides if s.index == dup)
-            slides.append(Slide(dup, cur_start + offset, end_t + offset, src.image, src.path))
+            slides.append(Slide(dup.index, cur_start + offset, end_t + offset, dup.image, dup.path))
             return
-        idx = len(saved_thumbs) + 1
+        idx = len(saved) + 1
         name = f"{prefix}-{idx:02d}.jpg"
         path = out_dir / name
         save_jpeg(cur_frame, path)
-        saved_thumbs.append((th, idx))
-        slides.append(Slide(idx, cur_start + offset, end_t + offset, f"{rel_prefix}/{name}", str(path)))
+        slide = Slide(idx, cur_start + offset, end_t + offset, f"{rel_prefix}/{name}", str(path))
+        saved.append((th, slide))
+        slides.append(slide)
 
     with ThreadPoolExecutor(max_workers=8, thread_name_prefix="slides") as pool:
         pending: deque[Future] = deque()        # a few frames ahead, not all: a decoded 1080p frame is ~3 MB

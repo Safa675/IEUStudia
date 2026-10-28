@@ -10,6 +10,7 @@
   const SPIN = () => (window.LSIcons ? LSIcons.spinner("spin") : "…");
   const fmtDur = t.dur;                                   // 1 h 5 min · 1 sa 5 dk
   const pct = (p) => `${Math.round((p || 0) * 100)}%`;    // a CSS width: not text (text uses t.pct)
+  const scaleX = (p) => `scaleX(${Math.round((p || 0) * 100) / 100})`;   // the queue's bars: the same, as a transform
   const pctText = (p) => t.pct(Math.round((p || 0) * 100) / 100);   // 45% · %45, rounded like the width
   const leftText = t.left;
   const jobDetail = (j) => [j.detail, leftText(j.eta_s)].filter(Boolean).join(" · ");   // "Transcribing passage 40 of 600 · about 25 min left"
@@ -198,13 +199,13 @@
     document.body.appendChild(sp);
     requestAnimationFrame(() => { sp.classList.add("out"); setTimeout(() => sp.remove(), 320); });
   }
-  function startupError(msg) {
+  function startupError(msg, logs = true) {
     const sp = $("#splash");
     if (!sp) { $("#root").innerHTML = `<div class="signin"><div class="card signin-card"><h3>${t("Something went wrong")}</h3><p>${esc(msg)}</p></div></div>`; return; }
     sp.querySelector(".splash-bar").remove();
     setSplash("");
     sp.insertAdjacentHTML("beforeend", `<div class="splash-error">${esc(msg)}</div>
-      <div class="splash-actions"><button class="btn primary" data-act="reload">${I("retry", "sm")} ${t("Try again")}</button><button class="btn" data-act="logs">${I("terminal", "sm")} ${t("Open logs")}</button></div>`);
+      <div class="splash-actions"><button class="btn primary" data-act="reload">${I("retry", "sm")} ${t("Try again")}</button>${logs ? `<button class="btn" data-act="logs">${I("terminal", "sm")} ${t("Open logs")}</button>` : ""}</div>`);
   }
 
   // ------------------------------------------------------------------ shell
@@ -1427,11 +1428,11 @@
     const b = S.batch || {};
     const batch = b.total > 1 ? `<span class="q-batch" title="${esc(t("Lectures finished in this batch"))}">${t("{done} of {total} done", { done: b.finished, total: b.total })}${b.left_s ? " · " + t("about {time} left", { time: fmtDur(b.left_s) }) : ""}</span>` : "";
     el.innerHTML = `<div class="q-main"><div class="q-icon">${paused ? I("pause") : SPIN()}</div><div class="q-text"><div class="q-title">${title}</div><div class="q-detail">${paused ? t("Your PC may sleep until you continue.") : detail}</div></div>
-      ${batch}<div class="bar ${p || paused ? "" : "indet"}"><i style="width:${pct(p)}"></i></div>${more}
+      ${batch}<div class="bar ${p || paused ? "" : "indet"}"><i class="glide" style="transform:${scaleX(p)}"></i></div>${more}
       ${cur && !eng ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause" title="${esc(paused ? t("Go on transcribing") : t("Pause: the lecture being transcribed stops after the passages it is on. Nothing is lost."))}">${I(paused ? "play" : "pause", "sm")}<span class="lbl"> ${paused ? t("Continue") : t("Pause")}</span></button>` : ""}
       ${cur ? `<button class="btn ghost sm" data-act="cancel-all" title="${esc(t("Cancel everything in the queue"))}">${I("stop", "sm")}<span class="lbl"> ${t("Cancel")}</span></button>` : ""}</div>
       ${open && jobs.length > 1 ? `<div class="q-list">${jobs.map((j, i) => `<div class="q-item" data-id="${esc(j.id)}"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
-        <div class="bar"><i style="width:${pct(j.progress)}"></i></div>
+        <div class="bar"><i class="glide" style="transform:${scaleX(j.progress)}"></i></div>
         ${j.stage === "queued" && !j.local && i > 1 ? `<button class="btn ghost sm" data-act="queue-first" data-id="${esc(j.id)}" title="${esc(t("Transcribe this one before the others still waiting"))}">${t("Do next")}</button>` : j.first ? `<span class="dim sm">${t("next")}</span>` : ""}
         <button class="btn ghost icon sm" data-act="cancel" data-id="${j.id}" title="${esc(t("Cancel this one"))}">${I("x", "sm")}</button></div>`).join("")}</div>` : ""}`;
   }
@@ -1442,10 +1443,10 @@
     if (S.queueShown === j.id) {
       const d = el.querySelector(".q-main .q-detail"), bar = el.querySelector(".q-main > .bar");
       if (d && !S.paused) d.textContent = jobDetail(j);
-      if (bar) { bar.classList.toggle("indet", !j.progress); bar.firstElementChild.style.width = pct(j.progress); }
+      if (bar) { bar.classList.toggle("indet", !j.progress); bar.firstElementChild.style.transform = scaleX(j.progress); }
     }
     const item = el.querySelector(`.q-item[data-id="${CSS.escape(j.id)}"] .bar i`);
-    if (item) item.style.width = pct(j.progress);
+    if (item) item.style.transform = scaleX(j.progress);
   }
 
   // ---- sign-in
@@ -2044,7 +2045,8 @@
     S.view = back && back.name === "settings" ? back : { name: "home" };
     render();
     if (Studia.onGo[S.view.name]) Studia.onGo[S.view.name](S.view);
-    A.sync();
+    const age = Date.now() - new Date(S.lastSync || "").getTime();   // the helper (or this window before a language switch)
+    if (!(age >= 0 && age < 5 * 60000)) A.sync();                    // synced minutes ago: not again (F5 still syncs)
     if (S.boot && S.boot.open) openTarget(S.boot.open);
     else if (S.boot && S.boot.updated_from) whatsNew();
   }
@@ -2073,8 +2075,29 @@
   }
   function start() {
     if (window.pywebview && window.pywebview.api && Object.keys(window.pywebview.api).length) { REAL = true; boot(); return; }
-    let started = false;
-    window.addEventListener("pywebviewready", () => { if (!started) { started = true; REAL = true; boot(); } });
+    let started = false, late = false;
+    window.addEventListener("pywebviewready", () => {
+      if (started && !late) return;
+      const st = late && $("#splash-status");
+      if (st) {                                    // it came after all: back to the start-up screen, and on
+        $$("#splash .splash-error, #splash .splash-actions").forEach((el) => el.remove());
+        st.insertAdjacentHTML("beforebegin", `<div class="splash-bar"><i></i></div>`);
+      }
+      started = true; late = false; REAL = true; boot();
+    });
+    // In the app's window (WebView2) the API comes once the page has loaded, which can take seconds on a slow start:
+    // wait for it there, never show the demo data. Only a browser preview has none and shows the demo.
+    if (window.chrome && window.chrome.webview) {
+      setTimeout(() => {
+        if (started) return;
+        started = late = true;
+        if (document.documentElement.lang === "tr") {    // no table from Python yet: the start-up screen's Turkish
+          t.load({ lang: "tr", table: { "IEUStudia's window could not connect to the app. Try again; if it keeps happening, close IEUStudia and open it again.": "IEUStudia'nın penceresi uygulamaya bağlanamadı. Tekrar dene; yine olursa IEUStudia'yı kapatıp yeniden aç.", "Try again": "Tekrar dene", "Open logs": "Günlükleri aç" } });
+        }
+        startupError(t("IEUStudia's window could not connect to the app. Try again; if it keeps happening, close IEUStudia and open it again."), false);   // (no app to open the logs)
+      }, 25000);
+      return;
+    }
     setTimeout(() => { if (!started && !window.pywebview) { started = true; REAL = false; boot(); } }, 350);
   }
   render();

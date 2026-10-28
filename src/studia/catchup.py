@@ -5,6 +5,7 @@ materials not downloaded yet. Nothing here uses Claude: notes, plans and chats s
 from __future__ import annotations
 
 import dataclasses as dc
+import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -12,6 +13,7 @@ from .config import Settings
 from .sections import available_sections, classify, guess_my_section
 
 READY = ("available", "failed")      # Panopto has finished processing it ("processing" ones are not ready yet)
+_NO_SOUND = re.compile(r"no sound|no speech", re.I)     # one that failed so under 2.3 has only the error, no warning
 # rough real-time factors (minutes of audio per minute of work), English + Turkish decoding included; large-v3 on an
 # RTX 4070 measured ~13x
 SPEED = {"gpu": {"large-v3-turbo": 22.0, "large-v3": 12.0, "medium": 16.0, "small": 25.0},
@@ -40,11 +42,19 @@ def _downloaded(m: dict[str, Any]) -> bool:
     return bool(m.get("local_path")) and Path(m["local_path"]).is_file()
 
 
+def no_sound(rec: Any, warnings: Iterable[dict[str, Any]]) -> bool:
+    """The lecture's last try found no sound or no speech on Panopto: trying again finds the same. A batch (a full or
+    course sync, a class day) leaves it out; the student can still queue it by hand."""
+    return (any(w.get("code") == "no_speech" for w in warnings)
+            or (rec.status == "failed" and bool(_NO_SOUND.search(rec.error or ""))))
+
+
 def course_needs(lib: Any, settings: Settings, course_ids: Optional[Iterable[str]] = None,
                  busy: Iterable[str] = ()) -> list[CourseNeeds]:
     """Per course (all active ones, or ``course_ids``): the work a full sync would queue. ``busy``: ids already queued."""
     wanted = set(course_ids) if course_ids is not None else None
     busy = set(busy)
+    warnings = lib.all_warnings()
     out: list[CourseNeeds] = []
     for c in lib.courses():
         if wanted is not None and c.id not in wanted:
@@ -58,7 +68,7 @@ def course_needs(lib: Any, settings: Settings, course_ids: Optional[Iterable[str
         todo, other, waiting = [], 0, 0
         for r in recs:
             if (r.duplicate_of or r.hidden or r.status not in READY or r.delivery_id in busy
-                    or 0 < r.duration_s < settings.min_duration_s):
+                    or 0 < r.duration_s < settings.min_duration_s or no_sound(r, warnings.get(r.delivery_id, ()))):
                 continue
             if mine.get(r.delivery_id) is False:
                 other += 1

@@ -48,6 +48,37 @@ def test_own_section_newest_first_and_skips(tmp_path):
     assert course_needs(lib, s, ["a"], busy={"a2"})[0].lectures[0][0] == "a1"   # already queued: not twice
 
 
+def test_lectures_without_sound_are_not_queued_by_a_batch_again(tmp_path):
+    lib = _lib(tmp_path)
+    s = Settings(min_duration_s=300)
+    lib.set_status("a2", "failed", "Panopto has no sound for this recording (only a picture), so there's nothing to "
+                                   "transcribe.")              # failed so under 2.3: an error text, no warning
+    lib.set_status("a1", "failed", "Panopto'da bu kaydın sesi yok.")
+    lib.set_warnings("a1", [{"code": "no_speech", "level": "error", "message": "Panopto'da bu kaydın sesi yok."}])
+    assert course_needs(lib, s, ["a"])[0].lectures == []
+    lib.set_status("a2", "failed", "The download failed. Can't reach panopto.ieu.edu.tr.")
+    lib.set_warnings("a1", [])
+    assert [d for d, _ in course_needs(lib, s, ["a"])[0].lectures] == ["a2", "a1"]      # those are tried again
+
+
+def test_a_class_day_leaves_out_a_lecture_without_sound_but_one_asked_for_still_runs(isolated_home):
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    lib = api._s.lib
+    lib.upsert_courses([Course(id="a", title="2026-1 MATH 250 P 1", code="MATH 250", name="Calculus", section="1")])
+    lib.merge_recordings("a", [_rec("a1", "a", 5), _rec("a2", "a", 5, hour=13)], first_sync=True)
+    lib.set_status("a2", "failed", "This recording has no sound on Panopto.")
+    lib.set_warnings("a2", [{"code": "no_speech", "level": "error", "message": "This recording has no sound on Panopto."}])
+    asked = []
+    api._s.jobs.enqueue = lambda ids, batch=False: asked.append(list(ids)) or len(ids)
+    api._push = lambda evt: None
+    api._s.jobs.queue_event = lambda: {}
+    assert api.transcribe_day(lib.get_recording("a1").day_key)["queued"] == 1 and asked == [["a1"]]
+    assert api.transcribe(["a2"])["queued"] == 1 and asked[-1] == ["a2"]
+
+
 def test_summary_estimates(tmp_path):
     lib = _lib(tmp_path)
     s = Settings(min_duration_s=300)
@@ -118,7 +149,7 @@ def test_calendar_file_of_the_announced_assessments(tmp_path):
 
 
 def test_calendar_events_from_the_assessment_plan(tmp_path, monkeypatch):
-    from studia import calendar_export, views
+    from studia import calendar_export
 
     lib = _lib(tmp_path)
     detail = {"code": "MATH 240", "outcomes_en": ["count", "Bayes"],
@@ -128,7 +159,7 @@ def test_calendar_events_from_the_assessment_plan(tmp_path, monkeypatch):
               "alerts": {"plan": [{"kind": "quiz", "no": 2, "name": "Quiz 2", "week": 5, "los": [2], "sources": [{"title": "About quizzes"}]},
                                   {"kind": "quiz", "no": 3, "name": "Quiz 3", "week": 9, "los": [], "sources": []},
                                   {"kind": "quiz", "no": 4, "name": "Quiz 4", "week": None, "los": [], "sources": []}]}}
-    monkeypatch.setattr(views, "course_detail", lambda lib, s, cid: detail if cid == "a" else None)
+    monkeypatch.setattr(calendar_export, "_course", lambda lib, s, c: detail if c.id == "a" else {**detail, "weeks": []})
     import datetime as dt
 
     assert calendar_export.assessment_events(lib, Settings(), dt.date(2026, 11, 16)) == []       # all behind us

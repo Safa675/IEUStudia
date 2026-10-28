@@ -97,9 +97,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         from .splash import main as splash_main
 
         sys.exit(splash_main(args[1:]))
-    from .net import use_windows_certificates
+    if "--agent" in args or args[:1] == ["--selftest"]:
+        from .net import use_windows_certificates
 
-    use_windows_certificates()                   # before any connection is made
+        use_windows_certificates()               # before any connection is made (the window: in _main)
     if "--agent" in args:                        # the tray helper (no window)
         from .agent import main as agent_main
 
@@ -334,6 +335,11 @@ def _main(argv: Optional[list[str]] = None) -> None:
     from .winutil import _instance_file
 
     _start_splash(dark, "--recovered" in argv, _instance_file(name), logs_dir(), i18n.language())   # on screen at once
+    # HTTPS trusts Windows' certificates from here on: before any connection is made (nothing above connects), and
+    # not earlier, as it loads requests and the SSL setup (~0.2 s) that the start-up window shouldn't wait for
+    from .net import use_windows_certificates
+
+    use_windows_certificates()
     setup_logging(debug)
     log.info("IEUStudia %s starting (python %s), profile %s", __version__, sys.version.split()[0], account.id)
     if "--recovered" in argv:

@@ -54,7 +54,8 @@ PREP_STAGES = [("gather", N_("Reading the course material")), ("write", N_("Writ
 LABELS = dict(STAGES + PREP_STAGES)
 PACK_CHARS = 90_000           # course material sent for the concept list (~29k tokens)
 MAT_CHARS = 9_000             # per file
-DAY_CHARS = 12_000            # per lecture day
+DAY_CHARS = 12_000            # per lecture day at most
+DAY_MIN = 1_500               # a lecture day that would get less is left out (and the plan says so)
 CANDIDATES = 5                # kept per concept after the search
 INSPECT = 3                   # inspected per concept the focus needs
 INSPECT_EXTRA = 2             # inspected per extra concept (a topic of these weeks the focus does not ask for)
@@ -132,6 +133,80 @@ def _clip(text: str, limit: int) -> str:
 
 
 # ------------------------------------------------------------------ gather (no AI)
+_STARRED = re.compile(r"\[[\d:]+\] (?:\(slide \d+\) )?(?:\[\w+\] )?⭐ ")     # a compact_day line the lecturer emphasised
+
+
+def _shares(budget: int, sizes: list[int]) -> list[int]:
+    """``budget`` split as evenly as it goes: all of a text (at most DAY_CHARS) when that is less than an equal share,
+    equal shares of the rest for the others."""
+    out, left = [0] * len(sizes), budget
+    order = sorted(range(len(sizes)), key=lambda i: sizes[i])
+    for n, i in enumerate(order):
+        out[i] = max(0, min(sizes[i], DAY_CHARS, left // (len(order) - n)))
+        left -= out[i]
+    return out
+
+
+def _fit_days(sizes: list[int], heads: list[int], budget: int) -> tuple[list[int], dict[int, int]]:
+    """Which lecture days go into the pack and the characters each gets: every day, when each gets at least DAY_MIN
+    (or all of a shorter one); else the short days and as many of the others as fit, spread over the scope (the
+    days left out are reported)."""
+    def spread(days: list[int], n: int) -> list[int]:
+        return [days[round(j * (len(days) - 1) / max(1, n - 1))] for j in range(n)]
+
+    short = [i for i, size in enumerate(sizes) if size <= DAY_MIN]
+    long = [i for i, size in enumerate(sizes) if size > DAY_MIN]
+    tries = [short + spread(long, n) for n in range(len(long), -1, -1)]
+    tries += [spread(list(range(len(sizes))), n) for n in range(len(sizes), 0, -1)]   # too many short ones
+    for keep in tries:
+        keep = sorted(set(keep))
+        shares = _shares(budget - sum(heads[i] for i in keep), [sizes[i] for i in keep])
+        if keep and all(s >= min(sizes[i], DAY_MIN) for i, s in zip(keep, shares)):
+            return keep, dict(zip(keep, shares))
+    return [], {}
+
+
+def _excerpt(day: str, room: int) -> str:
+    """A class day (``compact_day``'s text) in ``room`` characters: all of it when it fits, else its ⭐ paragraphs
+    first, then paragraphs spread over all its parts - in the order they were said."""
+    if len(day) <= room:
+        return day
+    lines = day.split("\n")
+    note = "(Excerpts: the moments the lecturer emphasised (⭐) and passages from across the whole lecture.)"
+    fixed, units = [0], []                       # the headings and blank lines; the paragraphs (with any run-on line)
+    for i, line in enumerate(lines[1:], 1):
+        if line.startswith("["):
+            units.append([i])
+        elif line.startswith("#") or not line.strip() or not units:
+            fixed.append(i)
+        else:
+            units[-1].append(i)
+    cost = [sum(len(lines[i]) + 1 for i in u) for u in units]
+    size = sum(len(lines[i]) + 1 for i in fixed) + len(note) + 1
+    taken: set[int] = set()
+
+    def take(k: int) -> bool:
+        nonlocal size
+        if k in taken or size + cost[k] > room:
+            return False
+        taken.add(k)
+        size += cost[k]
+        return True
+
+    for k, u in enumerate(units):
+        if _STARRED.match(lines[u[0]]):
+            take(k)
+    for _ in range(4):                           # evenly spread picks; again into what is left
+        rest = [k for k in range(len(units)) if k not in taken]
+        n = min(len(rest), int((room - size) / (sum(cost[k] for k in rest) / len(rest)))) if rest else 0
+        added = sum(take(rest[int((j + 0.5) * len(rest) / n)]) for j in range(n))
+        if not added:
+            break
+    keep = set(fixed) | {i for k in taken for i in units[k]}
+    body = [line for i, line in enumerate(lines) if i in keep]
+    return "\n".join([body[0], note, *body[1:]])
+
+
 def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, Any]:
     """The course material for the scope as one text (for the concept list) and the facts the later stages use."""
     from .outputs.ai_copy import compact_day
@@ -192,29 +267,31 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
                     out.append(text)
                     mat_budget -= len(text)
                     used.append({"id": m["id"], "title": m["title"], "week": w["no"]})
-    day_budget = PACK_CHARS - sum(len(x) + 1 for x in out)
     done = lib.transcribed_ids()
     recs = lib.recordings(course_id)
-    days_used, days_missing = [], []
+    days, days_missing = [], []
     for w in weeks:
         for day in w["days"]:
-            if not day["any_done"] and day.get("mine") is not False:
-                days_missing.append({"day_key": day["day_key"], "date": day["date"], "week": w["no"]})
-            if not day["any_done"] or day_budget < 2_000:
+            if not day["any_done"]:
+                if day.get("mine") is not False:
+                    days_missing.append({"day_key": day["day_key"], "date": day["date"], "week": w["no"]})
                 continue
             day_recs = [r for r in recs if r.day_key == day["day_key"]]
             trans = store.load_transcripts([r.delivery_id for r in day_recs if r.delivery_id in done])
             full = compact_day(course, day_recs, trans)
-            if len(full) > min(DAY_CHARS, day_budget):
-                starred = compact_day(course, day_recs, trans, only_starred=True)
-                room = max(0, min(DAY_CHARS, day_budget) - len(starred) - 200)
-                full = starred + "\n\n(Opening of the lecture:)\n" + full[:room] + " …(cut)"
-            out.append(f"\n=== LECTURE (week {w['no']}) ===\n{full}")
-            day_budget -= len(full)
-            days_used.append({"day_key": day["day_key"], "date": day["date"], "week": w["no"]})
+            if full:
+                days.append(({"day_key": day["day_key"], "date": day["date"], "week": w["no"]},
+                             f"\n=== LECTURE (week {w['no']}) ===\n", full))
+    # the lectures share what is left evenly, so a long scope (a final) reaches its last weeks too
+    budget = PACK_CHARS - sum(len(x) + 1 for x in out)
+    keep, rooms = _fit_days([len(full) for _, _, full in days], [len(head) + 1 for _, head, _ in days], budget)
+    for i in keep:
+        _, head, full = days[i]
+        out.append(head + _excerpt(full, rooms[i]))
     pack = "\n".join(out)
     return {"pack": pack, "chars": len(pack), "materials_used": used, "materials_missing": missing,
-            "days_used": days_used, "days_missing": days_missing,
+            "days_used": [days[i][0] for i in keep], "days_missing": days_missing,
+            "days_left_out": [d for i, (d, _, _) in enumerate(days) if i not in rooms],
             "course": {"id": course_id, "code": d["code"], "name": d["display_name"]},
             "weeks": [{"no": w["no"], "start": w["start"], "end": w["end"], "topic": w["topic_en"] or w["topic_tr"]}
                       for w in weeks],
@@ -798,9 +875,12 @@ def completeness(coverage: list[dict], scope: Scope, goal: str, required_minutes
                                 "parts.")
     elif count["supplement"] + count["optional"] <= n / 4:
         level, say = "mostly", N_("Complete for {goal}: all {n} skills found in your material are covered — {how}.")
-    else:                                        # covered, but much of it only in writing
+    elif count["supplement"] >= count["optional"]:   # covered, but much of it only in writing
         level, say = "written", N_("Covered for {goal}, but partly only in writing: of the {n} skills found in your "
                                    "material, {how}.")
+    else:                                        # covered, but much of it only in videos marked optional
+        level, say = "optional", N_("Covered for {goal}, but partly only in optional videos: of the {n} skills found in "
+                                    "your material, {how}.")
     headline = _capital(t(say, goal=goal, how=how, missing=count["missing"], n=n))   # Turkish may begin with the goal
     headline_en = say.format(goal=goal_en, how=how_en, missing=count["missing"], n=n)
     extras = [cv for cv in coverage if not cv["in_scope"]]
@@ -984,6 +1064,8 @@ class PlanRunner:
             data = plan["data"]
             for st in STAGE_NAMES[STAGE_NAMES.index(from_stage):]:
                 data.pop(st, None)
+                if st == "verify":
+                    data.pop("verify_parts", None)       # its finished requests too
             self._s.lib.update_plan(plan_id, data=data)
         with self._lock:
             if plan_id in self._queue or plan_id in self._cancel:
@@ -1088,6 +1170,8 @@ class PlanRunner:
         if "gather" not in data:
             self._stage(plan_id, "gather", 0.02)
             data["gather"] = gather(self._s.lib, self._s.settings, plan["course_id"], scope)
+            if plan.get("parent_id") and scope.kind == "videos":
+                data.update(self._reusable(plan["parent_id"], scope, data["gather"]))
             save()
         facts = data["gather"]
         check()
@@ -1210,25 +1294,30 @@ class PlanRunner:
         # verify
         if "verify" not in data:
             todo = [c for c in todo_c if excerpts.get(c["id"])]
-            verdicts: dict[str, dict] = {}
             batches = [todo[i:i + VERIFY_BATCH] for i in range(0, len(todo), VERIFY_BATCH)]
+            finished: dict[str, dict] = data.setdefault("verify_parts", {})   # kept when the plan stops before the end
+
+            def key(batch: list[dict]) -> str:
+                return " ".join(c["id"] for c in batch)
 
             def judge(batch: list[dict]) -> tuple[dict, dict]:
                 asked = {c["id"]: set(excerpts.get(c["id"], {})) for c in batch}
                 raw, res = self._ask_json(verify_prompt(batch, vids, excerpts), verify_with, cancel)
                 return clean_verdicts(raw, asked, vids, batch, excerpts), res
 
-            self._stage(plan_id, "verify", 0.62, tn(len(batches), "Checking the captions against the course ({n} request, "
-                                                    "{model})…", "Checking the captions against the course ({n} requests, "
-                                                    "{model})…", model=verify_with))
+            left = [b for b in batches if key(b) not in finished]
+            self._stage(plan_id, "verify", 0.62 + 0.18 * (len(batches) - len(left)) / max(1, len(batches)),
+                        tn(len(left), "Checking the captions against the course ({n} request, {model})…",
+                           "Checking the captions against the course ({n} requests, {model})…", model=verify_with))
             with ThreadPoolExecutor(max_workers=VERIFY_PARALLEL, thread_name_prefix="plan-verify") as pool:
-                futures = [pool.submit(judge, b) for b in batches]
+                futures = {pool.submit(judge, b): b for b in left}
                 try:
-                    for n, f in enumerate(as_completed(futures), 1):
+                    for f in as_completed(futures):
                         per_concept, res = f.result()
                         add_usage("verify", res)
-                        for cid, per in per_concept.items():
-                            verdicts.setdefault(cid, {}).update(per)
+                        finished[key(futures[f])] = per_concept
+                        save()
+                        n = sum(key(b) in finished for b in batches)
                         self._stage(plan_id, "verify", 0.62 + 0.18 * n / len(batches),
                                     t("Checking the captions against the course ({n}/{total}, {model})…", n=n,
                                       total=len(batches), model=verify_with))
@@ -1237,7 +1326,12 @@ class PlanRunner:
                         f.cancel()
                     raise
             check()
+            verdicts: dict[str, dict] = {}
+            for b in batches:
+                for cid, per in finished.get(key(b), {}).items():
+                    verdicts.setdefault(cid, {}).update(per)
             data["verify"] = verdicts
+            data.pop("verify_parts", None)
             save()
         verdicts = data["verify"]
         check()
@@ -1279,6 +1373,7 @@ class PlanRunner:
         result["materials_missing"] = facts.get("materials_missing", [])
         result["days_missing"] = len(facts.get("days_missing", []))
         result["days_used"] = len(facts.get("days_used", []))
+        result["days_left_out"] = len(facts.get("days_left_out", []))
         result["materials_used"] = len(facts.get("materials_used", []))
         try:
             result["file"] = str(self._write_markdown(plan, result, facts, scope))
@@ -1286,6 +1381,28 @@ class PlanRunner:
             log.warning("Could not write the plan file", exc_info=True)
         save(result=result, title=result["title"], status="done", stage="done", progress=1.0,
              message=t("{n} videos · {minutes} min", n=len(result["items"]), minutes=result["total_minutes"]))
+
+    def _reusable(self, parent_id: str, scope: Scope, facts: dict[str, Any]) -> dict[str, Any]:
+        """The finished stages of the plan being updated, when only the viewing time or the deadline changed and the
+        course material is the same: the concepts and the checked videos would be the same, so only the plan itself
+        is built again."""
+        parent = self._s.lib.plan(parent_id) or {}
+        old = parent.get("data") or {}
+
+        def rest(s: Scope) -> dict[str, Any]:
+            return {**s.to_json(), "minutes": 0, "deadline": ""}
+
+        same = old.get("gather") == json.loads(json.dumps(facts))          # as it was saved
+        if not same or rest(Scope.from_json(parent.get("scope") or {})) != rest(scope):
+            return {}
+        out: dict[str, Any] = {}
+        for st in STAGE_NAMES[1:-1]:                    # concepts … verify
+            if st not in old:
+                if st == "verify" and "verify_parts" in old:
+                    out["verify_parts"] = old["verify_parts"]
+                break
+            out[st] = old[st]
+        return out
 
     def _write_prep(self, plan: dict[str, Any], scope: Scope, facts: dict[str, Any], model: str,
                     cancel: threading.Event, add_usage: Callable[[str, dict], None], save: Callable[..., None]) -> None:
@@ -1315,7 +1432,8 @@ class PlanRunner:
         english = prep_title(scope, facts)                     # the file's name and heading stay English
         result = {"kind": "prep", "title": title, "markdown": md,
                   "materials_missing": facts.get("materials_missing", []),
-                  "materials_used": len(facts.get("materials_used", [])), "days_used": len(facts.get("days_used", []))}
+                  "materials_used": len(facts.get("materials_used", [])), "days_used": len(facts.get("days_used", [])),
+                  "days_left_out": len(facts.get("days_left_out", []))}
         try:
             result["file"] = str(self._write_file(plan, english, f"# {english}\n\n*{facts['course']['code']} · made with "
                                                   f"IEUStudia on {dt.date.today():%d %b %Y}*\n\n{md}\n", "Exam prep"))
@@ -1342,20 +1460,21 @@ class PlanRunner:
 
 def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> dict[str, Any]:
     """Rough cost before running: tokens per stage and what the plan will be based on."""
-    from .ai import CHARS_PER_TOKEN, PROMPT_OVERHEAD
+    from .ai import PROMPT_OVERHEAD, chars_per_token
 
-    s = Scope.from_json(scope)
+    s, per = Scope.from_json(scope), chars_per_token()
     facts = gather(lib, settings, course_id, s)
-    pack = int(facts["chars"] / CHARS_PER_TOKEN) + PROMPT_OVERHEAD + 900
+    pack = int(facts["chars"] / per) + PROMPT_OVERHEAD + 900
     if s.kind == "prep":
         return {"main_model": main_model(s, settings), "verify_model": "", "main_input": pack,
                 "main_output": 7000, "verify_input": 0, "verify_output": 0, "concepts": 0, "weeks": facts["weeks"],
                 "materials_used": facts["materials_used"], "materials_missing": facts["materials_missing"],
-                "days_used": facts["days_used"], "minutes": t("about 1–3 minutes")}
+                "days_used": facts["days_used"], "days_left_out": facts["days_left_out"],
+                "minutes": t("about 1–3 minutes")}
     n = max(6, min(MAX_CONCEPTS, 4 + 3 * len(facts["weeks"])))
     m = n if not focused(s) or s.extras else max(4, round(n * 0.6))          # the concepts that get videos
     batches = -(-m // VERIFY_BATCH)
-    excerpts_in = int((INSPECT + 1) * 2.5 * EXCERPT_CHARS / CHARS_PER_TOKEN)   # per concept: ~4 videos, 2–3 parts each
+    excerpts_in = int((INSPECT + 1) * 2.5 * EXCERPT_CHARS / per)   # per concept: ~4 videos, 2–3 parts each
     verify_in = batches * (PROMPT_OVERHEAD + 900 + VERIFY_BATCH * excerpts_in)
     assemble_in = PROMPT_OVERHEAD + 1800 + m * 380
     return {"main_model": main_model(s, settings), "verify_model": getattr(settings, "verify_model", "") or VERIFY_MODEL,
@@ -1363,4 +1482,5 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> 
             "verify_output": batches * VERIFY_BATCH * 4 * 130, "concepts": n,
             "weeks": facts["weeks"], "materials_used": facts["materials_used"],
             "materials_missing": facts["materials_missing"], "days_used": facts["days_used"],
+            "days_left_out": facts["days_left_out"],
             "minutes": t("about 3–8 minutes")}

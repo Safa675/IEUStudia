@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from ..domain import Course, Recording
-from .common import group_days, kind_label, weekday_short
-from .markdown import part_views, render_day
+from .common import as_transcript_map, group_days, kind_label, select_parts, weekday_short
+from .markdown import render_day
 from .pack import render_study_pack
 from .prompts import PROMPTS_MD
 from .srt import render_srt
@@ -78,8 +78,9 @@ def write_day(output_root: Path, course: Course, all_courses: Sequence[Course], 
               transcripts: Mapping[str, Any], all_course_recordings: Sequence[Recording],
               all_course_transcripts: Mapping[str, Any], write_srt: bool = True,
               slides: Optional[Mapping[str, Sequence[Any]]] = None,
-              warnings: Optional[Mapping[str, list[dict[str, Any]]]] = None) -> dict[str, Path]:
-    """Write the day file (+ subtitles) and refresh the course study pack and PROMPTS.md."""
+              warnings: Optional[Mapping[str, list[dict[str, Any]]]] = None, pack: bool = True) -> dict[str, Path]:
+    """Write the day file (+ subtitles) and refresh the course study pack and PROMPTS.md. ``pack=False``: leave the
+    pack to the caller (rewriting every day of a course writes it once, after the last day)."""
     folder = course_dir(output_root, course, all_courses)
     recs = sorted(recordings, key=lambda r: r.start)
     first = recs[0]
@@ -87,12 +88,17 @@ def write_day(output_root: Path, course: Course, all_courses: Sequence[Course], 
     atomic_write(md_path, render_day(course, recs, transcripts, slides, warnings))
     if write_srt:
         stem = day_stem(course, first.start.date(), first.kind)
-        for p in part_views(recs, transcripts):
-            if p.transcript:
-                atomic_write(folder / "subtitles" / f"{stem} - Part {p.index}.srt", render_srt(p.transcript.segments))
-    pack = write_pack(output_root, course, all_courses, all_course_recordings, all_course_transcripts, warnings)
+        tmap = as_transcript_map(transcripts)
+        for i, rec in enumerate(select_parts(recs, tmap), start=1):        # numbered as the day file's parts
+            t = tmap.get(rec.delivery_id)
+            if t:
+                atomic_write(folder / "subtitles" / f"{stem} - Part {i}.srt", render_srt(t.segments))
+    out = {"md": md_path, "folder": folder}
+    if pack:
+        out["pack"] = write_pack(output_root, course, all_courses, all_course_recordings, all_course_transcripts,
+                                 warnings)
     ensure_prompts(output_root)
-    return {"md": md_path, "pack": pack, "folder": folder}
+    return out
 
 
 def write_pack(output_root: Path, course: Course, all_courses: Sequence[Course], recordings: Sequence[Recording],
