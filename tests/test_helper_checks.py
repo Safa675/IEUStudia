@@ -257,8 +257,9 @@ def test_a_check_writes_what_was_told_only_when_something_was_added(monkeypatch,
         def has_credentials(self):
             return True
 
-        def sync(self, full_every=None):
+        def sync(self, full_every=None, dashboard=True):
             assert full_every == self.HELPER_PANOPTO_EVERY          # the helper probes Panopto's folders
+            assert dashboard is False                               # ... and reads the small course list
             return types.SimpleNamespace(new_ids=found["rec"])
 
         def sync_content(self, progress=None, units_every=None):

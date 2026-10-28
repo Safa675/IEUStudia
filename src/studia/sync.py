@@ -223,14 +223,32 @@ class SyncService:
         got: dict = {}
         return course, p.list_recordings(course.id, course.folder_id or "", got), s, got
 
+    @staticmethod
+    def _course_list(s: requests.Session, profile: Profile, stored: dict[str, Course]) -> tuple[Profile, list[Course]]:
+        """The tray helper's courses: IEULearn's small "My courses" list (~2 KB on the wire instead of the dashboard's
+        ~80 KB), with the profile and a known course's term and progress as the app's last sync stored them. The
+        dashboard when the list doesn't come back whole. An expired session raises NeedLogin, as the dashboard does."""
+        learn = IEULearn(s)
+        courses = learn.course_list()
+        if courses is None:
+            return learn.dashboard()
+        for c in courses:
+            old = stored.get(c.id)
+            if old:
+                c.instructor, c.term, c.progress = c.instructor or old.instructor, c.term or old.term, old.progress
+                c.cover_url = c.cover_url or old.cover_url
+        return dc.replace(profile), courses
+
     def sync(self, progress: Callable[[str], None] = lambda m: None,
              partial: Callable[[list[str]], None] = lambda ids: None,
-             full_every: Optional[dt.timedelta] = None) -> SyncResult:
+             full_every: Optional[dt.timedelta] = None, dashboard: bool = True) -> SyncResult:
         """``full_every`` (the tray helper): each course's Panopto folders are listed in full at least this often; in
         between only when their probe shows a change, so a renamed, moved or deleted older recording (or one
         published with an older date while another is deleted) may wait until then; nothing is marked gone from a
         probe. Each course keeps its own clock: one that keeps failing doesn't stop the others' probes. None (the
-        app): every folder in full, each time."""
+        app): every folder in full, each time. ``dashboard`` False (the tray helper): the courses come from the small
+        "My courses" list and the profile stays as stored (see _course_list); an expired session is noticed the same
+        way and signs in again with the dashboard. The app always loads the dashboard."""
         t0 = time.monotonic()
         errors: list[str] = []
         new_ids: list[str] = []
@@ -243,10 +261,15 @@ class SyncService:
                 if not probing or self._stale(self.lib.get_meta(f"listed_full:{c.id}") or "", full_every):
                     return None
                 return self._heads(c.id)
+            stored_profile = None if dashboard else self.profile      # (none stored yet: the dashboard has it)
             with ThreadPoolExecutor(max_workers=8, thread_name_prefix="sync") as pool:
                 probe_session = clone_session(self._session)
                 dash_session = clone_session(self._session)
-                f_dash = pool.submit(lambda: IEULearn(dash_session).dashboard())
+                if stored_profile is None:
+                    f_dash = pool.submit(lambda: IEULearn(dash_session).dashboard())
+                else:
+                    f_dash = pool.submit(self._course_list, dash_session, stored_profile,
+                                         {c.id: c for c in self.lib.courses(include_inactive=True)})
                 panopto_down = False
                 try:
                     panopto_ok = Panopto(probe_session).is_authenticated()
@@ -293,7 +316,7 @@ class SyncService:
             if panopto_down:
                 errors.append(t("Panopto isn't answering right now: new recordings are checked again next time."))
             elif todo or not panopto_ok:
-                progress(t("Connecting to Panopto…"))      # (the dashboard just showed the IEULearn sign-in works)
+                progress(t("Connecting to Panopto…"))      # (the dashboard or course list showed the sign-in works)
                 launch_ids = todo or [next((c.id for c in known.values() if c.folder_id), None)]
                 launch_ids = [i for i in launch_ids if i]
                 sessions = [clone_session(self._session) for _ in launch_ids]  # cloned here: workers must not take the lock

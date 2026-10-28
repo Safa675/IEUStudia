@@ -1061,10 +1061,15 @@ def _console(cmd: list[str], env: Optional[dict[str, str]] = None) -> None:
     if sys.platform == "win32":
         subprocess.Popen(cmd, creationflags=_NEW_CONSOLE, env=env)
         return
+    import shlex
+
     from .osutil import run_in_terminal
 
     if not run_in_terminal(cmd, env):
-        raise RuntimeError(t("No terminal app was found. Run this in a terminal: {command}", command=" ".join(cmd)))
+        command = shlex.join(cmd)
+        if env and env.get("CLAUDE_CONFIG_DIR"):          # IEUStudia's own Claude Code profile, not your personal one
+            command = f"CLAUDE_CONFIG_DIR={shlex.quote(env['CLAUDE_CONFIG_DIR'])} {command}"
+        raise RuntimeError(t("No terminal app was found. Run this in a terminal: {command}", command=command))
 
 
 def start_login(which: str) -> None:

@@ -9,6 +9,7 @@ checks run without one and only their notifications show.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import json
 import logging
@@ -16,18 +17,14 @@ import os
 import shutil
 import signal
 import subprocess
-import tempfile
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from .i18n import t
-
-# the parts that are plain files and JSON work the same on Linux
-from .winutil import (_instance_file, instance_name, mark_instance, read_instance,  # noqa: F401
-                      write_instance)
-from .winutil import take_open_request as _take_open_request
+from .winutil import instance_name  # noqa: F401 - the same name on every system
 
 log = logging.getLogger("studia")
 ICON = Path(__file__).with_name("assets") / "icon.png"
@@ -51,9 +48,64 @@ def _detached(cmd: list[str]) -> bool:
 _locks: dict[str, int] = {}
 
 
+def _run_dir() -> Path:
+    """This user's own folder for the lock, instance and open-request files: ``$XDG_RUNTIME_DIR`` (only you can
+    write in it; emptied when you log out), else a folder in the app's data folder. Never the shared /tmp: another
+    user's file of the same name there can't be replaced (the sticky bit), so their copy couldn't be found or asked."""
+    base = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if base and os.path.isdir(base):
+        return Path(base)
+    from .paths import app_dir
+
+    run = app_dir() / "run"
+    with contextlib.suppress(OSError):           # writing a file there then fails, and says so where it matters
+        run.mkdir(exist_ok=True)
+    return run
+
+
 def _lock_path(name: str) -> Path:
-    base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()     # per user, gone after a reboot
-    return Path(base) / (name.split("\\")[-1] + ".lock")
+    return _run_dir() / (name.split("\\")[-1] + ".lock")
+
+
+def _instance_file(name: str) -> Path:
+    return _run_dir() / (name.split("\\")[-1] + ".json")
+
+
+def _open_file(name: str) -> Path:
+    return _run_dir() / (name.split("\\")[-1] + "-open.json")
+
+
+def _write_json(path: Path, data: dict) -> None:
+    """Replace ``path`` whole (a reader never sees half of it)."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def write_instance(name: str) -> None:
+    """Remember which process holds the lock (so a later start can find it, or replace it if it got stuck)."""
+    _write_json(_instance_file(name), {"pid": os.getpid(), "started": time.time()})
+
+
+def read_instance(name: str) -> dict:
+    try:
+        d = json.loads(_instance_file(name).read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def mark_instance(name: str, phase: str) -> None:
+    """Note how far start-up got, as on Windows (where the start-up window reads it)."""
+    d = read_instance(name)
+    if d.get("pid") != os.getpid():
+        d = {"pid": os.getpid(), "started": time.time()}
+    d.update(phase=phase, phase_at=time.time())
+    _write_json(_instance_file(name), d)
 
 
 def acquire_single_instance(name: str = "Local\\Studia-SingleInstance", wait_s: float = 0.0) -> bool:
@@ -139,29 +191,34 @@ def bring_to_front(hwnd: int) -> None:
             w.show()
 
 
+_REQUEST_S = 60                                  # an open request older than this is left unanswered
+
+
 def focus_window(title: str) -> bool:
     """Another copy runs (it holds the lock): ask it to come forward, as on Windows. Wayland doesn't let one program
-    raise another's window, so the running copy does it itself when it sees the request (take_open_request)."""
+    raise another's window, so the running copy does it itself when it sees the request (take_open_request). The
+    window keeps its page, and a page a notification asked for that it hasn't shown yet stays asked for."""
     name = instance_name()
     info = read_instance(name)
     if not info.get("pid") or not _alive(info["pid"]):
         return False
-    pending = _instance_file(name).with_name(name.split("\\")[-1] + "-open.json")
-    if not pending.exists():                  # a notification's page is already asked for: keep that one
-        request_open(name, "home")
+    f = _open_file(name)
+    try:
+        with open(f, "x", encoding="utf-8") as fh:          # only if nothing is asked for yet
+            fh.write(json.dumps({"raise": True, "at": time.time()}))
+    except FileExistsError:
+        with contextlib.suppress(OSError):
+            if time.time() - f.stat().st_mtime >= _REQUEST_S:    # left over (nobody took it): a new one
+                _write_json(f, {"raise": True, "at": time.time()})
+    except OSError:
+        pass
     return True
 
 
 def request_open(name: str, target: str) -> None:
     """Ask the running app window to show a page ("course:<id>", "home"): the page goes in a file, which that window
     looks at once a second (Linux has no named events like Windows)."""
-    import json
-
-    try:
-        _instance_file(name).with_name(name.split("\\")[-1] + "-open.json").write_text(
-            json.dumps({"target": target, "at": time.time()}), encoding="utf-8")
-    except OSError:
-        pass
+    _write_json(_open_file(name), {"target": target, "at": time.time()})
 
 
 def open_request_event(name: str) -> int:
@@ -173,8 +230,19 @@ def wait_event(event: int, timeout_s: float | None = None) -> bool:
 
 
 def take_open_request(name: str) -> str:
-    target = _take_open_request(name)
-    if target:
+    """The page another start asked for ("" if none, or if it only asked the window to come forward). The window
+    comes forward for either."""
+    f = _open_file(name)
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+        f.unlink()
+        fresh = time.time() - float(d.get("at") or 0) < _REQUEST_S
+    except (OSError, ValueError, TypeError, AttributeError):   # none, or still being written: the next look
+        return ""
+    if not fresh:
+        return ""
+    target = str(d.get("target") or "")
+    if target or d.get("raise"):
         bring_to_front(1)
     return target
 
@@ -379,10 +447,13 @@ class KeepAwake:
             exe = shutil.which("systemd-inhibit")
             if not exe:
                 return
+            # the lock holds while tail waits for this process: it ends with it, also after a crash or a kill
+            # (rather than keeping the PC awake until you log out)
             try:
                 self._proc = subprocess.Popen([exe, "--what=idle:sleep", "--who=IEUStudia", f"--why={self._reason}",
-                                               "--mode=block", "sleep", "infinity"],
+                                               "--mode=block", "tail", f"--pid={os.getpid()}", "-f", "/dev/null"],
                                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+                _awake.add(self)
             except OSError:
                 self._proc = None
 
@@ -395,24 +466,50 @@ class KeepAwake:
                 proc.wait(5)
 
 
+_awake: "weakref.WeakSet[KeepAwake]" = weakref.WeakSet()
+
+
+@atexit.register
+def _all_awake_off() -> None:
+    """At exit: every lock off at once (tail would notice a second later)."""
+    for k in list(_awake):
+        k.off()
+
+
 # ----------------------------------------------------------------------------- notifications (tray.py's interface)
+_no_actions = False                              # this notify-send has no --action (libnotify before 0.7.10)
+
+
+def _send(exe: str, title: str, text: str, on_click: Callable[[], None]) -> None:
+    """Show one notification and wait until it closes: its "Open" action calls ``on_click``. An older notify-send
+    (Ubuntu 22.04, Debian 11) refuses --action: it is shown without one then, and from then on in this process."""
+    global _no_actions
+
+    base = [exe, "--app-name=IEUStudia", f"--icon={ICON}"]
+    try:
+        for plain in ((True,) if _no_actions else (False, True)):
+            action = [] if plain else [f"--action=default={t('Open')}"]
+            r = subprocess.run([*base, *action, title[:63], text[:255]], capture_output=True, text=True,
+                               timeout=24 * 3600)
+            if r.returncode and not plain and ("--action" in r.stderr or "unknown option" in r.stderr.lower()):
+                _no_actions = True
+                continue
+            if r.returncode:
+                log.debug("notify-send exited with %s: %s", r.returncode, r.stderr.strip()[:300])
+            elif r.stdout.strip() == "default":
+                on_click()
+            return
+    except (OSError, subprocess.SubprocessError):
+        log.debug("notification failed", exc_info=True)
+
+
 def _notify(title: str, text: str, on_click: Callable[[], None]) -> None:
     """A desktop notification; clicking it (its "Open" action) calls ``on_click``."""
     exe = shutil.which("notify-send")
     if not exe:
         log.info("Notification (no notify-send): %s: %s", title, text)
         return
-
-    def run() -> None:
-        try:
-            r = subprocess.run([exe, "--app-name=IEUStudia", f"--icon={ICON}", f"--action=default={t('Open')}",
-                                title[:63], text[:255]], capture_output=True, text=True, timeout=24 * 3600)
-            if r.stdout.strip() == "default":
-                on_click()
-        except (OSError, subprocess.SubprocessError):
-            log.debug("notification failed", exc_info=True)
-
-    threading.Thread(target=run, name="notification", daemon=True).start()
+    threading.Thread(target=_send, args=(exe, title, text, on_click), name="notification", daemon=True).start()
 
 
 MenuItem = tuple[int, str, bool, bool]

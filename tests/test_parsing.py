@@ -42,6 +42,42 @@ def test_parse_dashboard():
     assert courses[1].status == "past" and courses[1].name == "Calculus & Analysis"
 
 
+# the "My courses" list the dashboard loads (/student/courses/overview-fragment), cut down: no status, no term
+COURSE_LIST = """
+<div id="coursesRoot"><div class="courses-tabs">
+  <button class="courses-tab active" data-tab="active">Dönem Dersleri <span class="tab-count">1</span></button>
+  <button class="courses-tab" data-tab="past">Geçmiş Dersler <span class="tab-count">1</span></button></div>
+<div class="courses-tab-content" id="tab-active">
+<article class="dash-course" data-course-id="111" data-name="x"
+  data-course-title="2026-1 EEE 242 Sayısal Tasarım 1" data-course-href="h" data-cover-image="u">
+  <a href="h" class="dash-course-cover" style="background-image:url('https://learn.ieu.edu.tr/c-1.jpg?v=1')"></a>
+  <span class="dash-course-school">Jane Doe</span><span class="dash-course-meta">Elektrik</span></article></div>
+<div class="courses-tab-content" id="tab-past" style="display: none;">
+<article class="dash-course" data-course-id="222" data-course-title="2025-2 MATH 153 Calculus &amp; Analysis 2">
+  <span class="dash-course-school">John Roe</span></article></div></div>
+"""
+
+
+def test_the_course_list_has_the_dashboards_courses():
+    from studia.ieulearn import parse_course_list
+
+    _, dash = parse_dashboard(DASHBOARD)
+    listed = parse_course_list(COURSE_LIST)
+    keys = ("id", "title", "code", "name", "section", "instructor", "status", "position")
+    assert [[getattr(c, k) for k in keys] for c in listed] == [[getattr(c, k) for k in keys] for c in dash]
+    assert listed[0].cover_url == "https://learn.ieu.edu.tr/c-1.jpg?v=1" and listed[0].term == ""
+
+
+def test_a_course_list_that_isnt_whole_is_not_used():
+    from studia.ieulearn import parse_course_list
+
+    assert parse_course_list(COURSE_LIST.replace('class="tab-count">1<', 'class="tab-count">3<', 1)) is None
+    assert parse_course_list(DASHBOARD) is None                              # not the list
+    assert parse_course_list('<div id="coursesRoot"><span class="tab-count">0</span></div>') is None
+    assert parse_course_list("<html><form id='loginForm'></form></html>") is None
+    assert parse_course_list(COURSE_LIST.replace('class="tab-count"', 'class="badge"')) is None   # no counts: changed
+
+
 def test_extract_folder_id_plain_and_encoded():
     fid = "d893262b-1027-4262-a147-b4cb007bffcc"
     assert extract_folder_id([f"https://x/EmbeddedList.aspx?embedded=1&folderID={fid}&isLTIEmbed=true"]) == fid

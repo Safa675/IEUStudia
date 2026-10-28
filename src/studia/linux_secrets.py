@@ -8,14 +8,50 @@ with only the file, can't read it. Without a keyring (a server, a session withou
 
 from __future__ import annotations
 
+import base64
+import binascii
 import functools
 import os
+from typing import Any, Optional
 
 from .i18n import t
 
 MAGIC = b"IEUS1"                                  # format version of what protect() returns
 _ATTRS = {"application": "IEUStudia", "kind": "secrets-key"}
 _LABEL = "IEUStudia (encrypts its saved sign-in)"
+
+
+class KeyUnusable(OSError):
+    """The keyring has IEUStudia's key, but not as one that can be used."""
+
+
+def _decode(secret: bytes) -> Optional[bytes]:
+    """The key in a keyring item: base64 text, or the 32 bytes themselves (as the first Linux version stored it)."""
+    secret = bytes(secret)
+    if len(secret) == 32:
+        return secret
+    try:
+        key = base64.b64decode(secret.strip(), validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    return key if len(key) == 32 else None
+
+
+def _collection_key(collection: Any) -> bytes:
+    """The key from the keyring ``collection``, made and stored there the first time. Stored as text (base64), the
+    secret's content type, as a keyring that keeps text as text would change raw bytes. An item that is there but
+    can't be used is never replaced: what it encrypted (the sign-in, ChatGPT's) would be lost for good."""
+    items = list(collection.search_items(_ATTRS))
+    for item in items:
+        key = _decode(item.get_secret())
+        if key is not None:
+            return key
+    if items:
+        raise KeyUnusable(t("The keyring has a key for IEUStudia that it can't use. Remove \"{label}\" in your keyring "
+                            "app, then sign in again.", label=_LABEL))
+    key = os.urandom(32)
+    collection.create_item(_LABEL, _ATTRS, base64.b64encode(key), replace=False, content_type="text/plain")
+    return key
 
 
 @functools.lru_cache(maxsize=1)
@@ -29,14 +65,9 @@ def _key() -> bytes:
         collection = secretstorage.get_default_collection(conn)
         if collection.is_locked():
             collection.unlock()                    # the desktop asks for the keyring password, if it's locked
-        items = list(collection.search_items(_ATTRS))
-        if items:
-            secret = items[0].get_secret()
-            if len(secret) == 32:
-                return bytes(secret)
-        key = os.urandom(32)
-        collection.create_item(_LABEL, _ATTRS, key, replace=True)
-        return key
+        return _collection_key(collection)
+    except KeyUnusable:
+        raise
     except Exception as exc:  # noqa: BLE001 - D-Bus errors (no session bus) come in many types
         raise OSError(t("No keyring is available to keep IEUStudia's sign-in safe ({error}).", error=exc)) from exc
 

@@ -22,6 +22,7 @@
   "On Linux, install the Codex CLI yourself (npm install -g @openai/codex), then check again.": "Linux'ta Codex CLI'ı kendin kur (npm install -g @openai/codex), sonra tekrar kontrol et.",
   "The secretstorage package is missing, so IEUStudia can't use the keyring.": "secretstorage paketi eksik, bu yüzden IEUStudia anahtarlığı kullanamıyor.",
   "No keyring is available to keep IEUStudia's sign-in safe ({error}).": "IEUStudia'nın girişini güvende tutacak bir anahtarlık yok ({error}).",
+  "The keyring has a key for IEUStudia that it can't use. Remove \"{label}\" in your keyring app, then sign in again.": "Anahtarlıkta IEUStudia için kullanılamayan bir anahtar var. Anahtarlık uygulamandan \"{label}\" kaydını sil, sonra yeniden giriş yap.",
   "Yes": "Evet",
   "No": "Hayır"
 }

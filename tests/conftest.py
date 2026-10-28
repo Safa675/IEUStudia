@@ -45,6 +45,7 @@ def isolated_home(tmp_path, tmp_path_factory, monkeypatch):
         from studia import linux_secrets
 
         monkeypatch.setattr(linux_secrets, "_key", lambda: b"k" * 32)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)     # the lock and instance files: in the test's folder
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path_factory.mktemp("temp")))
     monkeypatch.setattr(net, "use_windows_certificates", lambda: None)
     paths.set_profile_dir("")

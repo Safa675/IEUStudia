@@ -27,16 +27,25 @@ def site(monkeypatch):
     st = types.SimpleNamespace(profile=Profile(name="Ali Veli", student_number="20250001"), courses=list(COURSES),
                                logged_in=True, password="right", logins=[], panopto=True, folders={"a": "fa", "b": "fb"},
                                listing={"a": [_rec("a", 0)], "b": [_rec("b", 0)]}, launches=[], server_error=False,
-                               subfolders={}, asked=[])
+                               subfolders={}, asked=[], loaded=[], list_whole=True)
 
     class FakeLearn:
         def __init__(self, s):
             pass
 
         def dashboard(self):
+            st.loaded.append("dashboard")
             if not st.logged_in:
                 raise NeedLogin("expired")
             return Profile(**vars(st.profile)), [Course(**vars(c)) for c in st.courses]
+
+        def course_list(self):                           # the "My courses" list: no term, no progress, no profile
+            st.loaded.append("list")
+            if not st.logged_in:
+                raise NeedLogin("expired")
+            if not st.list_whole:
+                return None
+            return [Course(**{**vars(c), "term": "", "progress": None, "cover_url": ""}) for c in st.courses]
 
         def is_logged_in(self):
             return st.logged_in
@@ -178,7 +187,7 @@ def test_a_recording_that_moved_to_another_course_moves_and_is_not_new_again(tmp
 
 # ------------------------------------------------------------------ the helper's Panopto probes
 def _helper_sync(sync):
-    return sync.sync(full_every=sync.HELPER_PANOPTO_EVERY)
+    return sync.sync(full_every=sync.HELPER_PANOPTO_EVERY, dashboard=False)
 
 
 def test_the_helper_probes_the_folders_and_lists_none_when_nothing_changed(site, tmp_path):
@@ -300,6 +309,81 @@ def test_the_apps_syncs_always_list_in_full(site, tmp_path):
         site.asked.clear()
         sync.sync()
         assert sorted(site.asked) == [("list", "a"), ("list", "b")]
+
+
+# ------------------------------------------------------------------ the helper's course list instead of the dashboard
+def test_the_helper_takes_the_courses_from_the_small_list_and_the_app_from_the_dashboard(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    site.courses = [Course(**{**vars(c), "term": "2026-2027 Fall", "progress": 40, "cover_url": "c.jpg"}) for c in COURSES]
+    sync.sync()
+    assert site.loaded == ["dashboard"]
+    site.loaded.clear()
+    site.profile = Profile(name="")                      # (the list has no name: it is never asked for)
+    for _ in range(2):
+        res = _helper_sync(sync)
+        assert res.errors == [] and len(res.courses) == 2
+    assert site.loaded == ["list", "list"]
+    assert (sync.profile.name, sync.profile.student_number) == ("Ali Veli", "20250001")
+    assert {(c.id, c.term, c.progress, c.cover_url) for c in lib.courses()} == {
+        ("a", "2026-2027 Fall", 40, "c.jpg"), ("b", "2026-2027 Fall", 40, "c.jpg")}                  # as stored
+    site.loaded.clear()
+    sync.sync()                                          # the app's syncs: always the dashboard
+    sync.sync(full_every=sync.HELPER_PANOPTO_EVERY)
+    assert site.loaded == ["dashboard", "dashboard"]
+
+
+def test_the_helpers_first_check_or_a_list_that_doesnt_come_whole_loads_the_dashboard(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    _helper_sync(sync)                                   # nobody's profile stored yet
+    assert site.loaded == ["dashboard"] and sync.profile.name == "Ali Veli"
+    site.loaded.clear()
+    site.list_whole = False
+    _helper_sync(sync)
+    assert site.loaded == ["list", "dashboard"]
+
+
+def test_a_dropped_or_a_new_course_shows_at_the_next_helper_check(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.courses = [COURSES[0], Course(id="c", title="2026-1 PHYS 100 P 1", code="PHYS 100", name="Physics")]
+    site.folders["c"] = "fc"
+    site.listing["c"] = [_rec("c", 0)]
+    res = _helper_sync(sync)
+    assert [c.id for c in lib.courses()] == ["a", "c"] and site.loaded == ["dashboard", "list"]
+    assert sorted(site.launches) == ["a", "b", "c"] and lib.get_course("c").folder_id == "fc"   # its folder found
+    assert {r.course_id for r in lib.recordings("c")} == {"c"} and res.errors == []
+
+
+def test_an_expired_session_is_caught_on_a_helper_check_as_on_the_dashboard(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    secrets_store.set_credentials("ali", "right")
+    site.loaded.clear()
+    site.logged_in = False                               # the session expired: signs in again, as the app's sync does
+    assert _helper_sync(sync).errors == [] and site.logins == ["right"]
+    assert site.loaded == ["list", "dashboard", "dashboard"]    # (the dashboard's own retry, then after signing in)
+    site.logged_in = False
+    secrets_store.set_credentials("ali", "changed")      # the password was changed: tried once, then the app asks
+    with pytest.raises(AuthError):
+        _helper_sync(sync)
+    assert site.logins == ["right", "changed"] and secrets_store.rejected()
+    with pytest.raises(NeedLogin, match="didn't accept your saved password"):
+        _helper_sync(sync)
+    secrets_store.clear_credentials()                    # no password stored at all
+    with pytest.raises(NeedLogin, match="Please sign in to IEULearn."):
+        _helper_sync(sync)
+    assert site.logins == ["right", "changed"]
+
+
+def test_the_helpers_early_panopto_listing_runs_with_the_course_list(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.asked.clear()
+    site.listing["a"] = [_rec("a", 0), _rec("a", 1)]
+    early = []
+    res = sync.sync(partial=early.append, full_every=sync.HELPER_PANOPTO_EVERY, dashboard=False)
+    assert early == [["a1"]] and res.new_ids == ["a1"] and site.loaded[-1] == "list"
+    assert sorted(site.asked) == [("list", "a"), ("probe", "a"), ("probe", "b")]
 
 
 def test_a_syllabus_that_cant_be_fetched_is_kept_and_looked_for_again_tomorrow(site, tmp_path, monkeypatch):

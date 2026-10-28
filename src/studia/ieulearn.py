@@ -86,6 +86,31 @@ def parse_dashboard(page: str) -> tuple[Profile, list[Course]]:
     return profile, courses
 
 
+def parse_course_list(page: str) -> Optional[list[Course]]:
+    """The "My courses" list the dashboard loads when its courses tab opens (~2 KB on the wire instead of the
+    dashboard's ~80 KB): the same course cards, without the term and the progress, and no name or student number.
+    A card's status is the tab it is in (this term's / past courses). None when the page isn't that list, or its
+    cards don't add up to its tabs' counts (or the counts are gone: the page changed): the caller loads the
+    dashboard."""
+    if 'id="coursesRoot"' not in page:
+        return None
+    _, courses = parse_dashboard(page)
+    counts = [int(n) for n in re.findall(r'class="tab-count"[^>]*>\s*(\d+)\s*<', page)]
+    if not courses or not counts or sum(counts) != len(courses):
+        return None
+    by_id = {c.id: c for c in courses}
+    past = page.find('id="tab-past"')
+    for m in re.finditer(r'<article class="dash-course"[^>]*>(.*?)</article>', page, re.S):
+        tag = m.group(0)[: m.group(0).find(">") + 1]
+        c = by_id.pop(_attr(tag, "data-course-id"), None)
+        if c is None:
+            continue
+        c.status = _attr(tag, "data-course-status") or ("past" if 0 <= past < m.start() else "ongoing")
+        inst = re.search(r'class="dash-course-school"[^>]*>(.*?)<', m.group(1), re.S)
+        c.instructor = c.instructor or (html.unescape(inst.group(1)).strip() if inst else "")
+    return courses
+
+
 def extract_folder_id(urls: list[str]) -> Optional[str]:
     for u in urls:
         d = unquote(unquote(u or ""))
@@ -157,6 +182,16 @@ class IEULearn:
         _not_down(r)
         r.raise_for_status()
         return parse_dashboard(r.text)
+
+    def course_list(self) -> Optional[list[Course]]:
+        """The courses from the "My courses" list (parse_course_list); like dashboard(), it checks the sign-in."""
+        r = self.s.get(f"{BASE}/student/courses/overview-fragment", allow_redirects=False)
+        if r.status_code in (301, 302, 303):
+            raise NeedLogin(t("Your IEULearn session has expired."))
+        _not_down(r)
+        if r.status_code != 200:                # moved, or refused another way: the dashboard decides
+            return None
+        return parse_course_list(r.text)
 
     def has_panopto(self, course_id: str) -> bool:
         r = self.s.get(f"{BASE}/student/courses/{course_id}")

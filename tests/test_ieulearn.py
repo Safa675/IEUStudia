@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from studia.ieulearn import BASE, AuthError, IEULearn
+from studia.ieulearn import BASE, AuthError, IEULearn, NeedLogin
 from studia.net import NetworkError
 
 FORM = ('<form id="loginForm" method="post" action="/login"><input name="csrf_token" value="tok">'
@@ -70,6 +70,27 @@ def test_a_refusal_answered_with_an_error_status_still_counts_when_the_form_come
     with pytest.raises(AuthError, match="Wrong password") as err:
         IEULearn(Site((200, FORM, "/login"), (status, FORM + '<p class="error">Wrong password.</p>', "/login"))).login("s", "x")
     assert err.value.server_error == (status >= 500)     # shown, but the saved password isn't locked out for it
+
+
+def test_the_course_list_is_a_sign_in_check_like_the_dashboard():
+    asked = []
+
+    class Session:
+        def get(self, url, **kw):
+            asked.append((url, kw.get("allow_redirects")))
+            return types.SimpleNamespace(status_code=302, headers={"Location": f"{BASE}/login"}, text="")
+
+    for load in (IEULearn(Session()).course_list, IEULearn(Session()).dashboard):
+        with pytest.raises(NeedLogin, match="Your IEULearn session has expired."):
+            load()
+    assert asked == [(f"{BASE}/student/courses/overview-fragment", False), (f"{BASE}/student", False)]
+
+
+def test_a_course_list_that_moved_or_is_refused_leaves_it_to_the_dashboard():
+    for status in (401, 403, 404, 405):
+        answer = types.SimpleNamespace(status_code=status, headers={}, text="", url=f"{BASE}/x")
+        session = types.SimpleNamespace(get=lambda url, answer=answer, **kw: answer)
+        assert IEULearn(session).course_list() is None
 
 
 def test_the_sign_in_form_after_a_server_error_without_a_word_of_refusal_is_not_one():
