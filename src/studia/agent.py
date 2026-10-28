@@ -396,7 +396,7 @@ class Helper:
             else:
                 self.told_rejected = False
                 try:
-                    res = sync.sync()
+                    res = sync.sync(full_every=sync.HELPER_PANOPTO_EVERY)    # probes, and a full listing now and then
                     content = sync.sync_content(units_every=None if self.cfg.notify_materials else sync.HELPER_UNITS_EVERY)
                     note = summarize(lib, settings, self.cfg, res.new_ids, content["new_announcements"],
                                      content["new_materials"], seen)

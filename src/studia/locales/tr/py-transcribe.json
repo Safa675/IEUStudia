@@ -31,7 +31,7 @@
   "Maximum accuracy": "En yüksek doğruluk",
   "The best quality for hard audio and long Turkish passages; the slowest, even with an NVIDIA graphics card.": "Zor anlaşılan ses ve uzun Türkçe kısımlar için en iyi kalite; NVIDIA ekran kartıyla bile en yavaşı.",
   "Medium": "Orta",
-  "More accurate than Small, but very slow without an NVIDIA graphics card (hours per lecture).": "Küçük modelden daha doğru, ama NVIDIA ekran kartı olmadan çok yavaş (ders başına saatler sürer).",
+  "More accurate than Small, but very slow without an NVIDIA graphics card (hours per lecture). With one, Fast & accurate is both quicker and more accurate.": "Küçük modelden daha doğru, ama NVIDIA ekran kartı olmadan çok yavaş (ders başına saatler sürer). Ekran kartı varsa Hızlı ve doğru hem daha hızlı hem daha doğru.",
   "Small": "Küçük",
   "The one for PCs without an NVIDIA graphics card: fast enough on the processor, a bit less accurate.": "NVIDIA ekran kartı olmayan bilgisayarlar için: işlemcide yeterince hızlı, biraz daha az doğru.",
   "Model files for {model} were not found on Hugging Face.": "{model} modelinin dosyaları Hugging Face'te bulunamadı.",

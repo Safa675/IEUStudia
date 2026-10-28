@@ -94,7 +94,7 @@ def test_the_first_lectures_of_a_course_that_had_none_are_new(tmp_path, monkeypa
         def is_authenticated(self):
             return True
 
-        def list_recordings(self, cid, folder):
+        def list_recordings(self, cid, folder, heads=None):
             return list(listing[cid])
 
     monkeypatch.setattr(sync_mod, "IEULearn", Learn)

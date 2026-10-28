@@ -14,8 +14,16 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_unconfigure(config):
     """The run ends here, with the tests' result, without waiting for what thousands of tests leave behind (the
     services' daemon threads, thread pools, native libraries): now and then Python's own shutdown hung for minutes
-    after every test had passed, and a CI job would then run until GitHub stops it."""
-    if "status" in _ended:
+    after every test had passed, and a CI job would then run until GitHub stops it. STUDIA_TEST_SLOW_EXIT=1 leaves
+    the ending to Python, to look into such a hang: a shutdown still going a minute later prints every thread's
+    stack to the error output and ends (exit code 1)."""
+    if "status" not in _ended:
+        return
+    if os.environ.get("STUDIA_TEST_SLOW_EXIT") == "1":
+        import faulthandler
+
+        faulthandler.dump_traceback_later(60, exit=True)    # its own thread: it also fires late in the shutdown
+    else:
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(_ended["status"])

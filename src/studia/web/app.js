@@ -2202,7 +2202,7 @@
       get_bootstrap: () => { setTimeout(() => emit({ type: "system", gpu: { available: true, name: "NVIDIA GeForce RTX 4070 Laptop GPU", vram_mb: 8188, libraries: true, used: true, fits: true }, ai: { available: true, version: "2.1.287", provider: "claude", label: "Claude", can_plans: true, can_images: true },
         presets: [{ id: "large-v3-turbo", label: "Fast & accurate", description: "Nearly the best quality, and fast with an NVIDIA graphics card.", size_mb: 1620, downloaded: true },
           { id: "large-v3", label: "Maximum accuracy", description: "The best quality for hard audio and long Turkish passages; the slowest, even with an NVIDIA graphics card.", size_mb: 3090, downloaded: true },
-          { id: "medium", label: "Medium", description: "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture).", size_mb: 1530, downloaded: false },
+          { id: "medium", label: "Medium", description: "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture). With one, Fast & accurate is both quicker and more accurate.", size_mb: 1530, downloaded: false },
           { id: "small", label: "Small", description: "The one for PCs without an NVIDIA GPU: fast enough on the processor, a bit less accurate.", size_mb: 484, downloaded: false }] }), 300);
         const signed = !location.hash.includes("signin");
         const pid = (location.hash.match(/profile=([\w-]+)/) || [])[1] || "main";

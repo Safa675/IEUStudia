@@ -636,7 +636,7 @@
         { label: "Memory", value: "32 GB", ok: "yes" }, { label: "Graphics", value: "NVIDIA GeForce RTX 4070 Laptop GPU · 8 GB · driver 566.14", ok: "yes" }, { label: "Free disk space", value: "182 GB on C:\\", ok: "yes" }] },
     catalog: { speech: [{ id: "large-v3-turbo", label: "Fast & accurate", description: "Nearly the best quality, and fast with an NVIDIA graphics card.", size_mb: 1620, ready: false },
       { id: "large-v3", label: "Maximum accuracy", description: "Slowest, best for hard audio and long Turkish passages.", size_mb: 3090, ready: false },
-      { id: "medium", label: "Medium", description: "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture).", size_mb: 1530, ready: false },
+      { id: "medium", label: "Medium", description: "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture). With one, Fast & accurate is both quicker and more accurate.", size_mb: 1530, ready: false },
       { id: "small", label: "Small", description: "The one for PCs without an NVIDIA GPU: fast enough on the processor, a bit less accurate.", size_mb: 484, ready: false }],
     cuda: { needed: true, ready: false, size_mb: 560 }, llm: [] } });
   // the preview walks through a fresh PC: signing in with ChatGPT, or Claude Code / the Codex CLI and their sign-in

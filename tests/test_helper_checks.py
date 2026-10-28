@@ -245,10 +245,11 @@ def test_a_check_writes_what_was_told_only_when_something_was_added(monkeypatch,
     from studia import calendar_export, sync
 
     found = {"rec": [], "ann": [], "mat": []}
-    every = sync.SyncService.HELPER_UNITS_EVERY
+    every, panopto_every = sync.SyncService.HELPER_UNITS_EVERY, sync.SyncService.HELPER_PANOPTO_EVERY
 
     class FakeSync:
         HELPER_UNITS_EVERY = every
+        HELPER_PANOPTO_EVERY = panopto_every
 
         def __init__(self, lib, settings, log):
             pass
@@ -256,7 +257,8 @@ def test_a_check_writes_what_was_told_only_when_something_was_added(monkeypatch,
         def has_credentials(self):
             return True
 
-        def sync(self):
+        def sync(self, full_every=None):
+            assert full_every == self.HELPER_PANOPTO_EVERY          # the helper probes Panopto's folders
             return types.SimpleNamespace(new_ids=found["rec"])
 
         def sync_content(self, progress=None, units_every=None):

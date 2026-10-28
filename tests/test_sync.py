@@ -26,7 +26,8 @@ def _rec(cid, n):
 def site(monkeypatch):
     st = types.SimpleNamespace(profile=Profile(name="Ali Veli", student_number="20250001"), courses=list(COURSES),
                                logged_in=True, password="right", logins=[], panopto=True, folders={"a": "fa", "b": "fb"},
-                               listing={"a": [_rec("a", 0)], "b": [_rec("b", 0)]}, launches=[], server_error=False)
+                               listing={"a": [_rec("a", 0)], "b": [_rec("b", 0)]}, launches=[], server_error=False,
+                               subfolders={}, asked=[])
 
     class FakeLearn:
         def __init__(self, s):
@@ -61,11 +62,25 @@ def site(monkeypatch):
                 raise st.panopto
             return st.panopto
 
-        def list_recordings(self, cid, folder):
+        @staticmethod
+        def _heads(cid, folder):
             got = st.listing[cid]
             if isinstance(got, Exception):
                 raise got
-            return list(got)
+            newest = max(got, key=lambda r: r.start).delivery_id if got else ""
+            return {folder: [len(got), newest], **{sub: [0, ""] for sub in st.subfolders.get(cid, [])}}
+
+        def list_recordings(self, cid, folder, heads=None):
+            st.asked.append(("list", cid))
+            got = self._heads(cid, folder)
+            if heads is not None:
+                heads.update(got)
+            return list(st.listing[cid])
+
+        def probe(self, folder):
+            cid = next(c for c, f in st.folders.items() if f == folder)
+            st.asked.append(("probe", cid))
+            return self._heads(cid, folder)
 
     monkeypatch.setattr(sync_mod, "IEULearn", FakeLearn)
     monkeypatch.setattr(sync_mod, "Panopto", FakePanopto)
@@ -159,6 +174,132 @@ def test_a_recording_that_moved_to_another_course_moves_and_is_not_new_again(tmp
     for _ in range(2):
         assert lib.merge_recordings("b", [_rec("x", 1)], first_sync=False) == []
     assert lib.get_recording("x1").course_id == "b"
+
+
+# ------------------------------------------------------------------ the helper's Panopto probes
+def _helper_sync(sync):
+    return sync.sync(full_every=sync.HELPER_PANOPTO_EVERY)
+
+
+def test_the_helper_probes_the_folders_and_lists_none_when_nothing_changed(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    site.listing["a"] = [_rec("a", 0), _rec("a", 1)]
+    sync.sync()                                          # the app: every folder in full
+    assert sorted(site.asked) == [("list", "a"), ("list", "b")] and lib.get_meta("listed_full:a")
+    site.asked.clear()
+    site.listing["a"] = [_rec("a", 1), Recording(**{**vars(_rec("a", 0)), "name": "renamed"})]   # (same count)
+    res = _helper_sync(sync)
+    assert sorted(site.asked) == [("probe", "a"), ("probe", "b")] and res.new_ids == [] and res.errors == []
+    assert {r.delivery_id: r.name for r in lib.recordings("a")} == {"a0": "lecture", "a1": "lecture"}   # waits
+
+
+def test_a_probe_never_marks_a_recording_gone(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    site.listing["a"] = [_rec("a", 0), _rec("a", 2)]
+    sync.sync()
+    site.listing["a"] = [_rec("a", 1), _rec("a", 2)]     # a0 deleted, a1 published late: same count, same newest
+    assert _helper_sync(sync).new_ids == []
+    assert sorted(r.delivery_id for r in lib.recordings("a")) == ["a0", "a2"]
+    old = (dt.datetime.now() - sync.HELPER_PANOPTO_EVERY - dt.timedelta(minutes=5)).isoformat(timespec="seconds")
+    for c in ("a", "b"):
+        lib.set_meta(f"listed_full:{c}", old)            # hours later: the helper lists every folder in full
+    site.asked.clear()
+    assert _helper_sync(sync).new_ids == ["a1"]
+    assert sorted(site.asked) == [("list", "a"), ("list", "b")] and lib.get_meta("listed_full:a") > old
+    assert sorted(r.delivery_id for r in lib.recordings("a")) == ["a1", "a2"]
+
+
+def test_a_new_recording_found_by_a_probe_is_listed_and_new(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.asked.clear()
+    site.listing["b"] = [_rec("b", 0), _rec("b", 1)]     # the count changed
+    res = _helper_sync(sync)
+    assert res.new_ids == ["b1"] and lib.get_recording("b1").is_new
+    assert sorted(site.asked) == [("list", "b"), ("probe", "a"), ("probe", "b")]
+    site.asked.clear()                                   # what it found is what the next probe compares with
+    assert _helper_sync(sync).new_ids == [] and sorted(site.asked) == [("probe", "a"), ("probe", "b")]
+
+
+def test_a_recording_added_and_one_deleted_is_seen_by_the_newest(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.listing["a"] = [_rec("a", 1)]                   # a0 deleted, a1 added: the same count
+    assert _helper_sync(sync).new_ids == ["a1"]
+    assert [r.delivery_id for r in lib.recordings("a")] == ["a1"]    # (a full listing: a0 is gone)
+
+
+def test_a_course_that_keeps_failing_doesnt_stop_the_others_probes(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.listing["a"] = RuntimeError("500")              # a folder Panopto keeps refusing
+    old = (dt.datetime.now() - sync.HELPER_PANOPTO_EVERY - dt.timedelta(minutes=5)).isoformat(timespec="seconds")
+    for c in ("a", "b"):
+        lib.set_meta(f"listed_full:{c}", old)
+    for _ in range(2):
+        site.asked.clear()
+        assert _helper_sync(sync).errors                 # (said, and tried again next time)
+    assert ("probe", "b") in site.asked and ("list", "b") not in site.asked    # b went back to probes
+
+
+def test_a_new_subfolder_or_a_course_never_listed_in_full_is_listed(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.asked.clear()
+    site.subfolders["a"] = ["fa-labs"]
+    lib.set_meta("folders:b", "")                        # (as after the update that brought the probes)
+    _helper_sync(sync)
+    assert sorted(site.asked) == [("list", "a"), ("list", "b"), ("probe", "a")]
+    site.asked.clear()
+    _helper_sync(sync)
+    assert sorted(site.asked) == [("probe", "a"), ("probe", "b")]
+
+
+def test_a_probe_says_what_a_full_listing_said_with_one_row_per_folder():
+    from studia.panopto import Panopto
+
+    def row(did, day):
+        return {"DeliveryID": did.upper(), "SessionName": "Lecture", "FolderID": "F",
+                "StartTime": f"/Date({int(dt.datetime(2026, 10, day, 9).timestamp() * 1000)})/", "Duration": 3000}
+
+    folders = {"root": ([row("r2", 20), row("r1", 13)], [{"ID": "SUB", "Name": "Labs"}]), "sub": ([row("s1", 14)], [])}
+    asked = []
+
+    class Answer:
+        def __init__(self, d):
+            self.d = d
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"d": self.d}
+
+    class Session:
+        cookies = types.SimpleNamespace(get=lambda *a, **k: "")
+
+        def post(self, url, json, headers):
+            q = json["queryParameters"]
+            asked.append((q["folderID"], q["maxResults"]))
+            rows, subs = folders[q["folderID"]]
+            return Answer({"Results": rows[:q["maxResults"]], "TotalNumber": len(rows), "Subfolders": subs})
+
+    p, heads = Panopto(Session()), {}
+    recs = p.list_recordings("a", "root", heads)
+    assert [(r.delivery_id, r.folder_path) for r in recs] == [("r2", ""), ("r1", ""), ("s1", "Labs")]
+    assert heads == {"root": [2, "r2"], "sub": [1, "s1"]} and asked == [("root", 250), ("sub", 250)]
+    asked.clear()
+    assert p.probe("root") == heads and asked == [("root", 1), ("sub", 1)]
+
+
+def test_the_apps_syncs_always_list_in_full(site, tmp_path):
+    lib, sync = _service(tmp_path)
+    _helper_sync(sync)                                   # no full listing yet: the helper's first check is one
+    assert sorted(site.asked) == [("list", "a"), ("list", "b")]
+    for _ in range(2):
+        site.asked.clear()
+        sync.sync()
+        assert sorted(site.asked) == [("list", "a"), ("list", "b")]
 
 
 def test_a_syllabus_that_cant_be_fetched_is_kept_and_looked_for_again_tomorrow(site, tmp_path, monkeypatch):

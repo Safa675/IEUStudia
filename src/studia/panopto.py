@@ -9,7 +9,7 @@ import re
 import struct
 import threading
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urljoin
 
 import requests
@@ -73,12 +73,18 @@ def parse_sessions(d: dict[str, Any], course_id: str, folder_path: str) -> list[
     return out
 
 
-def _query(folder_id: str, page: int) -> dict[str, Any]:
+def _query(folder_id: str, page: int, rows: int = 250) -> dict[str, Any]:
     return {"queryParameters": {
-        "query": None, "sortColumn": 1, "sortAscending": False, "maxResults": 250, "page": page,
+        "query": None, "sortColumn": 1, "sortAscending": False, "maxResults": rows, "page": page,
         "startDate": None, "endDate": None, "folderID": folder_id, "bookmarked": False, "getFolderData": True,
         "isSharedWithMe": False, "isSubscriptionsPage": False, "includeArchived": True,
         "includeArchivedStateCount": False, "sessionListOnlyArchived": False, "includePlaylists": True}}
+
+
+def _head(d: dict[str, Any]) -> list[Any]:
+    """A folder's recording count and its newest recording (the list is newest first): [35, "c0e6fe5f-…"]."""
+    first = (d.get("Results") or [{}])[0]
+    return [int(d.get("TotalNumber") or 0), (first.get("DeliveryID") or "").lower()]
 
 
 def _mp4_header(session: requests.Session, url: str, limit: int = 64 << 20) -> Optional[bytes]:
@@ -131,8 +137,14 @@ class Panopto:
         return r.status_code == 200
 
     # ------------------------------------------------------------------ listing
-    def list_recordings(self, course_id: str, folder_id: str) -> list[Recording]:
-        recs: list[Recording] = []
+    def _sessions(self, folder_id: str, page: int, rows: int) -> dict[str, Any]:
+        r = self.s.post(f"{BASE}/Panopto/Services/Data.svc/GetSessions", json=_query(folder_id, page, rows),
+                        headers=self._headers())
+        r.raise_for_status()
+        return (r.json() or {}).get("d") or {}
+
+    def _folders(self, folder_id: str, rows: int) -> Iterator[tuple[str, str, dict[str, Any]]]:
+        """A folder and its subfolders: id, path and the first page (``rows`` long) of each."""
         todo = [(folder_id, "")]
         seen: set[str] = set()
         while todo:
@@ -140,25 +152,36 @@ class Panopto:
             if fid in seen:
                 continue
             seen.add(fid)
+            d = self._sessions(fid, 0, rows)
+            for sub in d.get("Subfolders") or []:
+                if sub.get("ID"):
+                    todo.append((sub["ID"].lower(), f"{path}{sub.get('Name', '').strip()}/".lstrip("/")))
+            yield fid, path, d
+
+    def list_recordings(self, course_id: str, folder_id: str,
+                        heads: Optional[dict[str, list[Any]]] = None) -> list[Recording]:
+        """Every recording in a course's folder and its subfolders. ``heads`` gets what :meth:`probe` would say."""
+        recs: list[Recording] = []
+        for fid, path, d in self._folders(folder_id, 250):
+            if heads is not None:
+                heads[fid] = _head(d)
             page = 0
             while True:
-                r = self.s.post(f"{BASE}/Panopto/Services/Data.svc/GetSessions", json=_query(fid, page),
-                                headers=self._headers())
-                r.raise_for_status()
-                d = (r.json() or {}).get("d") or {}
                 batch = parse_sessions(d, course_id, path)
                 recs.extend(batch)
-                if page == 0:
-                    for sub in d.get("Subfolders") or []:
-                        if sub.get("ID"):
-                            todo.append((sub["ID"].lower(), f"{path}{sub.get('Name', '').strip()}/".lstrip("/")))
                 total = int(d.get("TotalNumber") or 0)
                 page += 1
                 if not batch or page * 250 >= total or page > 20:
                     break
+                d = self._sessions(fid, page, 250)
         for r_ in recs:
             r_.folder_path = r_.folder_path.rstrip("/")
         return recs
+
+    def probe(self, folder_id: str) -> dict[str, list[Any]]:
+        """Each folder's recording count and newest recording, through one-row answers (~5 KB each instead of
+        ~4.4 KB per recording): {folder id: [count, newest delivery id]}. A change means the folder needs listing."""
+        return {fid: _head(d) for fid, _, d in self._folders(folder_id, 1)}
 
     # ------------------------------------------------------------------ details
     def delivery_info(self, delivery_id: str) -> dict[str, Any]:

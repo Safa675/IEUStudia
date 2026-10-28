@@ -41,7 +41,8 @@ MODEL_PRESETS: dict[str, dict[str, Any]] = {
     "medium": {
         "repo": "Systran/faster-whisper-medium",
         "label": N_("Medium"),
-        "description": N_("More accurate than Small, but very slow without an NVIDIA graphics card (hours per lecture)."),
+        "description": N_("More accurate than Small, but very slow without an NVIDIA graphics card (hours per lecture). "
+                           "With one, Fast & accurate is both quicker and more accurate."),
         "size_mb": 1530,
     },
     "small": {

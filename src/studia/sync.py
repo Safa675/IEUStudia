@@ -185,28 +185,64 @@ class SyncService:
         except (requests.RequestException, OSError):
             return False
 
-    def _merge(self, course_id: str, recs: list) -> list[str]:
+    def _merge(self, course_id: str, recs: Optional[list], heads: dict) -> list[str]:
         """A course's first listing is what was there already (not new). Its folder may have been empty then (the
-        term had not started): a recording that started after that first listing is new."""
+        term had not started): a recording that started after that first listing is new. ``recs`` None: its folders
+        were probed and nothing changed. ``heads``: what its folders' first rows say, for the next probe."""
+        if recs is None:
+            return []
         first = not self.lib.has_recordings(course_id)
         key = f"listed:{course_id}"
         since = self.lib.get_meta(key) or ""
         if first and not since:
             self.lib.set_meta(key, dt.datetime.now().isoformat(timespec="seconds"))
-        return self.lib.merge_recordings(course_id, recs, first_sync=first, new_after=since if first else "")
+        new = self.lib.merge_recordings(course_id, recs, first_sync=first, new_after=since if first else "")
+        if heads != self._heads(course_id):
+            self.lib.set_meta(f"folders:{course_id}", json.dumps(heads))
+        self.lib.set_meta(f"listed_full:{course_id}", dt.datetime.now().isoformat(timespec="seconds"))
+        return new
+
+    def _heads(self, course_id: str) -> Optional[dict]:
+        """What the course's folders' first rows said at its last full listing (None: never listed in full)."""
+        try:
+            return json.loads(self.lib.get_meta(f"folders:{course_id}") or "null") or None
+        except ValueError:
+            return None
 
     @staticmethod
-    def _list(course: Course, s: requests.Session) -> tuple[Course, list, requests.Session]:
-        return course, Panopto(s).list_recordings(course.id, course.folder_id or ""), s
+    def _list(course: Course, s: requests.Session, heads: Optional[dict] = None
+              ) -> tuple[Course, Optional[list], requests.Session, dict]:
+        """A course's recordings and what its folders' first rows say. With ``heads`` (from the last full listing)
+        the folders are probed first, one row each, and listed only if a count, a newest recording or a subfolder
+        changed: None for the recordings when nothing did."""
+        p = Panopto(s)
+        if heads is not None:
+            now = p.probe(course.folder_id or "")
+            if now == heads:
+                return course, None, s, now
+        got: dict = {}
+        return course, p.list_recordings(course.id, course.folder_id or "", got), s, got
 
     def sync(self, progress: Callable[[str], None] = lambda m: None,
-             partial: Callable[[list[str]], None] = lambda ids: None) -> SyncResult:
+             partial: Callable[[list[str]], None] = lambda ids: None,
+             full_every: Optional[dt.timedelta] = None) -> SyncResult:
+        """``full_every`` (the tray helper): each course's Panopto folders are listed in full at least this often; in
+        between only when their probe shows a change, so a renamed, moved or deleted older recording (or one
+        published with an older date while another is deleted) may wait until then; nothing is marked gone from a
+        probe. Each course keeps its own clock: one that keeps failing doesn't stop the others' probes. None (the
+        app): every folder in full, each time."""
         t0 = time.monotonic()
         errors: list[str] = []
         new_ids: list[str] = []
         with self._lock:
             progress(t("Checking IEULearn and Panopto…"))
-            listed: dict[str, list] = {}
+            listed: dict[str, Optional[list]] = {}
+            probing = full_every is not None
+
+            def heads(c: Course) -> Optional[dict]:          # probes only for a course listed in full lately
+                if not probing or self._stale(self.lib.get_meta(f"listed_full:{c.id}") or "", full_every):
+                    return None
+                return self._heads(c.id)
             with ThreadPoolExecutor(max_workers=8, thread_name_prefix="sync") as pool:
                 probe_session = clone_session(self._session)
                 dash_session = clone_session(self._session)
@@ -219,14 +255,14 @@ class SyncService:
                     panopto_ok, panopto_down = False, True
                 early = []
                 if panopto_ok:  # fast path: list known folders while the dashboard loads
-                    early = [pool.submit(self._list, c, clone_session(probe_session))
+                    early = [pool.submit(self._list, c, clone_session(probe_session), heads(c))
                              for c in self.lib.courses() if c.folder_id]
                 for f in early:
                     try:
-                        course, recs, s = f.result()
+                        course, recs, s, got = f.result()
                         merge_cookies(self._session, s)
                         listed[course.id] = recs
-                        new_ids += self._merge(course.id, recs)
+                        new_ids += self._merge(course.id, recs, got)
                     except Exception as exc:  # noqa: BLE001 - retried below
                         self.log.info("Early listing failed (%s); retrying", exc)
                 if listed:
@@ -279,30 +315,33 @@ class SyncService:
             missing = [c for c in with_folders if c.id not in listed]
             failed: list[str] = []
             with ThreadPoolExecutor(max_workers=6, thread_name_prefix="list") as pool:
-                futures = {pool.submit(self._list, c, clone_session(self._session)): c for c in missing}
+                futures = {pool.submit(self._list, c, clone_session(self._session), heads(c)): c for c in missing}
                 for f, c in futures.items():
                     try:
-                        course, recs, s = f.result()
+                        course, recs, s, got = f.result()
                     except Exception as exc:  # noqa: BLE001 - one course failing must not stop the rest
                         self.log.warning("Listing the recordings of %s failed: %s", c.code or c.id, exc)
                         failed.append(c.code or c.name or c.id)
                         continue
                     merge_cookies(self._session, s)
                     listed[course.id] = recs
-                    new_ids += self._merge(course.id, recs)
+                    new_ids += self._merge(course.id, recs, got)
             if failed:
                 errors.append(t("Couldn't check new recordings for {courses}: Panopto didn't answer. They're checked "
                                 "again next time.", courses=", ".join(sorted(set(failed)))))
             self._save_cookies()
             self.lib.set_meta("last_sync", dt.datetime.now().isoformat(timespec="seconds"))
             secs = time.monotonic() - t0
-            self.log.info("Sync done in %.1fs: %d courses, %d new recordings", secs, len(courses), len(new_ids))
+            self.log.info("Sync done in %.1fs: %d courses, %d new recordings (%s)", secs, len(courses), len(new_ids),
+                          f"{sum(r is not None for r in listed.values())} of {len(listed)} listed after a probe"
+                          if probing else "full listing")
             return SyncResult(self.profile, self.lib.courses(), new_ids, errors, secs)
 
     # ------------------------------------------------------------------ course content
     OVERVIEW_EVERY = dt.timedelta(hours=20)       # outcomes, weekly topics, grading: rarely change
     SYLLABUS_EVERY = dt.timedelta(days=7)
     HELPER_UNITS_EVERY = dt.timedelta(hours=6)    # the tray helper, when it doesn't tell about new files
+    HELPER_PANOPTO_EVERY = dt.timedelta(hours=6)  # the tray helper's full Panopto listing (probes in between)
 
     @staticmethod
     def _stale(stamp: str, every: dt.timedelta) -> bool:
